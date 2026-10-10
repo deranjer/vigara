@@ -14,6 +14,10 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	webassets "github.com/deranjer/vigara/apps/api"
+	"github.com/deranjer/vigara/apps/api/internal/auth"
+	"github.com/deranjer/vigara/apps/api/internal/config"
+	"github.com/deranjer/vigara/apps/api/internal/database"
+	"github.com/deranjer/vigara/apps/api/internal/db"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -25,7 +29,32 @@ type healthOutput struct {
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	cfg, err := config.Load()
+	if err != nil {
+		logger.Error("invalid server configuration", "error", err)
+		os.Exit(1)
+	}
+	connectCtx, cancelConnect := context.WithTimeout(context.Background(), 10*time.Second)
+	database, err := database.Open(connectCtx, cfg.DatabaseURL)
+	cancelConnect()
+	if err != nil {
+		logger.Error("database connection failed", "error", err)
+		os.Exit(1)
+	}
+	defer database.Close()
+
+	queries := db.New(database.Pool)
+	authService := auth.NewService(database.Pool, queries)
+	readyCtx, cancelReady := context.WithTimeout(context.Background(), 5*time.Second)
+	_, err = authService.SetupRequired(readyCtx)
+	cancelReady()
+	if err != nil {
+		logger.Error("database schema is not ready; apply migrations with `task db:migrate`", "error", err)
+		os.Exit(1)
+	}
+
 	router := chi.NewRouter()
+	router.Use(authService.SessionMiddleware)
 	api := humachi.New(router, huma.DefaultConfig("Vigira API", "0.1.0"))
 	huma.Register(api, huma.Operation{
 		OperationID: "healthCheck", Method: http.MethodGet, Path: "/healthz", Summary: "Check service health",
@@ -34,17 +63,14 @@ func main() {
 		out.Body.Status = "ok"
 		return out, nil
 	})
+	auth.RegisterAPI(api, authService, cfg.SecureSessionCookie)
 	staticFS, err := fs.Sub(webassets.FS, "web")
 	if err != nil {
 		logger.Error("web assets unavailable", "error", err)
 		os.Exit(1)
 	}
 	router.Handle("/*", http.FileServer(http.FS(staticFS)))
-	addr := os.Getenv("VIGIRA_ADDR")
-	if addr == "" {
-		addr = ":8080"
-	}
-	server := &http.Server{Addr: addr, Handler: router, ReadHeaderTimeout: 5 * time.Second}
+	server := &http.Server{Addr: cfg.Address, Handler: router, ReadHeaderTimeout: 5 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go func() {
@@ -55,7 +81,7 @@ func main() {
 			logger.Error("server shutdown failed", "error", err)
 		}
 	}()
-	logger.Info("starting Vigira API", "addr", addr)
+	logger.Info("starting Vigira API", "addr", cfg.Address)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("server failed", "error", err)
 		os.Exit(1)

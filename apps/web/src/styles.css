@@ -3,3 +3,5 @@ body { margin: 0; min-width: 320px; min-height: 100vh; }
 .topbar { display: flex; align-items: center; justify-content: space-between; padding: 0 28px; border-bottom: 1px solid #e9ebef; background: white; }
 .welcome { max-width: 900px; margin: 56px auto; }
 .empty-state { margin-top: 36px; padding: 28px; border: 1px dashed #cbd1da; border-radius: 12px; background: white; }
+.auth-card { width: min(100%, 480px); margin: 56px auto; padding: 32px; border: 1px solid #e9ebef; border-radius: 16px; background: white; box-shadow: 0 10px 32px #1720330a; }
+.auth-form { display: grid; gap: 18px; margin-top: 28px; }
