@@ -15,6 +15,7 @@ import (
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	webassets "github.com/deranjer/vigara/apps/api"
 	"github.com/deranjer/vigara/apps/api/internal/agent"
+	"github.com/deranjer/vigara/apps/api/internal/alerts"
 	"github.com/deranjer/vigara/apps/api/internal/auth"
 	"github.com/deranjer/vigara/apps/api/internal/config"
 	"github.com/deranjer/vigara/apps/api/internal/database"
@@ -54,6 +55,8 @@ func main() {
 		logger.Error("database schema is not ready; apply migrations with `task db:migrate`", "error", err)
 		os.Exit(1)
 	}
+	alertsMux := http.NewServeMux()
+	alerts.NewHandler(database.Pool, authService).Register(alertsMux)
 	agentMux := http.NewServeMux()
 	agent.NewHandler(database.Pool, authService).Register(agentMux)
 	telemetryMux := http.NewServeMux()
@@ -73,6 +76,8 @@ func main() {
 	})
 	router.Handle("/api/agent/*", agentMux)
 	router.Handle("/api/agent/telemetry", telemetryMux)
+	router.Handle("/api/agent/backups/status", alertsMux)
+	router.Handle("/api/alerts/*", alertsMux)
 	router.Handle("/api/agents/*", agentMux)
 	router.Handle("/api/devices/*", agentMux)
 	auth.RegisterAPI(api, authService, cfg.SecureSessionCookie)
@@ -95,6 +100,7 @@ func main() {
 			logger.Error("server shutdown failed", "error", err)
 		}
 	}()
+	go alerts.Run(ctx, database.Pool, logger)
 	logger.Info("starting Vigira API", "addr", cfg.Address)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("server failed", "error", err)
