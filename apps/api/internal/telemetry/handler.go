@@ -17,9 +17,18 @@ import (
 
 const maxRequestBytes = 1 << 20
 
-type Handler struct{ pool *pgxpool.Pool }
+type Handler struct {
+	pool  *pgxpool.Pool
+	store Store
+}
 
-func NewHandler(pool *pgxpool.Pool) *Handler { return &Handler{pool: pool} }
+func NewHandler(pool *pgxpool.Pool, stores ...Store) *Handler {
+	var store Store = postgresStore{pool: pool}
+	if len(stores) > 0 && stores[0] != nil {
+		store = stores[0]
+	}
+	return &Handler{pool: pool, store: store}
+}
 
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/agent/telemetry", h.ingest)
@@ -55,32 +64,21 @@ func (h *Handler) ingest(w http.ResponseWriter, r *http.Request) {
 		}
 		seen[snapshot.ID] = true
 	}
-	tx, err := h.pool.Begin(r.Context())
-	if err != nil {
-		http.Error(w, "could not store telemetry", http.StatusInternalServerError)
+	err := h.store.Ingest(r.Context(), agentID, batch.Snapshots, now)
+	if errors.Is(err, ErrRateLimited) {
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, "telemetry ingestion rate exceeded", http.StatusTooManyRequests)
 		return
 	}
-	defer tx.Rollback(r.Context())
-	var lockedID string
-	if err := tx.QueryRow(r.Context(), `SELECT id::text FROM agent_identities WHERE id=$1 AND revoked_at IS NULL FOR SHARE`, agentID).Scan(&lockedID); err != nil {
+	if errors.Is(err, ErrSeriesLimit) {
+		http.Error(w, "telemetry metric series limit exceeded", http.StatusUnprocessableEntity)
+		return
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
 		http.Error(w, "invalid or revoked agent credential", http.StatusUnauthorized)
 		return
 	}
-	for _, snapshot := range batch.Snapshots {
-		payload, _ := json.Marshal(snapshot)
-		_, err = tx.Exec(r.Context(), `INSERT INTO agent_telemetry(agent_id, report_id, observed_at, payload)
-			SELECT id, $2, $3, $4 FROM agent_identities WHERE id=$1 AND revoked_at IS NULL
-			ON CONFLICT (agent_id, report_id) DO NOTHING`, agentID, snapshot.ID, snapshot.ObservedAt, payload)
-		if err != nil {
-			http.Error(w, "could not store telemetry", http.StatusInternalServerError)
-			return
-		}
-	}
-	if _, err := tx.Exec(r.Context(), `UPDATE devices d SET last_seen_at=now() FROM agent_identities i WHERE i.id=$1 AND d.id=i.device_id`, agentID); err != nil {
-		http.Error(w, "could not update agent status", http.StatusInternalServerError)
-		return
-	}
-	if err := tx.Commit(r.Context()); err != nil {
+	if err != nil {
 		http.Error(w, "could not store telemetry", http.StatusInternalServerError)
 		return
 	}

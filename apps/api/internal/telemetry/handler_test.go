@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -19,9 +20,13 @@ import (
 
 func TestValidateRejectsBadUnitsAndFutureObservationButAllowsOfflineData(t *testing.T) {
 	now := time.Now().UTC()
-	snapshot := validSnapshot("agent", "snapshot-1", now.Add(-365*24*time.Hour))
+	snapshot := validSnapshot("agent", "snapshot-1", now.Add(-47*time.Hour))
 	if err := validate(snapshot, "agent", now); err != nil {
 		t.Fatalf("valid offline snapshot rejected: %v", err)
+	}
+	tooOld := validSnapshot("agent", "old", now.Add(-26*time.Hour))
+	if err := validate(tooOld, "agent", now); err != nil {
+		t.Fatalf("stale report should be acknowledged and discarded after validation: %v", err)
 	}
 	snapshot.Metrics = []protocol.TelemetryMetric{{Name: "memory_total_bytes", Value: 10, Unit: "percent"}}
 	if err := validate(snapshot, "agent", now); err == nil {
@@ -53,8 +58,11 @@ func TestTelemetryIngestIsIdempotentAndRejectsRevokedIdentity(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	NewHandler(pool).Register(mux)
-	snapshot := validSnapshot(agentID, "stable-snapshot-id", time.Now().UTC().Add(-90*24*time.Hour))
-	body, err := json.Marshal(protocol.TelemetrySnapshotBatch{ProtocolVersion: protocol.CurrentVersion, AgentID: agentID, Snapshots: []protocol.TelemetrySnapshot{snapshot}})
+	snapshots := make([]protocol.TelemetrySnapshot, 5)
+	for i := range snapshots {
+		snapshots[i] = validSnapshot(agentID, fmt.Sprintf("stable-snapshot-id-%d", i), time.Now().UTC().Add(-time.Hour))
+	}
+	body, err := json.Marshal(protocol.TelemetrySnapshotBatch{ProtocolVersion: protocol.CurrentVersion, AgentID: agentID, Snapshots: snapshots})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,8 +82,8 @@ func TestTelemetryIngestIsIdempotentAndRejectsRevokedIdentity(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM agent_telemetry WHERE agent_id=$1`, agentID).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 1 {
-		t.Fatalf("stored %d rows after idempotent retry, want 1", count)
+	if count != 5 {
+		t.Fatalf("stored %d rows after idempotent batch retry, want 5", count)
 	}
 	var lastSeen time.Time
 	if err := pool.QueryRow(ctx, `SELECT last_seen_at FROM devices WHERE id=$1`, deviceID).Scan(&lastSeen); err != nil {
@@ -137,5 +145,176 @@ func telemetryTestPool(t *testing.T) *pgxpool.Pool {
 			t.Fatalf("apply %s: %v", name, err)
 		}
 	}
+	var seedDevice, seedAgent string
+	if err := pool.QueryRow(ctx, `INSERT INTO devices(display_name) VALUES('migration-seed') RETURNING id::text`).Scan(&seedDevice); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO agent_identities(device_id,credential_hash,protocol_version,platform,architecture,agent_version,capabilities,allowed_capabilities) VALUES($1,decode('aabb','hex'),'v1','linux','amd64','test','[]','{}') RETURNING id::text`, seedDevice).Scan(&seedAgent); err != nil {
+		t.Fatal(err)
+	}
+	seedPayload := `{"id":"migration-seed","agentId":"` + seedAgent + `","observedAt":"` + time.Now().UTC().Add(-time.Hour).Format(time.RFC3339Nano) + `","metrics":[{"name":"memory_total_bytes","value":4096,"unit":"By"}]}`
+	if _, err := pool.Exec(ctx, `INSERT INTO agent_telemetry(agent_id,report_id,observed_at,payload) VALUES($1,'migration-seed',now()-interval '1 hour',$2::jsonb)`, seedAgent, seedPayload); err != nil {
+		t.Fatal(err)
+	}
+	migration, err := os.ReadFile("../../migrations/000006_telemetry_retention.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, string(migration)); err != nil {
+		t.Fatalf("apply 000006_telemetry_retention.up.sql: %v", err)
+	}
 	return pool
+}
+
+func TestRetentionMigrationSeedsDedupSeriesAndLatestSnapshot(t *testing.T) {
+	pool := telemetryTestPool(t)
+	ctx := context.Background()
+	var agentID string
+	if err := pool.QueryRow(ctx, `SELECT agent_id::text FROM agent_telemetry WHERE report_id='migration-seed'`).Scan(&agentID); err != nil {
+		t.Fatal(err)
+	}
+	var latestID string
+	if err := pool.QueryRow(ctx, `SELECT report_id FROM agent_telemetry_latest WHERE agent_id=$1`, agentID).Scan(&latestID); err != nil {
+		t.Fatal(err)
+	}
+	if latestID != "migration-seed" {
+		t.Fatalf("seeded latest report = %q", latestID)
+	}
+	var dedup, legacy bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM telemetry_report_dedup WHERE agent_id=$1 AND report_id='migration-seed'), EXISTS(SELECT 1 FROM telemetry_metric_series WHERE agent_id=$1 AND metric_name='memory_total_bytes' AND legacy)`, agentID).Scan(&dedup, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if !dedup || !legacy {
+		t.Fatalf("migration seed dedup=%v legacy_series=%v", dedup, legacy)
+	}
+}
+
+func TestTelemetryLimitsAndRetentionAreBoundedAndIdempotent(t *testing.T) {
+	pool := telemetryTestPool(t)
+	ctx := context.Background()
+	var deviceID, agentID string
+	if err := pool.QueryRow(ctx, `INSERT INTO devices(display_name) VALUES('retention-test') RETURNING id::text`).Scan(&deviceID); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte("retention-test-credential"))
+	if err := pool.QueryRow(ctx, `INSERT INTO agent_identities(device_id,credential_hash,protocol_version,platform,architecture,agent_version,capabilities,allowed_capabilities) VALUES($1,$2,'v1','linux','amd64','test','[]','{}') RETURNING id::text`, deviceID, sum[:]).Scan(&agentID); err != nil {
+		t.Fatal(err)
+	}
+	store := postgresStore{pool: pool}
+	now := time.Now().UTC()
+	var err error
+	batch := make([]protocol.TelemetrySnapshot, 10)
+	for i := range batch {
+		batch[i] = validSnapshot(agentID, fmt.Sprintf("rate-%d", i), now.Add(-time.Minute))
+	}
+	if err := store.Ingest(ctx, agentID, batch, now); err != nil {
+		t.Fatalf("first batch: %v", err)
+	}
+	if err := store.Ingest(ctx, agentID, []protocol.TelemetrySnapshot{validSnapshot(agentID, "rate-11", now)}, now); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("second batch error = %v, want rate limit", err)
+	}
+
+	stale := validSnapshot(agentID, "stale-report", now.Add(-49*time.Hour))
+	if err := store.Ingest(ctx, agentID, []protocol.TelemetrySnapshot{stale}, now.Add(time.Minute)); err != nil {
+		t.Fatalf("stale report should be acknowledged and discarded: %v", err)
+	}
+	var staleRows int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM agent_telemetry WHERE agent_id=$1 AND report_id='stale-report'`, agentID).Scan(&staleRows); err != nil {
+		t.Fatal(err)
+	}
+	if staleRows != 0 {
+		t.Fatalf("stored %d reports older than the acceptance horizon", staleRows)
+	}
+	seriesBatch := validSnapshot(agentID, "series-overflow", now.Add(time.Minute))
+	for i := 0; i < 512; i++ {
+		seriesBatch.Metrics = append(seriesBatch.Metrics, protocol.TelemetryMetric{Name: "filesystem_total_bytes", Value: 1, Unit: "By", Labels: map[string]string{"mount_path": fmt.Sprintf("/series/%d", i)}})
+	}
+	if err := store.Ingest(ctx, agentID, []protocol.TelemetrySnapshot{seriesBatch}, now.Add(2*time.Minute)); !errors.Is(err, ErrSeriesLimit) {
+		t.Fatalf("series overflow error = %v, want limit", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM agent_telemetry WHERE agent_id=$1 AND report_id='series-overflow'`, agentID).Scan(&staleRows); err != nil {
+		t.Fatal(err)
+	}
+	if staleRows != 0 {
+		t.Fatal("series-limit rejection partially committed raw telemetry")
+	}
+	old := validSnapshot(agentID, "old-report", now.Add(-26*time.Hour))
+	for i := 0; i < 601; i++ {
+		id := fmt.Sprintf("old-report-%d", i)
+		if i == 0 {
+			old.ID = id
+		}
+		snapshot := validSnapshot(agentID, id, old.ObservedAt)
+		row, marshalErr := json.Marshal(snapshot)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		if _, err = pool.Exec(ctx, `INSERT INTO telemetry_report_dedup(agent_id,report_id,received_at) VALUES($1,$2,$3)`, agentID, id, now.Add(-26*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = pool.Exec(ctx, `INSERT INTO agent_telemetry(agent_id,report_id,observed_at,payload) VALUES($1,$2,$3,$4)`, agentID, id, old.ObservedAt, row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = store.Retain(ctx, RetentionConfig{RawAge: 25 * time.Hour, RollupAge: 90 * 24 * time.Hour}, now); err != nil {
+		t.Fatal(err)
+	}
+	var rawCount int
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM agent_telemetry WHERE agent_id=$1 AND report_id=$2`, agentID, old.ID).Scan(&rawCount); err != nil {
+		t.Fatal(err)
+	}
+	if rawCount != 0 {
+		t.Fatalf("old report still has %d raw rows", rawCount)
+	}
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM agent_telemetry WHERE agent_id=$1 AND observed_at < $2`, agentID, now.Add(-48*time.Hour)).Scan(&rawCount); err != nil {
+		t.Fatal(err)
+	}
+	if rawCount != 0 {
+		t.Fatalf("bounded worker left %d of 601 eligible raw rows", rawCount)
+	}
+	var rolledCount int64
+	if err = pool.QueryRow(ctx, `SELECT sample_count FROM telemetry_metric_rollups WHERE agent_id=$1 AND metric_name='memory_total_bytes' AND bucket_start=$2`, agentID, old.ObservedAt.UTC().Truncate(time.Hour)).Scan(&rolledCount); err != nil {
+		t.Fatal(err)
+	}
+	if rolledCount != 601 {
+		t.Fatalf("rollup sample count = %d, want 601", rolledCount)
+	}
+	if err = store.Retain(ctx, RetentionConfig{RawAge: 25 * time.Hour, RollupAge: 90 * 24 * time.Hour}, now); err != nil {
+		t.Fatal(err)
+	}
+	var after int64
+	if err = pool.QueryRow(ctx, `SELECT sample_count FROM telemetry_metric_rollups WHERE agent_id=$1 AND metric_name='memory_total_bytes' AND bucket_start=$2`, agentID, old.ObservedAt.UTC().Truncate(time.Hour)).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after != rolledCount {
+		t.Fatalf("repeated retention changed sample count from %d to %d", rolledCount, after)
+	}
+	if err = store.Ingest(ctx, agentID, []protocol.TelemetrySnapshot{validSnapshot(agentID, old.ID, old.ObservedAt)}, now.Add(time.Minute)); err != nil {
+		t.Fatalf("late duplicate retry: %v", err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT sample_count FROM telemetry_metric_rollups WHERE agent_id=$1 AND metric_name='memory_total_bytes' AND bucket_start=$2`, agentID, old.ObservedAt.UTC().Truncate(time.Hour)).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after != rolledCount {
+		t.Fatalf("late duplicate changed rolled count from %d to %d", rolledCount, after)
+	}
+	var latestCount int
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM agent_telemetry_latest WHERE agent_id=$1`, agentID).Scan(&latestCount); err != nil {
+		t.Fatal(err)
+	}
+	if latestCount != 1 {
+		t.Fatalf("latest host snapshot count = %d, want 1", latestCount)
+	}
+}
+
+func TestRetentionConfigRequiresAlertCompatibleRawWindow(t *testing.T) {
+	base := RetentionConfig{RollupAge: 90 * 24 * time.Hour}
+	base.RawAge = 24 * time.Hour
+	if err := base.Validate(); err == nil {
+		t.Fatal("accepted a 24-hour raw window, below the alert freshness margin")
+	}
+	base.RawAge = 25 * time.Hour
+	if err := base.Validate(); err != nil {
+		t.Fatalf("rejected the 25-hour minimum raw window: %v", err)
+	}
 }

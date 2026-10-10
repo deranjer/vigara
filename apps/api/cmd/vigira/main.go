@@ -57,7 +57,8 @@ func main() {
 	agentMux := http.NewServeMux()
 	agent.NewHandler(database.Pool, authService).Register(agentMux)
 	telemetryMux := http.NewServeMux()
-	telemetry.NewHandler(database.Pool).Register(telemetryMux)
+	telemetryStore := telemetry.NewPostgresStore(database.Pool)
+	telemetry.NewHandler(database.Pool, telemetryStore).Register(telemetryMux)
 
 	router := chi.NewRouter()
 	router.Use(auth.NewAttemptLimiter().Middleware)
@@ -84,6 +85,8 @@ func main() {
 	server := &http.Server{Addr: cfg.Address, Handler: router, ReadHeaderTimeout: 5 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	retention := telemetry.RetentionConfig{RawAge: time.Duration(cfg.TelemetryRawRetentionHours) * time.Hour, RollupAge: time.Duration(cfg.TelemetryRollupRetentionDays) * 24 * time.Hour}
+	go telemetry.RunRetentionWorker(ctx, telemetryStore, retention, logger)
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
