@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/deranjer/vigara/apps/api/internal/auth"
+	"github.com/deranjer/vigara/apps/api/internal/inventory"
 	"github.com/deranjer/vigara/internal/protocol"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -32,9 +33,22 @@ func NewHandler(pool *pgxpool.Pool, authService *auth.Service) *Handler {
 }
 
 type EnrollmentRequest struct {
-	Token       string                    `json:"token"`
-	DisplayName string                    `json:"displayName"`
-	Capability  protocol.CapabilityReport `json:"capability"`
+	Token       string                      `json:"token"`
+	DisplayName string                      `json:"displayName"`
+	Capability  protocol.CapabilityReport   `json:"capability"`
+	Identifiers []protocol.DeviceIdentifier `json:"identifiers,omitempty"`
+}
+
+type DiscoveryRequest struct {
+	SourceID    string                      `json:"sourceId"`
+	DisplayName string                      `json:"displayName"`
+	Identifiers []protocol.DeviceIdentifier `json:"identifiers,omitempty"`
+	Addresses   []DiscoveryAddress          `json:"addresses,omitempty"`
+}
+
+type DiscoveryAddress struct {
+	Value string `json:"value"`
+	Type  string `json:"type"`
 }
 
 type EnrollmentResponse struct {
@@ -63,6 +77,52 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/agent/reports", h.reports)
 	mux.HandleFunc("POST /api/agents/enrollment-tokens", h.createEnrollmentToken)
 	mux.HandleFunc("POST /api/agents/{agentID}/revoke", h.revoke)
+	mux.HandleFunc("POST /api/devices/discovery", h.discover)
+}
+
+// discover accepts an authenticated external inventory observation. The source
+// key is scoped to its source type and cannot move an existing source record.
+func (h *Handler) discover(w http.ResponseWriter, r *http.Request) {
+	if !h.requireUser(w, r) {
+		return
+	}
+	var req DiscoveryRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.SourceID) == "" || len(req.SourceID) > 256 {
+		http.Error(w, "invalid discovery source", http.StatusBadRequest)
+		return
+	}
+	tx, err := h.pool.Begin(r.Context())
+	if err != nil {
+		http.Error(w, "could not reconcile discovery", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback(r.Context())
+	provenance := inventory.SourceProvenance("external", req.SourceID)
+	addresses := make([]inventory.Address, 0, len(req.Addresses))
+	for _, address := range req.Addresses {
+		addresses = append(addresses, inventory.Address{Value: address.Value, Type: address.Type, Provenance: provenance})
+	}
+	deviceID, err := inventory.ResolveDevice(r.Context(), tx, inventory.Observation{DisplayName: req.DisplayName, Identifiers: req.Identifiers, Addresses: addresses, Provenance: provenance, SourceType: "external", SourceID: req.SourceID})
+	if errors.Is(err, inventory.ErrAmbiguousIdentity) {
+		http.Error(w, "discovery identifiers conflict", http.StatusConflict)
+		return
+	}
+	if err != nil {
+		http.Error(w, "invalid or unavailable discovery observation", http.StatusBadRequest)
+		return
+	}
+	if err = inventory.AttachSource(r.Context(), tx, deviceID, "external", req.SourceID, provenance); err != nil {
+		http.Error(w, "could not record discovery source", http.StatusConflict)
+		return
+	}
+	if err = tx.Commit(r.Context()); err != nil {
+		http.Error(w, "could not reconcile discovery", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]string{"deviceId": deviceID})
 }
 
 func (h *Handler) createEnrollmentToken(w http.ResponseWriter, r *http.Request) {
@@ -193,9 +253,15 @@ func (h *Handler) enroll(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var deviceID, agentID string
-	err = tx.QueryRow(r.Context(), `INSERT INTO devices(display_name) VALUES ($1) RETURNING id::text`, req.DisplayName).Scan(&deviceID)
+	err = tx.QueryRow(r.Context(), `SELECT gen_random_uuid()::text`).Scan(&agentID)
 	if err == nil {
-		err = tx.QueryRow(r.Context(), `INSERT INTO agent_identities(device_id, credential_hash, protocol_version, platform, architecture, agent_version, capabilities, allowed_capabilities) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id::text`, deviceID, credentialHash, capability.ProtocolVersion, capability.Platform, capability.Architecture, capability.AgentVersion, capabilitiesJSON, allowed).Scan(&agentID)
+		deviceID, err = inventory.ResolveDevice(r.Context(), tx, inventory.Observation{DisplayName: req.DisplayName, Identifiers: req.Identifiers, Provenance: inventory.SourceProvenance("agent", agentID)})
+	}
+	if err == nil {
+		_, err = tx.Exec(r.Context(), `INSERT INTO agent_identities(id,device_id,credential_hash,protocol_version,platform,architecture,agent_version,capabilities,allowed_capabilities) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, agentID, deviceID, credentialHash, capability.ProtocolVersion, capability.Platform, capability.Architecture, capability.AgentVersion, capabilitiesJSON, allowed)
+	}
+	if err == nil {
+		err = inventory.AttachSource(r.Context(), tx, deviceID, "agent", agentID, inventory.SourceProvenance("agent", agentID))
 	}
 	if err == nil {
 		_, err = tx.Exec(r.Context(), `UPDATE agent_enrollment_tokens SET used_at=now() WHERE id=$1`, tokenID)
