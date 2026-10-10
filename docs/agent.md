@@ -67,8 +67,10 @@ account, local administrators, and LocalSystem, so the service can read the
 credential while ordinary users cannot. The service handles stop and shutdown
 signals and reconnects after transient network failures.
 
-The current agent build advertises the capabilities compiled into that build;
-this initial runtime advertises none and refuses any job it cannot support.
+The current agent build advertises compiled module capabilities that are
+enabled by valid local operator configuration; a capability report does not
+grant execution by itself. A job still needs enabled desired configuration and
+an explicit scoped permission grant. The agent refuses jobs it cannot support.
 When choosing a custom `--config` path, place it in a dedicated private
 directory that the service account can access; the agent secures newly created
 state directories and always protects the credential file itself.

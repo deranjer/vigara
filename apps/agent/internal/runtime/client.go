@@ -19,10 +19,13 @@ import (
 	"time"
 
 	"github.com/deranjer/vigara/apps/agent/internal/collector"
+	"github.com/deranjer/vigara/internal/modules"
 	"github.com/deranjer/vigara/internal/protocol"
+	"github.com/deranjer/vigara/internal/restic"
 )
 
 const AgentVersion = "0.1.0"
+const MaxJobTimeout = 7 * 24 * time.Hour
 
 type Client struct {
 	StatePath string
@@ -50,7 +53,7 @@ func (c *Client) Enroll(ctx context.Context, serverURL, token, name string) erro
 	if err := validateServerURL(serverURL); err != nil {
 		return err
 	}
-	capability := protocol.CapabilityReport{ProtocolVersion: protocol.CurrentVersion, Platform: runtime.GOOS, Architecture: runtime.GOARCH, AgentVersion: AgentVersion, Capabilities: []string{}}
+	capability := protocol.CapabilityReport{ProtocolVersion: protocol.CurrentVersion, Platform: runtime.GOOS, Architecture: runtime.GOARCH, AgentVersion: AgentVersion, Capabilities: c.capabilities()}
 	identifiers := enrollmentIdentifiers()
 	payload := enrollmentPayload(token, name, capability, identifiers)
 	var result struct {
@@ -94,7 +97,7 @@ func (c *Client) Cycle(ctx context.Context) (time.Duration, error) {
 		return 0, err
 	}
 	telemetryErr := c.flushTelemetry(ctx)
-	request := protocol.AgentRequest{ProtocolVersion: protocol.CurrentVersion, AgentID: c.State.AgentID, AgentVersion: AgentVersion, Platform: runtime.GOOS, Architecture: runtime.GOARCH, Capabilities: []string{}}
+	request := protocol.AgentRequest{ProtocolVersion: protocol.CurrentVersion, AgentID: c.State.AgentID, AgentVersion: AgentVersion, Platform: runtime.GOOS, Architecture: runtime.GOARCH, Capabilities: c.capabilities()}
 	if c.State.Configuration != nil {
 		request.KnownConfigVersion = c.State.Configuration.Version
 	}
@@ -107,13 +110,19 @@ func (c *Client) Cycle(ctx context.Context) (time.Duration, error) {
 	}
 	if response.Configuration != nil {
 		c.State.Configuration = response.Configuration
+		if err := Save(c.StatePath, c.State); err != nil {
+			return 0, err
+		}
 	}
 	if response.Job != nil {
+		if len(c.State.Pending) >= MaxQueuedReports {
+			return 0, fmt.Errorf("offline report queue is full (%d)", MaxQueuedReports)
+		}
 		resultID, err := randomID()
 		if err != nil {
 			return 0, err
 		}
-		result := protocol.JobResult{ProtocolVersion: protocol.CurrentVersion, ID: resultID, JobID: response.Job.ID, AgentID: c.State.AgentID, ModuleID: response.Job.ModuleID, ModuleVersion: response.Job.ModuleVersion, Status: protocol.JobFailed, StartedAt: time.Now().UTC(), FinishedAt: time.Now().UTC(), Error: &protocol.Failure{Code: "unsupported_capability", Message: "This agent build does not include the requested module capability", Retryable: false}}
+		result := c.executeJob(ctx, *response.Job, resultID)
 		if err := c.State.Enqueue(result); err != nil {
 			return 0, err
 		}
@@ -133,6 +142,102 @@ func (c *Client) Cycle(ctx context.Context) (time.Duration, error) {
 		return delay, &TelemetryDeliveryError{Err: telemetryErr}
 	}
 	return delay, nil
+}
+
+func (c *Client) capabilities() []string {
+	if resticCapabilityEnabled(c.State.ResticProfiles) {
+		return []string{resticCapability}
+	}
+	return []string{}
+}
+
+func (c *Client) executeJob(parent context.Context, job protocol.Job, resultID string) (result protocol.JobResult) {
+	started := time.Now().UTC()
+	result = protocol.JobResult{ProtocolVersion: protocol.CurrentVersion, ID: resultID, JobID: job.ID, AgentID: c.State.AgentID, ModuleID: job.ModuleID, ModuleVersion: job.ModuleVersion, Status: protocol.JobFailed, StartedAt: started}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			result.Status = protocol.JobFailed
+			result.Error = &protocol.Failure{Code: "module_panic", Message: "The requested module failed unexpectedly", Retryable: false}
+		}
+		result.FinishedAt = time.Now().UTC()
+	}()
+	if job.ID == "" || job.ModuleID != resticModuleID || job.ModuleVersion != resticModuleVersion || job.Kind != "backup" {
+		result.Error = &protocol.Failure{Code: "unsupported_capability", Message: "This agent cannot execute the requested module job", Retryable: false}
+		return result
+	}
+	if !moduleEnabled(c.State.Configuration, resticModuleID, resticModuleVersion) {
+		result.Error = &protocol.Failure{Code: "module_disabled", Message: "The requested module is not enabled in local desired configuration", Retryable: false}
+		return result
+	}
+	if job.TimeoutSeconds <= 0 || job.TimeoutSeconds > int(MaxJobTimeout/time.Second) {
+		result.Error = &protocol.Failure{Code: "invalid_timeout", Message: "The job has no valid execution timeout", Retryable: false}
+		return result
+	}
+	deadline := started.Add(time.Duration(job.TimeoutSeconds) * time.Second)
+	if !job.Deadline.IsZero() && job.Deadline.Before(deadline) {
+		deadline = job.Deadline
+	}
+	if !deadline.After(started) {
+		result.Status = protocol.JobTimedOut
+		result.Error = &protocol.Failure{Code: "deadline_exceeded", Message: "The job deadline has expired", Retryable: true}
+		return result
+	}
+	ctx, cancel := context.WithDeadline(parent, deadline)
+	defer cancel()
+	configuration := make(map[string]any, len(job.Settings))
+	for key, value := range job.Settings {
+		configuration[key] = value
+	}
+	grants := make([]modules.PermissionGrant, 0, len(job.Permissions))
+	for _, grant := range job.Permissions {
+		grants = append(grants, modules.PermissionGrant{Name: grant.Name, Scope: grant.Scope})
+	}
+	module := resticBackupModule{profiles: c.State.ResticProfiles}
+	outcome, err := module.Execute(ctx, modules.JobContext{JobID: job.ID, Configuration: configuration, Permissions: grants, StartedAt: started})
+	if err != nil {
+		code := err.Error()
+		if !validProfileID(code) {
+			code = "module_failed"
+		}
+		result.Error = &protocol.Failure{Code: code, Message: "The backup profile or its permission grant is invalid", Retryable: false}
+		return result
+	}
+	result.Output = outcome.Output
+	status, _ := outcome.Output["resticStatus"].(restic.Status)
+	if ctx.Err() == context.DeadlineExceeded {
+		result.Status = protocol.JobTimedOut
+		result.Error = &protocol.Failure{Code: "deadline_exceeded", Message: "The backup job exceeded its deadline", Retryable: true}
+		return result
+	}
+	if parent.Err() != nil || status == restic.Canceled {
+		result.Status = protocol.JobCancelled
+		result.Error = &protocol.Failure{Code: "canceled", Message: "The backup job was canceled", Retryable: true}
+		return result
+	}
+	if status == restic.Succeeded {
+		result.Status = protocol.JobSucceeded
+		return result
+	}
+	// v1 has no partial/interrupted job state. Preserve the runner's exact
+	// outcome in output and report both as failed at the protocol boundary.
+	code, _ := outcome.Output["errorCode"].(string)
+	if code == "" {
+		code = string(status)
+	}
+	result.Error = &protocol.Failure{Code: code, Message: "The backup job did not complete successfully", Retryable: status == restic.Interrupted}
+	return result
+}
+
+func moduleEnabled(configuration *protocol.AgentConfiguration, moduleID, version string) bool {
+	if configuration == nil {
+		return false
+	}
+	for _, module := range configuration.Modules {
+		if module.ModuleID == moduleID && module.ModuleVersion == version {
+			return module.Enabled
+		}
+	}
+	return false
 }
 
 func (c *Client) Run(ctx context.Context) error {
