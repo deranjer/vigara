@@ -75,7 +75,16 @@ func (s *Service) SetupRequired(ctx context.Context) (bool, error) {
 }
 
 func (s *Service) CreateFirstUser(ctx context.Context, username, displayName, password, confirmation string) (Session, error) {
-	username, displayName, err := validateIdentity(username, displayName)
+	// Reject completed setup before deriving a password. The transaction below
+	// still rechecks under a row lock to serialize concurrent first visits.
+	required, err := s.SetupRequired(ctx)
+	if err != nil {
+		return Session{}, err
+	}
+	if !required {
+		return Session{}, ErrSetupComplete
+	}
+	username, displayName, err = validateIdentity(username, displayName)
 	if err != nil {
 		return Session{}, err
 	}

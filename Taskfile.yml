@@ -1,5 +1,7 @@
 version: '3'
 
+dotenv: ['.env']
+
 tasks:
   install:
     desc: Install all JavaScript workspace dependencies from the root lockfile
@@ -46,7 +48,7 @@ tasks:
   db:migrate:
     desc: Apply database migrations (requires golang-migrate CLI)
     cmds:
-      - migrate -path apps/api/migrations -database '{{.VIGIRA_DATABASE_URL | default "postgres://vigira:vigira@localhost:5432/vigira?sslmode=disable"}}' up
+      - migrate -path apps/api/migrations -database "${VIGIRA_DATABASE_URL:-postgres://vigira:vigira@localhost:5432/vigira?sslmode=disable}" up
 
   db:generate:
     desc: Generate typed PostgreSQL query code (requires sqlc)

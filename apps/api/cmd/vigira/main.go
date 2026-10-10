@@ -54,6 +54,7 @@ func main() {
 	}
 
 	router := chi.NewRouter()
+	router.Use(auth.NewAttemptLimiter().Middleware)
 	router.Use(authService.SessionMiddleware)
 	api := humachi.New(router, huma.DefaultConfig("Vigira API", "0.1.0"))
 	huma.Register(api, huma.Operation{

@@ -8,6 +8,15 @@ import './styles.css'
 type User = { id: string; username: string; displayName: string; role: string }
 type View = 'loading' | 'error' | 'setup' | 'login' | 'dashboard'
 
+class RequestError extends Error {
+  status: number
+
+  constructor(status: number, message: string) {
+    super(message)
+    this.status = status
+  }
+}
+
 async function request<T>(path: string, body?: unknown, method?: string): Promise<T> {
   const response = await fetch(path, {
     method: method ?? (body === undefined ? 'GET' : 'POST'),
@@ -16,7 +25,7 @@ async function request<T>(path: string, body?: unknown, method?: string): Promis
     credentials: 'same-origin',
   })
   const payload = await response.json().catch(() => ({})) as { detail?: string }
-  if (!response.ok) throw new Error(payload.detail ?? 'The request could not be completed.')
+  if (!response.ok) throw new RequestError(response.status, payload.detail ?? 'The request could not be completed.')
   return payload as T
 }
 
@@ -63,6 +72,11 @@ function App() {
       setUser(result.user)
       setView('dashboard')
     } catch (cause) {
+      if (cause instanceof RequestError && cause.status === 409) {
+        setView('loading')
+        await loadView()
+        return
+      }
       setError(cause instanceof Error ? cause.message : 'Could not finish setup.')
     } finally {
       setBusy(false)
