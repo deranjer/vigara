@@ -146,6 +146,13 @@ func TestEnrollmentScopeSingleUsePollAndRevocation(t *testing.T) {
 	if identifierCount != 1 || sourceCount != 1 {
 		t.Fatalf("enrollment inventory records: identifiers=%d agent-sources=%d", identifierCount, sourceCount)
 	}
+	var provenanceCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM device_identifier_sources WHERE provenance=$1`, inventory.SourceProvenance("agent", identity.AgentID)).Scan(&provenanceCount); err != nil {
+		t.Fatal(err)
+	}
+	if provenanceCount != 1 {
+		t.Fatalf("enrollment identifier provenance rows=%d", provenanceCount)
+	}
 
 	poll := func(caps []string) *httptest.ResponseRecorder {
 		body, _ := json.Marshal(protocol.AgentRequest{ProtocolVersion: protocol.CurrentVersion, AgentID: identity.AgentID, AgentVersion: "test", Platform: "linux", Architecture: "amd64", Capabilities: caps})
@@ -309,18 +316,26 @@ func TestDiscoveryMountedThroughChiRouter(t *testing.T) {
 	NewHandler(pool, sessions).Register(agentMux)
 	router := chi.NewRouter()
 	router.Handle("/api/devices/*", agentMux)
-	request := func() *httptest.ResponseRecorder {
-		r := httptest.NewRequest(http.MethodPost, "/api/devices/discovery", bytes.NewBufferString(`{"sourceId":"scanner-1","displayName":"Host","addresses":[{"value":"192.0.2.10","type":"ipv4","provenance":"scanner-a"}]}`))
+	request := func(sourceID string) *httptest.ResponseRecorder {
+		body := fmt.Sprintf(`{"sourceId":%q,"displayName":"Host","identifiers":[{"kind":"machine-id","value":"abcdef0123456789abcdef0123456789"}],"addresses":[{"value":"192.0.2.10","type":"ipv4"}]}`, sourceID)
+		r := httptest.NewRequest(http.MethodPost, "/api/devices/discovery", bytes.NewBufferString(body))
 		r.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: admin.Token})
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, r)
 		return w
 	}
-	first := request()
+	forgedRequest := httptest.NewRequest(http.MethodPost, "/api/devices/discovery", bytes.NewBufferString(`{"sourceId":"scanner-1","displayName":"Host","addresses":[{"value":"192.0.2.10","type":"ipv4","provenance":"caller-forgery"}]}`))
+	forgedRequest.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: admin.Token})
+	forgedResponse := httptest.NewRecorder()
+	router.ServeHTTP(forgedResponse, forgedRequest)
+	if forgedResponse.Code != http.StatusBadRequest {
+		t.Fatalf("caller-controlled provenance returned %d", forgedResponse.Code)
+	}
+	first := request("scanner-1")
 	if first.Code != http.StatusOK {
 		t.Fatalf("discovery returned %d: %s", first.Code, first.Body.String())
 	}
-	second := request()
+	second := request("scanner-2")
 	if second.Code != http.StatusOK {
 		t.Fatalf("repeat discovery returned %d: %s", second.Code, second.Body.String())
 	}
@@ -335,5 +350,21 @@ func TestDiscoveryMountedThroughChiRouter(t *testing.T) {
 	}
 	if one.DeviceID == "" || one.DeviceID != two.DeviceID {
 		t.Fatalf("source re-observation changed device: %q -> %q", one.DeviceID, two.DeviceID)
+	}
+	var sources, identifierSources, addresses, forged int
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM device_sources WHERE device_id=$1 AND source_type='external' AND source_id IN ('scanner-1','scanner-2')`, one.DeviceID).Scan(&sources); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM device_identifier_sources`).Scan(&identifierSources); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM device_addresses WHERE device_id=$1`, one.DeviceID).Scan(&addresses); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM device_addresses WHERE provenance='caller-forgery'`).Scan(&forged); err != nil {
+		t.Fatal(err)
+	}
+	if sources != 2 || identifierSources != 2 || addresses != 2 || forged != 0 {
+		t.Fatalf("external provenance was not retained or caller controlled: sources=%d identifiers=%d addresses=%d forged=%d", sources, identifierSources, addresses, forged)
 	}
 }

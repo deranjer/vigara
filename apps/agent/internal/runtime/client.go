@@ -40,11 +40,13 @@ func (c *Client) Enroll(ctx context.Context, serverURL, token, name string) erro
 		return err
 	}
 	capability := protocol.CapabilityReport{ProtocolVersion: protocol.CurrentVersion, Platform: runtime.GOOS, Architecture: runtime.GOARCH, AgentVersion: AgentVersion, Capabilities: []string{}}
+	identifiers := enrollmentIdentifiers()
+	payload := enrollmentPayload(token, name, capability, identifiers)
 	var result struct {
 		AgentID    string `json:"agentId"`
 		Credential string `json:"credential"`
 	}
-	if err := c.post(ctx, serverURL, "/api/agent/enroll", "", map[string]any{"token": token, "displayName": name, "capability": capability}, &result); err != nil {
+	if err := c.post(ctx, serverURL, "/api/agent/enroll", "", payload, &result); err != nil {
 		return fmt.Errorf("enroll agent: %w", err)
 	}
 	if result.AgentID == "" || result.Credential == "" {
@@ -52,6 +54,22 @@ func (c *Client) Enroll(ctx context.Context, serverURL, token, name string) erro
 	}
 	c.State.ServerURL, c.State.AgentID, c.State.Credential = strings.TrimRight(serverURL, "/"), result.AgentID, result.Credential
 	return Save(c.StatePath, c.State)
+}
+
+func enrollmentIdentifiers() []protocol.DeviceIdentifier {
+	identifier, ok := platformIdentifier()
+	if !ok {
+		return nil
+	}
+	return []protocol.DeviceIdentifier{identifier}
+}
+
+func enrollmentPayload(token, name string, capability protocol.CapabilityReport, identifiers []protocol.DeviceIdentifier) map[string]any {
+	payload := map[string]any{"token": token, "displayName": name, "capability": capability}
+	if len(identifiers) > 0 {
+		payload["identifiers"] = identifiers
+	}
+	return payload
 }
 
 func (c *Client) Cycle(ctx context.Context) (time.Duration, error) {

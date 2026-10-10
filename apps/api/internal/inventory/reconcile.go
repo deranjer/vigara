@@ -33,6 +33,13 @@ type Observation struct {
 }
 type identifier struct{ kind, normalized, reported string }
 
+// SourceProvenance returns a stable, non-reversible provenance label scoped to
+// one source. Raw source IDs remain in device_sources for reconciliation.
+func SourceProvenance(sourceType, sourceID string) string {
+	digest := sha256.Sum256([]byte(sourceType + "\x00" + sourceID))
+	return sourceType + ":" + hex.EncodeToString(digest[:])
+}
+
 // ResolveDevice selects one device using stable identifiers, or creates one.
 // Host names and addresses are deliberately never considered identifiers.
 func ResolveDevice(ctx context.Context, tx pgx.Tx, o Observation) (string, error) {
@@ -146,14 +153,21 @@ func normalize(input []protocol.DeviceIdentifier) ([]identifier, error) {
 		}
 		normalized := strings.ToLower(strings.Trim(value, "{}"))
 		compact := strings.ReplaceAll(normalized, "-", "")
-		if len(compact) != 32 && len(compact) != 64 {
+		if len(compact) != 32 && !(kind == "machine-id" && len(compact) == 64) {
 			return nil, errors.New("invalid UUID device identifier")
 		}
 		if _, err := hex.DecodeString(compact); err != nil {
 			return nil, errors.New("invalid UUID device identifier")
 		}
+		if strings.Trim(compact, "0") == "" || strings.Trim(compact, "f") == "" {
+			return nil, errors.New("placeholder device identifier")
+		}
 		normalized = compact
-		if kind == "system-uuid" && len(compact) == 32 {
+		if kind == "machine-id" && len(compact) == 32 {
+			digest := sha256.Sum256([]byte("machine-id\x00" + compact))
+			normalized = hex.EncodeToString(digest[:])
+		}
+		if kind == "system-uuid" {
 			normalized = compact[:8] + "-" + compact[8:12] + "-" + compact[12:16] + "-" + compact[16:20] + "-" + compact[20:]
 		}
 		compound := kind + "\x00" + normalized
