@@ -10,6 +10,8 @@
 **/dist/
 /coverage/
 /.cache/
+**/sqlc-gen/
+/.turbo/
 *.log
 .DS_Store
 Thumbs.db

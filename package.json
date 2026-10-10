@@ -1,0 +1,12 @@
+{
+  "name": "vigira-monorepo",
+  "private": true,
+  "packageManager": "pnpm@11.5.2",
+  "scripts": {
+    "build:web": "turbo run build --filter=@vigira/web",
+    "check:web": "turbo run lint typecheck --filter=@vigira/web"
+  },
+  "devDependencies": {
+    "turbo": "^2.5.8"
+  }
+}

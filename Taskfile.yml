@@ -1,6 +1,12 @@
 version: '3'
 
+dotenv: ['.env']
+
 tasks:
+  install:
+    desc: Install all JavaScript workspace dependencies from the root lockfile
+    cmds: [pnpm install --frozen-lockfile]
+
   dev:db:
     desc: Start PostgreSQL for local development
     cmds: [docker compose up -d postgres]
@@ -9,26 +15,41 @@ tasks:
     cmds: [docker compose down]
   dev:api:
     desc: Run the API server
+    deps: [db:migrate]
     cmds: [go run ./apps/api/cmd/vigira]
+  dev:api:watch:
+    desc: Run the API with Air reloads (requires Air installed)
+    cmds: [air -c apps/api/.air.toml]
   dev:web:
     desc: Run the web app
-    dir: apps/web
-    cmds: [pnpm install, pnpm dev]
+    cmds: [pnpm --filter @vigira/web dev]
   build:
     desc: Build API, agent, and web app
     cmds:
-      - pnpm --dir apps/web install --frozen-lockfile
-      - pnpm --dir apps/web build
-      - go build ./apps/api/...
-      - go build ./apps/agent/...
+      - task: install
+      - pnpm --filter @vigira/web build
+      - go build -o .cache/vigira ./apps/api/cmd/vigira
+      - go build -o .cache/vigira-agent ./apps/agent/cmd/vigira-agent
   check:
     desc: Run Go and web checks
     cmds:
       - go test ./...
-      - pnpm --dir apps/web install --frozen-lockfile
-      - pnpm --dir apps/web lint
-      - pnpm --dir apps/web typecheck
+      - task: install
+      - pnpm --filter @vigira/web lint
+      - pnpm --filter @vigira/web typecheck
+  build:web:turbo:
+    desc: Build the web workspace through the pinned Turbo dependency
+    deps: [install]
+    cmds: [pnpm exec turbo run build --filter=@vigira/web]
+  check:web:turbo:
+    desc: Run web lint and typecheck through the pinned Turbo dependency
+    deps: [install]
+    cmds: [pnpm exec turbo run lint typecheck --filter=@vigira/web]
   db:migrate:
     desc: Apply database migrations (requires golang-migrate CLI)
     cmds:
-      - migrate -path apps/api/migrations -database '{{.VIGIRA_DATABASE_URL | default "postgres://vigira:vigira@localhost:5432/vigira?sslmode=disable"}}' up
+      - migrate -path apps/api/migrations -database "${VIGIRA_DATABASE_URL:-postgres://vigira:vigira@localhost:5432/vigira?sslmode=disable}" up
+
+  db:generate:
+    desc: Generate typed PostgreSQL query code (requires sqlc)
+    cmds: [sqlc generate]
