@@ -6,8 +6,10 @@ import (
 	cryptorand "crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/rand/v2"
 	"net"
 	"net/http"
@@ -28,6 +30,13 @@ type Client struct {
 	HTTP      *http.Client
 	Collector *collector.Collector
 }
+
+// TelemetryDeliveryError reports a rejected telemetry batch after Cycle has
+// still completed the normal poll. The snapshots remain queued for retry.
+type TelemetryDeliveryError struct{ Err error }
+
+func (e *TelemetryDeliveryError) Error() string { return "submit queued telemetry: " + e.Err.Error() }
+func (e *TelemetryDeliveryError) Unwrap() error { return e.Err }
 
 func NewClient(statePath string) (*Client, error) {
 	state, err := Load(statePath)
@@ -63,9 +72,10 @@ func (c *Client) Cycle(ctx context.Context) (time.Duration, error) {
 	if err := c.collectTelemetry(ctx); err != nil {
 		return 0, err
 	}
-	if err := c.flush(ctx); err != nil {
+	if err := c.flushReports(ctx); err != nil {
 		return 0, err
 	}
+	telemetryErr := c.flushTelemetry(ctx)
 	request := protocol.AgentRequest{ProtocolVersion: protocol.CurrentVersion, AgentID: c.State.AgentID, AgentVersion: AgentVersion, Platform: runtime.GOOS, Architecture: runtime.GOARCH, Capabilities: []string{}}
 	if c.State.Configuration != nil {
 		request.KnownConfigVersion = c.State.Configuration.Version
@@ -100,7 +110,11 @@ func (c *Client) Cycle(ctx context.Context) (time.Duration, error) {
 	if delay > 300*time.Second {
 		delay = 300 * time.Second
 	}
-	return delay + time.Duration(rand.Int64N(int64(delay/10+1))), nil
+	delay += time.Duration(rand.Int64N(int64(delay/10 + 1)))
+	if telemetryErr != nil {
+		return delay, &TelemetryDeliveryError{Err: telemetryErr}
+	}
+	return delay, nil
 }
 
 func (c *Client) Run(ctx context.Context) error {
@@ -111,18 +125,24 @@ func (c *Client) Run(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return nil
 			}
-			timer := time.NewTimer(backoff + time.Duration(rand.Int64N(int64(backoff/4+1))))
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return nil
-			case <-timer.C:
+			var deliveryErr *TelemetryDeliveryError
+			if errors.As(err, &deliveryErr) {
+				slog.Warn("telemetry delivery failed; queued snapshots retained while polling continues", "error", deliveryErr.Err)
+				backoff = time.Second
+			} else {
+				timer := time.NewTimer(backoff + time.Duration(rand.Int64N(int64(backoff/4+1))))
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return nil
+				case <-timer.C:
+				}
+				backoff *= 2
+				if backoff > 60*time.Second {
+					backoff = 60 * time.Second
+				}
+				continue
 			}
-			backoff *= 2
-			if backoff > 60*time.Second {
-				backoff = 60 * time.Second
-			}
-			continue
 		}
 		backoff = time.Second
 		timer := time.NewTimer(delay)
@@ -135,7 +155,7 @@ func (c *Client) Run(ctx context.Context) error {
 	}
 }
 
-func (c *Client) flush(ctx context.Context) error {
+func (c *Client) flushReports(ctx context.Context) error {
 	for len(c.State.Pending) > 0 {
 		count := len(c.State.Pending)
 		if count > 100 {
@@ -153,6 +173,10 @@ func (c *Client) flush(ctx context.Context) error {
 			return err
 		}
 	}
+	return nil
+}
+
+func (c *Client) flushTelemetry(ctx context.Context) error {
 	for len(c.State.Telemetry) > 0 {
 		count := len(c.State.Telemetry)
 		if count > 5 {
@@ -160,7 +184,7 @@ func (c *Client) flush(ctx context.Context) error {
 		}
 		batch := protocol.TelemetrySnapshotBatch{ProtocolVersion: protocol.CurrentVersion, AgentID: c.State.AgentID, Snapshots: c.State.Telemetry[:count]}
 		if err := c.post(ctx, c.State.ServerURL, "/api/agent/telemetry", c.State.Credential, batch, nil); err != nil {
-			return fmt.Errorf("submit queued telemetry: %w", err)
+			return err
 		}
 		c.State.Telemetry = append([]protocol.TelemetrySnapshot(nil), c.State.Telemetry[count:]...)
 		if err := Save(c.StatePath, c.State); err != nil {

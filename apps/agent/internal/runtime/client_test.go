@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -115,6 +116,49 @@ func TestTelemetrySnapshotIDsStayStableAcrossRejectedRetries(t *testing.T) {
 	}
 	if len(reloaded.Telemetry) < 2 || reloaded.Telemetry[0].ID != received[0][0] {
 		t.Fatalf("queue did not retain retry identity: %+v", reloaded.Telemetry)
+	}
+}
+
+func TestRejectedTelemetryDoesNotBlockNormalPoll(t *testing.T) {
+	pollCalled := false
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/agent/telemetry":
+			http.Error(w, "snapshot rejected", http.StatusBadRequest)
+		case "/api/agent/poll":
+			pollCalled = true
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(protocol.AgentResponse{ProtocolVersion: protocol.CurrentVersion, PollAfterSeconds: 30})
+		default:
+			t.Errorf("unexpected agent request %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	path := filepath.Join(t.TempDir(), "state", "agent.json")
+	client, err := NewClient(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.State = State{ServerURL: server.URL, AgentID: "agent", Credential: "secret"}
+	client.HTTP.Transport = server.Client().Transport
+	delay, err := client.Cycle(context.Background())
+	var deliveryErr *TelemetryDeliveryError
+	if !errors.As(err, &deliveryErr) {
+		t.Fatalf("Cycle error = %v, want surfaced nonfatal telemetry delivery error", err)
+	}
+	if !pollCalled {
+		t.Fatal("telemetry rejection prevented normal server poll")
+	}
+	if delay < 30*time.Second {
+		t.Fatalf("poll delay = %s, want normal server cadence", delay)
+	}
+	reloaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.Telemetry) != 1 || reloaded.Telemetry[0].ID == "" {
+		t.Fatalf("rejected snapshot was not retained: %+v", reloaded.Telemetry)
 	}
 }
 

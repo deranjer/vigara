@@ -24,6 +24,11 @@ bounded to 64 filesystems/devices/interfaces per snapshot. The agent keeps at
 most 100 unacknowledged snapshots in its private local state and sends them in
 batches of at most five, preserving IDs across retries.
 
+A rejected telemetry batch stays queued and is surfaced as a delivery warning;
+it does not prevent the agent's normal configuration and job poll. The agent
+retries the same snapshot IDs on the next cycle, including after a server or
+protocol upgrade resolves the rejection.
+
 The endpoint validates finite non-negative values, canonical units, percentage
 bounds, item limits, identity, and timestamps. It accepts historical
 observations for offline delivery and rejects timestamps more than five minutes
