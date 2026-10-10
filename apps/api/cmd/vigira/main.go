@@ -15,6 +15,7 @@ import (
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	webassets "github.com/deranjer/vigara/apps/api"
 	"github.com/deranjer/vigara/apps/api/internal/agent"
+	"github.com/deranjer/vigara/apps/api/internal/alerts"
 	"github.com/deranjer/vigara/apps/api/internal/auth"
 	"github.com/deranjer/vigara/apps/api/internal/config"
 	"github.com/deranjer/vigara/apps/api/internal/database"
@@ -58,6 +59,8 @@ func main() {
 	agent.NewHandler(database.Pool, authService).Register(agentMux)
 	telemetryMux := http.NewServeMux()
 	telemetry.NewHandler(database.Pool).Register(telemetryMux)
+	alertsMux := http.NewServeMux()
+	alerts.NewHandler(database.Pool, authService).Register(alertsMux)
 
 	router := chi.NewRouter()
 	router.Use(auth.NewAttemptLimiter().Middleware)
@@ -72,6 +75,8 @@ func main() {
 	})
 	router.Handle("/api/agent/*", agentMux)
 	router.Handle("/api/agent/telemetry", telemetryMux)
+	router.Handle("/api/agent/backups/status", alertsMux)
+	router.Handle("/api/alerts/*", alertsMux)
 	router.Handle("/api/agents/*", agentMux)
 	router.Handle("/api/devices/*", agentMux)
 	auth.RegisterAPI(api, authService, cfg.SecureSessionCookie)
@@ -84,6 +89,7 @@ func main() {
 	server := &http.Server{Addr: cfg.Address, Handler: router, ReadHeaderTimeout: 5 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go alerts.Run(ctx, database.Pool, logger)
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
