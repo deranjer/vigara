@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -14,7 +15,9 @@ import (
 
 	"github.com/deranjer/vigara/apps/api/internal/auth"
 	"github.com/deranjer/vigara/apps/api/internal/db"
+	"github.com/deranjer/vigara/apps/api/internal/inventory"
 	"github.com/deranjer/vigara/internal/protocol"
+	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -47,7 +50,7 @@ func agentTestService(t *testing.T) (*pgxpool.Pool, *auth.Service) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	for _, name := range []string{"000001_initial_schema.up.sql", "000002_local_auth.up.sql", "000003_agent_enrollment.up.sql"} {
+	for _, name := range []string{"000001_initial_schema.up.sql", "000002_local_auth.up.sql", "000003_agent_enrollment.up.sql", "000004_inventory.up.sql"} {
 		migration, err := os.ReadFile("../../migrations/" + name)
 		if err != nil {
 			t.Fatal(err)
@@ -83,7 +86,7 @@ func TestEnrollmentScopeSingleUsePollAndRevocation(t *testing.T) {
 		t.Fatalf("decode enrollment token: %v", err)
 	}
 
-	requestBytes, _ := json.Marshal(EnrollmentRequest{Token: token.Token, DisplayName: "test-device", Capability: protocol.CapabilityReport{ProtocolVersion: protocol.CurrentVersion, Platform: "linux", Architecture: "amd64", AgentVersion: "test", Capabilities: []string{"module.cpu"}}})
+	requestBytes, _ := json.Marshal(EnrollmentRequest{Token: token.Token, DisplayName: "test-device", Capability: protocol.CapabilityReport{ProtocolVersion: protocol.CurrentVersion, Platform: "linux", Architecture: "amd64", AgentVersion: "test", Capabilities: []string{"module.cpu"}}, Identifiers: []protocol.DeviceIdentifier{{Kind: "machine-id", Value: "abcdef0123456789abcdef0123456789"}}})
 	start := make(chan struct{})
 	statuses := make(chan int, 2)
 	identities := make(chan EnrollmentResponse, 2)
@@ -129,6 +132,20 @@ func TestEnrollmentScopeSingleUsePollAndRevocation(t *testing.T) {
 	if bytes.Equal(storedHash, []byte(identity.Credential)) || len(storedHash) != 32 {
 		t.Fatal("agent credential was not stored as a SHA-256 hash")
 	}
+	var deviceID string
+	if err := pool.QueryRow(ctx, `SELECT device_id::text FROM agent_identities WHERE id=$1`, identity.AgentID).Scan(&deviceID); err != nil {
+		t.Fatal(err)
+	}
+	var identifierCount, sourceCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM device_identifiers WHERE device_id=$1`, deviceID).Scan(&identifierCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM device_sources WHERE device_id=$1 AND source_type='agent'`, deviceID).Scan(&sourceCount); err != nil {
+		t.Fatal(err)
+	}
+	if identifierCount != 1 || sourceCount != 1 {
+		t.Fatalf("enrollment inventory records: identifiers=%d agent-sources=%d", identifierCount, sourceCount)
+	}
 
 	poll := func(caps []string) *httptest.ResponseRecorder {
 		body, _ := json.Marshal(protocol.AgentRequest{ProtocolVersion: protocol.CurrentVersion, AgentID: identity.AgentID, AgentVersion: "test", Platform: "linux", Architecture: "amd64", Capabilities: caps})
@@ -154,5 +171,169 @@ func TestEnrollmentScopeSingleUsePollAndRevocation(t *testing.T) {
 	}
 	if response := poll([]string{"module.cpu"}); response.Code != http.StatusUnauthorized {
 		t.Fatalf("revoked identity poll returned %d", response.Code)
+	}
+}
+
+func TestInventoryReconciliationConcurrencyAndConflict(t *testing.T) {
+	pool, _ := agentTestService(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	const n = 8
+	start := make(chan struct{})
+	ids := make(chan string, n)
+	errs := make(chan error, n)
+	var group sync.WaitGroup
+	for i := 0; i < n; i++ {
+		group.Add(1)
+		go func(i int) {
+			defer group.Done()
+			<-start
+			tx, err := pool.Begin(ctx)
+			if err != nil {
+				errs <- err
+				return
+			}
+			id, err := inventory.ResolveDevice(ctx, tx, inventory.Observation{DisplayName: fmt.Sprintf("host-%d", i), Provenance: "agent", Identifiers: []protocol.DeviceIdentifier{{Kind: "machine-id", Value: "abcdef0123456789abcdef0123456789"}}})
+			if err == nil {
+				err = inventory.AttachSource(ctx, tx, id, "agent", fmt.Sprintf("agent-%d", i), "agent-enrollment")
+			}
+			if err == nil {
+				err = tx.Commit(ctx)
+			} else {
+				_ = tx.Rollback(ctx)
+			}
+			if err != nil {
+				errs <- err
+				return
+			}
+			ids <- id
+		}(i)
+	}
+	close(start)
+	group.Wait()
+	close(ids)
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	want := ""
+	for id := range ids {
+		if want == "" {
+			want = id
+		} else if id != want {
+			t.Fatalf("race created multiple devices: %s and %s", want, id)
+		}
+	}
+
+	// The same stable key reported with another provenance is retained, and
+	// hostname-only observations remain separate devices.
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondID, err := inventory.ResolveDevice(ctx, tx, inventory.Observation{DisplayName: "renamed", Provenance: "scanner", Identifiers: []protocol.DeviceIdentifier{{Kind: "machine-id", Value: "abcdef0123456789abcdef0123456789"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if secondID != want {
+		t.Fatalf("stable ID created %s, expected %s", secondID, want)
+	}
+	var provenanceCount int
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM device_identifier_sources`).Scan(&provenanceCount); err != nil {
+		t.Fatal(err)
+	}
+	if provenanceCount != 2 {
+		t.Fatalf("got %d provenance records, want 2", provenanceCount)
+	}
+	otherTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherID, err := inventory.ResolveDevice(ctx, otherTx, inventory.Observation{DisplayName: "other", Provenance: "scanner", Identifiers: []protocol.DeviceIdentifier{{Kind: "machine-id", Value: "fedcba9876543210fedcba9876543210"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = otherTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	conflictTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = inventory.ResolveDevice(ctx, conflictTx, inventory.Observation{DisplayName: "ambiguous", Provenance: "scanner", Identifiers: []protocol.DeviceIdentifier{{Kind: "machine-id", Value: "abcdef0123456789abcdef0123456789"}, {Kind: "machine-id", Value: "fedcba9876543210fedcba9876543210"}}})
+	_ = conflictTx.Rollback(ctx)
+	if !errors.Is(err, inventory.ErrAmbiguousIdentity) {
+		t.Fatalf("conflicting keys returned %v", err)
+	}
+	if otherID == want {
+		t.Fatal("expected separate stable IDs to remain separate")
+	}
+	nameOnlyTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nameOnlyA, err := inventory.ResolveDevice(ctx, nameOnlyTx, inventory.Observation{DisplayName: "same-host", Provenance: "scanner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = nameOnlyTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	nameOnlyTx, err = pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nameOnlyB, err := inventory.ResolveDevice(ctx, nameOnlyTx, inventory.Observation{DisplayName: "same-host", Provenance: "scanner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = nameOnlyTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if nameOnlyA == nameOnlyB {
+		t.Fatal("hostname alone merged separate device observations")
+	}
+}
+
+func TestDiscoveryMountedThroughChiRouter(t *testing.T) {
+	pool, sessions := agentTestService(t)
+	ctx := context.Background()
+	admin, err := sessions.CreateFirstUser(ctx, "operator", "Operator", "correct horse battery staple", "correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentMux := http.NewServeMux()
+	NewHandler(pool, sessions).Register(agentMux)
+	router := chi.NewRouter()
+	router.Handle("/api/devices/*", agentMux)
+	request := func() *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, "/api/devices/discovery", bytes.NewBufferString(`{"sourceId":"scanner-1","displayName":"Host","addresses":[{"value":"192.0.2.10","type":"ipv4","provenance":"scanner-a"}]}`))
+		r.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: admin.Token})
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, r)
+		return w
+	}
+	first := request()
+	if first.Code != http.StatusOK {
+		t.Fatalf("discovery returned %d: %s", first.Code, first.Body.String())
+	}
+	second := request()
+	if second.Code != http.StatusOK {
+		t.Fatalf("repeat discovery returned %d: %s", second.Code, second.Body.String())
+	}
+	var one, two struct {
+		DeviceID string `json:"deviceId"`
+	}
+	if err = json.Unmarshal(first.Body.Bytes(), &one); err != nil {
+		t.Fatal(err)
+	}
+	if err = json.Unmarshal(second.Body.Bytes(), &two); err != nil {
+		t.Fatal(err)
+	}
+	if one.DeviceID == "" || one.DeviceID != two.DeviceID {
+		t.Fatalf("source re-observation changed device: %q -> %q", one.DeviceID, two.DeviceID)
 	}
 }

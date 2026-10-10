@@ -69,6 +69,7 @@ func main() {
 	})
 	router.Handle("/api/agent/*", agentMux)
 	router.Handle("/api/agents/*", agentMux)
+	router.Handle("/api/devices/*", agentMux)
 	auth.RegisterAPI(api, authService, cfg.SecureSessionCookie)
 	staticFS, err := fs.Sub(webassets.FS, "web")
 	if err != nil {
