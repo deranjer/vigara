@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/deranjer/vigara/apps/agent/internal/collector"
 	"github.com/deranjer/vigara/internal/protocol"
 )
 
@@ -25,6 +26,7 @@ type Client struct {
 	StatePath string
 	State     State
 	HTTP      *http.Client
+	Collector *collector.Collector
 }
 
 func NewClient(statePath string) (*Client, error) {
@@ -32,7 +34,7 @@ func NewClient(statePath string) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Client{StatePath: statePath, State: state, HTTP: &http.Client{Timeout: 20 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}}, nil
+	return &Client{StatePath: statePath, State: state, HTTP: &http.Client{Timeout: 20 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}, Collector: collector.New()}, nil
 }
 
 func (c *Client) Enroll(ctx context.Context, serverURL, token, name string) error {
@@ -57,6 +59,9 @@ func (c *Client) Enroll(ctx context.Context, serverURL, token, name string) erro
 func (c *Client) Cycle(ctx context.Context) (time.Duration, error) {
 	if c.State.AgentID == "" || c.State.Credential == "" || c.State.ServerURL == "" {
 		return 0, fmt.Errorf("agent is not enrolled; run enroll first")
+	}
+	if err := c.collectTelemetry(ctx); err != nil {
+		return 0, err
 	}
 	if err := c.flush(ctx); err != nil {
 		return 0, err
@@ -148,7 +153,46 @@ func (c *Client) flush(ctx context.Context) error {
 			return err
 		}
 	}
+	for len(c.State.Telemetry) > 0 {
+		count := len(c.State.Telemetry)
+		if count > 5 {
+			count = 5
+		}
+		batch := protocol.TelemetrySnapshotBatch{ProtocolVersion: protocol.CurrentVersion, AgentID: c.State.AgentID, Snapshots: c.State.Telemetry[:count]}
+		if err := c.post(ctx, c.State.ServerURL, "/api/agent/telemetry", c.State.Credential, batch, nil); err != nil {
+			return fmt.Errorf("submit queued telemetry: %w", err)
+		}
+		c.State.Telemetry = append([]protocol.TelemetrySnapshot(nil), c.State.Telemetry[count:]...)
+		if err := Save(c.StatePath, c.State); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func (c *Client) collectTelemetry(ctx context.Context) error {
+	if c.Collector == nil {
+		c.Collector = collector.New()
+	}
+	if len(c.State.Telemetry) >= MaxQueuedTelemetry {
+		return nil
+	}
+	collectionCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	snapshot := c.Collector.Collect(collectionCtx)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	id, err := randomID()
+	if err != nil {
+		return err
+	}
+	snapshot.ID, snapshot.AgentID = id, c.State.AgentID
+	snapshot.Host.AgentVersion = AgentVersion
+	if err := c.State.EnqueueTelemetry(snapshot); err != nil {
+		return err
+	}
+	return Save(c.StatePath, c.State)
 }
 
 func (c *Client) post(ctx context.Context, base, path, credential string, body, output any) error {

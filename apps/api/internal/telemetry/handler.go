@@ -1,0 +1,178 @@
+package telemetry
+
+import (
+	"crypto/sha256"
+	"encoding/json"
+	"errors"
+	"io"
+	"math"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/deranjer/vigara/internal/protocol"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+const maxRequestBytes = 1 << 20
+
+type Handler struct{ pool *pgxpool.Pool }
+
+func NewHandler(pool *pgxpool.Pool) *Handler { return &Handler{pool: pool} }
+
+func (h *Handler) Register(mux *http.ServeMux) {
+	mux.HandleFunc("POST /api/agent/telemetry", h.ingest)
+}
+
+func (h *Handler) ingest(w http.ResponseWriter, r *http.Request) {
+	var batch protocol.TelemetrySnapshotBatch
+	if !decode(w, r, &batch) {
+		return
+	}
+	if batch.ProtocolVersion != protocol.CurrentVersion || batch.AgentID == "" || len(batch.Snapshots) == 0 || len(batch.Snapshots) > 10 {
+		http.Error(w, "invalid telemetry batch", http.StatusBadRequest)
+		return
+	}
+	agentID, ok := h.authenticatedAgent(w, r)
+	if !ok {
+		return
+	}
+	if batch.AgentID != agentID {
+		http.Error(w, "credential does not belong to this agent", http.StatusForbidden)
+		return
+	}
+	seen := make(map[string]bool, len(batch.Snapshots))
+	now := time.Now().UTC()
+	for _, snapshot := range batch.Snapshots {
+		if err := validate(snapshot, agentID, now); err != nil {
+			http.Error(w, "invalid telemetry snapshot: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if seen[snapshot.ID] {
+			http.Error(w, "duplicate telemetry snapshot id", http.StatusBadRequest)
+			return
+		}
+		seen[snapshot.ID] = true
+	}
+	tx, err := h.pool.Begin(r.Context())
+	if err != nil {
+		http.Error(w, "could not store telemetry", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback(r.Context())
+	var lockedID string
+	if err := tx.QueryRow(r.Context(), `SELECT id::text FROM agent_identities WHERE id=$1 AND revoked_at IS NULL FOR SHARE`, agentID).Scan(&lockedID); err != nil {
+		http.Error(w, "invalid or revoked agent credential", http.StatusUnauthorized)
+		return
+	}
+	for _, snapshot := range batch.Snapshots {
+		payload, _ := json.Marshal(snapshot)
+		_, err = tx.Exec(r.Context(), `INSERT INTO agent_telemetry(agent_id, report_id, observed_at, payload)
+			SELECT id, $2, $3, $4 FROM agent_identities WHERE id=$1 AND revoked_at IS NULL
+			ON CONFLICT (agent_id, report_id) DO NOTHING`, agentID, snapshot.ID, snapshot.ObservedAt, payload)
+		if err != nil {
+			http.Error(w, "could not store telemetry", http.StatusInternalServerError)
+			return
+		}
+	}
+	if _, err := tx.Exec(r.Context(), `UPDATE devices d SET last_seen_at=now() FROM agent_identities i WHERE i.id=$1 AND d.id=i.device_id`, agentID); err != nil {
+		http.Error(w, "could not update agent status", http.StatusInternalServerError)
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		http.Error(w, "could not store telemetry", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func (h *Handler) authenticatedAgent(w http.ResponseWriter, r *http.Request) (string, bool) {
+	header := strings.TrimSpace(r.Header.Get("Authorization"))
+	if !strings.HasPrefix(header, "Bearer ") || len(header) > 256 {
+		http.Error(w, "agent credential required", http.StatusUnauthorized)
+		return "", false
+	}
+	credential := strings.TrimPrefix(header, "Bearer ")
+	sum := sha256.Sum256([]byte(credential))
+	var id string
+	err := h.pool.QueryRow(r.Context(), `SELECT id::text FROM agent_identities WHERE credential_hash=$1 AND revoked_at IS NULL`, sum[:]).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		http.Error(w, "invalid or revoked agent credential", http.StatusUnauthorized)
+		return "", false
+	}
+	if err != nil {
+		http.Error(w, "could not authenticate agent", http.StatusInternalServerError)
+		return "", false
+	}
+	return id, true
+}
+
+func decode(w http.ResponseWriter, r *http.Request, dst any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
+	d := json.NewDecoder(r.Body)
+	d.DisallowUnknownFields()
+	if err := d.Decode(dst); err != nil {
+		http.Error(w, "invalid JSON request", http.StatusBadRequest)
+		return false
+	}
+	if d.Decode(new(any)) != io.EOF {
+		http.Error(w, "request must contain one JSON value", http.StatusBadRequest)
+		return false
+	}
+	return true
+}
+
+var metricUnits = map[string]string{
+	"cpu_used_percent":   "%",
+	"memory_total_bytes": "By", "memory_available_bytes": "By",
+	"memory_used_percent": "%", "uptime_seconds": "s",
+	"filesystem_total_bytes": "By", "filesystem_free_bytes": "By",
+	"disk_read_bytes_per_second": "By/s", "disk_write_bytes_per_second": "By/s",
+	"network_receive_bytes_per_second": "By/s", "network_send_bytes_per_second": "By/s",
+}
+
+func validate(s protocol.TelemetrySnapshot, agentID string, now time.Time) error {
+	if s.ProtocolVersion != protocol.CurrentVersion || s.ID == "" || len(s.ID) > 128 || s.AgentID != agentID {
+		return errors.New("invalid identity")
+	}
+	if s.ObservedAt.IsZero() || s.ObservedAt.After(now.Add(5*time.Minute)) {
+		return errors.New("observation time must not be in the future")
+	}
+	if s.Host.OS == "" || len(s.Host.OS) > 64 || s.Host.Architecture == "" || len(s.Host.Architecture) > 64 || s.Host.AgentVersion == "" || len(s.Host.AgentVersion) > 64 || len(s.Host.OSVersion) > 256 || len(s.Host.CPUModel) > 256 || s.Host.LogicalCPUs < 0 {
+		return errors.New("invalid host summary")
+	}
+	if len(s.Metrics) > 512 || len(s.Capabilities) > 128 || len(s.Errors) > 128 {
+		return errors.New("snapshot exceeds item limits")
+	}
+	seenCaps := map[string]bool{}
+	for _, cap := range s.Capabilities {
+		if cap == "" || len(cap) > 128 || seenCaps[cap] {
+			return errors.New("invalid capability")
+		}
+		seenCaps[cap] = true
+	}
+	for _, item := range s.Errors {
+		if item.Capability == "" || len(item.Capability) > 128 || item.Message == "" || len(item.Message) > 256 {
+			return errors.New("invalid collection error")
+		}
+	}
+	for _, metric := range s.Metrics {
+		unit, ok := metricUnits[metric.Name]
+		if !ok || metric.Unit != unit || math.IsNaN(metric.Value) || math.IsInf(metric.Value, 0) || metric.Value < 0 {
+			return errors.New("invalid metric name, unit, or value")
+		}
+		if strings.HasSuffix(metric.Name, "percent") && metric.Value > 100 {
+			return errors.New("percentage outside 0..100")
+		}
+		if len(metric.Labels) > 8 {
+			return errors.New("too many metric labels")
+		}
+		for key, value := range metric.Labels {
+			if key == "" || len(key) > 64 || len(value) > 256 {
+				return errors.New("invalid metric label")
+			}
+		}
+	}
+	return nil
+}

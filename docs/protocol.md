@@ -54,14 +54,15 @@ continues polling and running unrelated modules.
 
 ## Telemetry
 
-Agents submit `TelemetryBatch` values with agent identity and stable event IDs.
-Every event includes a stable metric name, numeric value, canonical unit,
-observation timestamp, and optional string labels. Timestamps are RFC 3339 UTC
-instants (Go `time.Time` JSON encoding). Metric names and units must match the
-module's declared `MetricSpec`; conversions happen before emission. Prefer
-UCUM-compatible unit spellings (examples: `Cel` for Celsius, `%` for percent,
-`By` for bytes, `s` for seconds). Do not silently mix units under one metric
-name. Repeated batches are safe to retry because event IDs do not change.
+Agents submit module `TelemetryBatch` values and host `TelemetrySnapshotBatch`
+values using the existing bearer credential. Snapshot IDs remain stable across
+retries and are deduplicated by agent identity. Host snapshots include OS,
+version, architecture, agent version, a hardware summary, observation time,
+supported collection capabilities, errors, and measurements with validated
+names and canonical units. Missing or unsupported readings are omitted rather
+than represented as zero. Counter-based throughput is emitted only after two
+reads establish a real rate. See [host telemetry](telemetry.md) for the current
+host metric names, queue limits, and ingestion rules.
 
 Capability reports list protocol/agent versions, platform, architecture, and
 the module capabilities actually present in that agent build. The report is
