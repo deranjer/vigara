@@ -55,12 +55,12 @@ func main() {
 		logger.Error("database schema is not ready; apply migrations with `task db:migrate`", "error", err)
 		os.Exit(1)
 	}
+	alertsMux := http.NewServeMux()
+	alerts.NewHandler(database.Pool, authService).Register(alertsMux)
 	agentMux := http.NewServeMux()
 	agent.NewHandler(database.Pool, authService).Register(agentMux)
 	telemetryMux := http.NewServeMux()
 	telemetry.NewHandler(database.Pool).Register(telemetryMux)
-	alertsMux := http.NewServeMux()
-	alerts.NewHandler(database.Pool, authService).Register(alertsMux)
 
 	router := chi.NewRouter()
 	router.Use(auth.NewAttemptLimiter().Middleware)
@@ -89,7 +89,6 @@ func main() {
 	server := &http.Server{Addr: cfg.Address, Handler: router, ReadHeaderTimeout: 5 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	go alerts.Run(ctx, database.Pool, logger)
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -98,6 +97,7 @@ func main() {
 			logger.Error("server shutdown failed", "error", err)
 		}
 	}()
+	go alerts.Run(ctx, database.Pool, logger)
 	logger.Info("starting Vigira API", "addr", cfg.Address)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("server failed", "error", err)
