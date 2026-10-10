@@ -1,0 +1,22 @@
+[Unit]
+Description=Vigira host agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vigira-agent
+Group=vigira-agent
+ExecStart=/usr/local/bin/vigira-agent --config /var/lib/vigira-agent/agent.json run
+Restart=always
+RestartSec=5
+StateDirectory=vigira-agent
+StateDirectoryMode=0700
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+RestrictAddressFamilies=AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
