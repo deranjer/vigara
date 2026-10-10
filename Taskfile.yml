@@ -1,0 +1,34 @@
+version: '3'
+
+tasks:
+  dev:db:
+    desc: Start PostgreSQL for local development
+    cmds: [docker compose up -d postgres]
+  dev:down:
+    desc: Stop local services
+    cmds: [docker compose down]
+  dev:api:
+    desc: Run the API server
+    cmds: [go run ./apps/api/cmd/vigira]
+  dev:web:
+    desc: Run the web app
+    dir: apps/web
+    cmds: [pnpm install, pnpm dev]
+  build:
+    desc: Build API, agent, and web app
+    cmds:
+      - pnpm --dir apps/web install --frozen-lockfile
+      - pnpm --dir apps/web build
+      - go build ./apps/api/...
+      - go build ./apps/agent/...
+  check:
+    desc: Run Go and web checks
+    cmds:
+      - go test ./...
+      - pnpm --dir apps/web install --frozen-lockfile
+      - pnpm --dir apps/web lint
+      - pnpm --dir apps/web typecheck
+  db:migrate:
+    desc: Apply database migrations (requires golang-migrate CLI)
+    cmds:
+      - migrate -path apps/api/migrations -database '{{.VIGIRA_DATABASE_URL | default "postgres://vigira:vigira@localhost:5432/vigira?sslmode=disable"}}' up
