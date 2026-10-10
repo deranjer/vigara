@@ -14,6 +14,7 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	webassets "github.com/deranjer/vigara/apps/api"
+	"github.com/deranjer/vigara/apps/api/internal/agent"
 	"github.com/deranjer/vigara/apps/api/internal/auth"
 	"github.com/deranjer/vigara/apps/api/internal/config"
 	"github.com/deranjer/vigara/apps/api/internal/database"
@@ -52,6 +53,8 @@ func main() {
 		logger.Error("database schema is not ready; apply migrations with `task db:migrate`", "error", err)
 		os.Exit(1)
 	}
+	agentMux := http.NewServeMux()
+	agent.NewHandler(database.Pool, authService).Register(agentMux)
 
 	router := chi.NewRouter()
 	router.Use(auth.NewAttemptLimiter().Middleware)
@@ -64,6 +67,8 @@ func main() {
 		out.Body.Status = "ok"
 		return out, nil
 	})
+	router.Handle("/api/agent/*", agentMux)
+	router.Handle("/api/agents/*", agentMux)
 	auth.RegisterAPI(api, authService, cfg.SecureSessionCookie)
 	staticFS, err := fs.Sub(webassets.FS, "web")
 	if err != nil {
