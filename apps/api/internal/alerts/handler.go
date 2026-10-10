@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	_ "time/tzdata"
 
 	"github.com/deranjer/vigara/apps/api/internal/auth"
 	"github.com/jackc/pgx/v5"
@@ -33,6 +34,290 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/alerts/incidents", h.listIncidents)
 	mux.HandleFunc("GET /api/alerts/events", h.listEvents)
 	mux.HandleFunc("POST /api/agent/backups/status", h.backupStatus)
+	mux.HandleFunc("GET /api/devices/{deviceID}/availability", h.getAvailability)
+	mux.HandleFunc("PUT /api/devices/{deviceID}/availability", h.putAvailability)
+	mux.HandleFunc("POST /api/devices/{deviceID}/maintenance", h.addMaintenance)
+	mux.HandleFunc("DELETE /api/devices/{deviceID}/maintenance/{windowID}", h.deleteMaintenance)
+}
+
+// AwakeSchedule describes recurring expected-online local wall-clock time.
+// Weekdays use Go's time.Weekday names (Sunday through Saturday); an interval
+// crossing midnight is anchored to the weekday on which it starts.
+type AwakeSchedule struct {
+	Weekdays []string `json:"weekdays"`
+	Start    string   `json:"start"`
+	End      string   `json:"end"`
+	Timezone string   `json:"timezone"`
+}
+type Availability struct {
+	DeviceID string         `json:"deviceId"`
+	Awake    *AwakeSchedule `json:"awake,omitempty"`
+}
+type MaintenanceWindow struct {
+	ID       string    `json:"id"`
+	StartsAt time.Time `json:"startsAt"`
+	EndsAt   time.Time `json:"endsAt"`
+}
+
+func validateAwake(s AwakeSchedule) error {
+	if len(s.Weekdays) == 0 || len(s.Weekdays) > 7 {
+		return errors.New("weekdays must contain 1..7 weekdays")
+	}
+	seen := map[string]bool{}
+	validDays := map[string]bool{"Sunday": true, "Monday": true, "Tuesday": true, "Wednesday": true, "Thursday": true, "Friday": true, "Saturday": true}
+	for _, day := range s.Weekdays {
+		if !validDays[day] || seen[day] {
+			return errors.New("weekdays must be unique weekday names")
+		}
+		seen[day] = true
+	}
+	start, e1 := time.Parse("15:04", s.Start)
+	end, e2 := time.Parse("15:04", s.End)
+	if e1 != nil || e2 != nil || start.Format("15:04") != s.Start || end.Format("15:04") != s.End || s.Start == s.End {
+		return errors.New("start and end must be different HH:MM local times")
+	}
+	if s.Timezone == "" || s.Timezone == "Local" || len(s.Timezone) > 128 {
+		return errors.New("invalid IANA timezone")
+	}
+	if _, err := time.LoadLocation(s.Timezone); err != nil {
+		return errors.New("timezone must be a valid IANA timezone")
+	}
+	return nil
+}
+func (h *Handler) getAvailability(w http.ResponseWriter, r *http.Request) {
+	if !h.requireUser(w, r) {
+		return
+	}
+	id := r.PathValue("deviceID")
+	if !validUUID(id) {
+		http.Error(w, "deviceId must be a UUID", 400)
+		return
+	}
+	var exists bool
+	if e := h.pool.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM devices WHERE id=$1)`, id).Scan(&exists); e != nil {
+		http.Error(w, "could not read availability", 500)
+		return
+	}
+	if !exists {
+		http.Error(w, "device not found", 404)
+		return
+	}
+	out := Availability{DeviceID: id}
+	var days []byte
+	var start, end string
+	var zone string
+	e := h.pool.QueryRow(r.Context(), `SELECT weekdays,to_char(awake_start,'HH24:MI'),to_char(awake_end,'HH24:MI'),timezone FROM device_availability_policies WHERE device_id=$1`, id).Scan(&days, &start, &end, &zone)
+	if e == nil {
+		var ds []string
+		_ = json.Unmarshal(days, &ds)
+		out.Awake = &AwakeSchedule{Weekdays: ds, Start: start, End: end, Timezone: zone}
+	} else if !errors.Is(e, pgx.ErrNoRows) {
+		http.Error(w, "could not read availability", 500)
+		return
+	}
+	now := time.Now().UTC()
+	awake := true
+	if out.Awake != nil {
+		loc, err := time.LoadLocation(out.Awake.Timezone)
+		if err != nil {
+			http.Error(w, "could not read availability", 500)
+			return
+		}
+		awake = scheduleAwake(out.Awake.Weekdays, parseClock(out.Awake.Start), parseClock(out.Awake.End), loc, now)
+	}
+	var maintenanceActive bool
+	if e = h.pool.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM device_maintenance_windows WHERE device_id=$1 AND starts_at<=$2 AND ends_at>$2)`, id, now).Scan(&maintenanceActive); e != nil {
+		http.Error(w, "could not read maintenance", 500)
+		return
+	}
+	windows, e := h.pool.Query(r.Context(), `SELECT id::text,starts_at,ends_at FROM device_maintenance_windows WHERE device_id=$1 AND ends_at>now() ORDER BY starts_at LIMIT 100`, id)
+	if e != nil {
+		http.Error(w, "could not read maintenance", 500)
+		return
+	}
+	defer windows.Close()
+	ws := []MaintenanceWindow{}
+	for windows.Next() {
+		var x MaintenanceWindow
+		if e = windows.Scan(&x.ID, &x.StartsAt, &x.EndsAt); e != nil {
+			http.Error(w, "could not read maintenance", 500)
+			return
+		}
+		ws = append(ws, x)
+	}
+	if e = windows.Err(); e != nil {
+		http.Error(w, "could not read maintenance", 500)
+		return
+	}
+	write(w, map[string]any{"deviceId": out.DeviceID, "awake": out.Awake, "maintenance": ws, "evaluatedAt": now, "expectedAwake": awake, "maintenanceActive": maintenanceActive})
+}
+func parseClock(v string) time.Time { t, _ := time.Parse("15:04", v); return t }
+func (h *Handler) putAvailability(w http.ResponseWriter, r *http.Request) {
+	if !h.requireUser(w, r) {
+		return
+	}
+	id := r.PathValue("deviceID")
+	if !validUUID(id) {
+		http.Error(w, "deviceId must be a UUID", 400)
+		return
+	}
+	var q struct {
+		Awake json.RawMessage `json:"awake"`
+	}
+	if !decode(w, r, &q) {
+		return
+	}
+	if len(q.Awake) == 0 {
+		http.Error(w, "awake is required (use null to clear the schedule)", 400)
+		return
+	}
+	var awake *AwakeSchedule
+	if strings.TrimSpace(string(q.Awake)) != "null" {
+		var parsed AwakeSchedule
+		d := json.NewDecoder(strings.NewReader(string(q.Awake)))
+		d.DisallowUnknownFields()
+		if e := d.Decode(&parsed); e != nil {
+			http.Error(w, "invalid awake schedule", 400)
+			return
+		}
+		awake = &parsed
+		if e := validateAwake(*awake); e != nil {
+			http.Error(w, e.Error(), 400)
+			return
+		}
+	}
+	tx, e := h.pool.Begin(r.Context())
+	if e != nil {
+		http.Error(w, "could not update availability", 500)
+		return
+	}
+	defer tx.Rollback(r.Context())
+	if _, e = tx.Exec(r.Context(), `SELECT pg_advisory_xact_lock(143001)`); e != nil {
+		http.Error(w, "could not update availability", 500)
+		return
+	}
+	var exists bool
+	if e = tx.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM devices WHERE id=$1)`, id).Scan(&exists); e != nil {
+		http.Error(w, "could not update availability", 500)
+		return
+	}
+	if !exists {
+		http.Error(w, "device not found", 404)
+		return
+	}
+	if awake == nil {
+		_, e = tx.Exec(r.Context(), `DELETE FROM device_availability_policies WHERE device_id=$1`, id)
+	} else {
+		days, _ := json.Marshal(awake.Weekdays)
+		_, e = tx.Exec(r.Context(), `INSERT INTO device_availability_policies(device_id,weekdays,awake_start,awake_end,timezone) VALUES($1,$2,$3::time,$4::time,$5) ON CONFLICT(device_id) DO UPDATE SET weekdays=EXCLUDED.weekdays,awake_start=EXCLUDED.awake_start,awake_end=EXCLUDED.awake_end,timezone=EXCLUDED.timezone,updated_at=now()`, id, days, awake.Start, awake.End, awake.Timezone)
+	}
+	if e == nil {
+		e = tx.Commit(r.Context())
+	}
+	if e != nil {
+		http.Error(w, "could not update availability", 500)
+		return
+	}
+	write(w, Availability{DeviceID: id, Awake: awake})
+}
+func (h *Handler) addMaintenance(w http.ResponseWriter, r *http.Request) {
+	if !h.requireUser(w, r) {
+		return
+	}
+	id := r.PathValue("deviceID")
+	if !validUUID(id) {
+		http.Error(w, "deviceId must be a UUID", 400)
+		return
+	}
+	var q struct {
+		StartsAt time.Time `json:"startsAt"`
+		EndsAt   time.Time `json:"endsAt"`
+	}
+	if !decode(w, r, &q) {
+		return
+	}
+	if q.StartsAt.IsZero() || q.EndsAt.IsZero() || !q.EndsAt.After(q.StartsAt) || q.EndsAt.Sub(q.StartsAt) > 30*24*time.Hour {
+		http.Error(w, "maintenance window must be positive and at most 30 days", 400)
+		return
+	}
+	tx, e := h.pool.Begin(r.Context())
+	if e != nil {
+		http.Error(w, "could not create maintenance window", 500)
+		return
+	}
+	defer tx.Rollback(r.Context())
+	if _, e = tx.Exec(r.Context(), `SELECT pg_advisory_xact_lock(143001)`); e != nil {
+		http.Error(w, "could not create maintenance window", 500)
+		return
+	}
+	var exists bool
+	if e = tx.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM devices WHERE id=$1)`, id).Scan(&exists); e != nil {
+		http.Error(w, "could not create maintenance window", 500)
+		return
+	}
+	if !exists {
+		http.Error(w, "device not found", 404)
+		return
+	}
+	if _, e = tx.Exec(r.Context(), `DELETE FROM device_maintenance_windows WHERE device_id=$1 AND ends_at<=now()`, id); e != nil {
+		http.Error(w, "could not create maintenance window", 500)
+		return
+	}
+	var count int
+	if e = tx.QueryRow(r.Context(), `SELECT count(*) FROM device_maintenance_windows WHERE device_id=$1`, id).Scan(&count); e != nil {
+		http.Error(w, "could not create maintenance window", 500)
+		return
+	}
+	if count >= 100 {
+		http.Error(w, "at most 100 maintenance windows per device are supported", 409)
+		return
+	}
+	var x MaintenanceWindow
+	e = tx.QueryRow(r.Context(), `INSERT INTO device_maintenance_windows(device_id,starts_at,ends_at) VALUES($1,$2,$3) RETURNING id::text,starts_at,ends_at`, id, q.StartsAt.UTC(), q.EndsAt.UTC()).Scan(&x.ID, &x.StartsAt, &x.EndsAt)
+	if e == nil {
+		e = tx.Commit(r.Context())
+	}
+	if e != nil {
+		http.Error(w, "could not create maintenance window", 400)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	write(w, x)
+}
+func (h *Handler) deleteMaintenance(w http.ResponseWriter, r *http.Request) {
+	if !h.requireUser(w, r) {
+		return
+	}
+	device, window := r.PathValue("deviceID"), r.PathValue("windowID")
+	if !validUUID(device) || !validUUID(window) {
+		http.Error(w, "deviceId and windowId must be UUIDs", 400)
+		return
+	}
+	tx, e := h.pool.Begin(r.Context())
+	if e != nil {
+		http.Error(w, "could not delete maintenance window", 500)
+		return
+	}
+	defer tx.Rollback(r.Context())
+	if _, e = tx.Exec(r.Context(), `SELECT pg_advisory_xact_lock(143001)`); e != nil {
+		http.Error(w, "could not delete maintenance window", 500)
+		return
+	}
+	tag, e := tx.Exec(r.Context(), `DELETE FROM device_maintenance_windows WHERE id=$1 AND device_id=$2`, window, device)
+	if e != nil {
+		http.Error(w, "could not delete maintenance window", 400)
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		http.Error(w, "maintenance window not found", 404)
+		return
+	}
+	if e = tx.Commit(r.Context()); e != nil {
+		http.Error(w, "could not delete maintenance window", 500)
+		return
+	}
+	w.WriteHeader(204)
 }
 func (h *Handler) requireUser(w http.ResponseWriter, r *http.Request) bool {
 	if origin := r.Header.Get("Origin"); origin != "" {
@@ -533,11 +818,63 @@ func evalDevice(ctx context.Context, tx pgx.Tx, r Rule, now time.Time) error {
 		age := now.Sub(since)
 		due := age > time.Duration(r.Config.StaleAfterSeconds+r.Config.GraceSeconds)*time.Second
 		known := age <= time.Duration(r.Config.StaleAfterSeconds)*time.Second
+		awake, e := expectedAwake(ctx, tx, x.id, now)
+		if e != nil {
+			return e
+		}
+		if !awake {
+			due, known = false, false
+		}
 		if e = transition(ctx, tx, r, x.id, due, known, summary, &since, now, true); e != nil {
 			return e
 		}
 	}
 	return nil
+}
+
+func expectedAwake(ctx context.Context, tx pgx.Tx, device string, now time.Time) (bool, error) {
+	var daysJSON []byte
+	var startText, endText string
+	var zone string
+	e := tx.QueryRow(ctx, `SELECT weekdays,to_char(awake_start,'HH24:MI'),to_char(awake_end,'HH24:MI'),timezone FROM device_availability_policies WHERE device_id=$1`, device).Scan(&daysJSON, &startText, &endText, &zone)
+	if errors.Is(e, pgx.ErrNoRows) {
+		return true, nil
+	}
+	if e != nil {
+		return false, e
+	}
+	var days []string
+	if e = json.Unmarshal(daysJSON, &days); e != nil {
+		return false, e
+	}
+	loc, e := time.LoadLocation(zone)
+	if e != nil {
+		return false, e
+	}
+	return scheduleAwake(days, parseClock(startText), parseClock(endText), loc, now), nil
+}
+func scheduleAwake(days []string, start, end time.Time, loc *time.Location, now time.Time) bool {
+	local := now.In(loc)
+	second := local.Hour()*3600 + local.Minute()*60 + local.Second()
+	sm := start.Hour()*3600 + start.Minute()*60
+	em := end.Hour()*3600 + end.Minute()*60
+	day := local.Weekday().String()
+	prev := local.AddDate(0, 0, -1).Weekday().String()
+	for _, d := range days {
+		if sm < em {
+			if day == d && second >= sm && second < em {
+				return true
+			}
+		} else {
+			if day == d && second >= sm {
+				return true
+			}
+			if prev == d && second < em {
+				return true
+			}
+		}
+	}
+	return false
 }
 func evalThreshold(ctx context.Context, tx pgx.Tx, r Rule, now time.Time) error {
 	labelFilter, _ := json.Marshal(r.Config.Labels)
@@ -680,6 +1017,23 @@ func evalBackup(ctx context.Context, tx pgx.Tx, r Rule, now time.Time) error {
 	return transition(ctx, tx, r, dev+"/"+key, due, known, summary, observed, now, r.Kind == "backup_overdue")
 }
 func transition(ctx context.Context, tx pgx.Tx, r Rule, dim string, due, known bool, summary string, observed *time.Time, now time.Time, timeDriven bool) error {
+	// Explicit maintenance suppresses creation or refiring for any device-scoped
+	// rule. Existing firing state remains untouched; healthy evidence may recover it.
+	if due {
+		device := dim
+		if i := strings.IndexByte(device, '/'); i >= 0 {
+			device = device[:i]
+		}
+		if validUUID(device) {
+			var active bool
+			if e := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM device_maintenance_windows WHERE device_id=$1 AND starts_at<=$2 AND ends_at>$2)`, device, now).Scan(&active); e != nil {
+				return e
+			}
+			if active {
+				return nil
+			}
+		}
+	}
 	var id, status string
 	var last *time.Time
 	e := tx.QueryRow(ctx, `SELECT id::text,status,last_observed_at FROM alert_incidents WHERE rule_id=$1 AND dimension=$2 FOR UPDATE`, r.ID, dim).Scan(&id, &status, &last)

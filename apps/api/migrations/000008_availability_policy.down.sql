@@ -1,0 +1,2 @@
+DROP TABLE device_maintenance_windows;
+DROP TABLE device_availability_policies;

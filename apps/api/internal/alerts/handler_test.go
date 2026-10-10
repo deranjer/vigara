@@ -10,9 +10,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/deranjer/vigara/apps/api/internal/auth"
+	"github.com/deranjer/vigara/apps/api/internal/db"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -35,6 +38,39 @@ func TestRuleValidation(t *testing.T) {
 				t.Fatalf("validateRule() error=%v, want valid=%v", err, tc.ok)
 			}
 		})
+	}
+}
+
+func TestAwakeScheduleValidationAndDSTBoundaries(t *testing.T) {
+	valid := AwakeSchedule{Weekdays: []string{"Monday", "Tuesday"}, Start: "22:00", End: "06:00", Timezone: "America/New_York"}
+	if err := validateAwake(valid); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []AwakeSchedule{{Weekdays: []string{"Monday"}, Start: "09:00", End: "09:00", Timezone: "UTC"}, {Weekdays: []string{"Funday"}, Start: "09:00", End: "10:00", Timezone: "UTC"}, {Weekdays: []string{"Monday"}, Start: "09:00", End: "10:00", Timezone: "Not/AZone"}} {
+		if validateAwake(bad) == nil {
+			t.Fatalf("expected invalid schedule: %+v", bad)
+		}
+	}
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// On spring-forward day, nonexistent local times are skipped; on fall-back,
+	// both occurrences of a repeated wall-clock time are in the awake interval.
+	sunday := []string{"Sunday"}
+	start, _ := time.Parse("15:04", "01:30")
+	end, _ := time.Parse("15:04", "03:30")
+	if !scheduleAwake(sunday, start, end, loc, time.Date(2026, 3, 8, 7, 15, 0, 0, time.UTC)) {
+		t.Fatal("spring-forward local 03:15 should be awake")
+	}
+	if scheduleAwake(sunday, start, end, loc, time.Date(2026, 3, 8, 7, 30, 0, 0, time.UTC)) {
+		t.Fatal("awake interval end must be exclusive")
+	}
+	if !scheduleAwake(sunday, start, end, loc, time.Date(2026, 11, 1, 6, 45, 0, 0, time.UTC)) {
+		t.Fatal("second occurrence of fall-back 01:45 should be awake")
+	}
+	if !scheduleAwake([]string{"Saturday"}, time.Date(0, 1, 1, 22, 0, 0, 0, time.UTC), time.Date(0, 1, 1, 6, 0, 0, 0, time.UTC), loc, time.Date(2026, 3, 8, 9, 0, 0, 0, time.UTC)) {
+		t.Fatal("overnight interval should remain anchored to its start weekday")
 	}
 }
 
@@ -143,6 +179,172 @@ func TestEvaluateLifecycleAndBackupEvidence(t *testing.T) {
 	assertCount(t, pool, `SELECT count(*) FROM alert_events WHERE transition='resolved'`, 4)
 }
 
+func TestMaintenanceSuppressesOfflineFireAndResumesAfterWindow(t *testing.T) {
+	pool := alertsTestPool(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	var dev, agentID string
+	if err := pool.QueryRow(ctx, `INSERT INTO devices(display_name,last_seen_at) VALUES('maintenance-test',$1) RETURNING id::text`, now.Add(-10*time.Minute)).Scan(&dev); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte("maintenance-test-agent"))
+	if err := pool.QueryRow(ctx, `INSERT INTO agent_identities(device_id,credential_hash,protocol_version,platform,architecture,agent_version,capabilities,allowed_capabilities) VALUES($1,$2,'v1','linux','amd64','test','[]','{}') RETURNING id::text`, dev, sum[:]).Scan(&agentID); err != nil {
+		t.Fatal(err)
+	}
+	insertRule(t, pool, "offline maintenance", "device_unavailable", Config{DeviceID: dev, StaleAfterSeconds: 30})
+	insertRule(t, pool, "threshold maintenance", "threshold", Config{DeviceID: dev, Metric: "cpu_used_percent", Operator: "gte", Threshold: 90})
+	insertRule(t, pool, "backup maintenance", "backup_failure", Config{DeviceID: dev, PolicyKey: "nightly"})
+	payload, _ := json.Marshal(map[string]any{"metrics": []any{map[string]any{"name": "cpu_used_percent", "value": 95, "labels": map[string]string{}}}})
+	if _, err := pool.Exec(ctx, `INSERT INTO agent_telemetry(agent_id,report_id,observed_at,payload) VALUES($1,'maintenance-high',$2,$3)`, agentID, now.Add(-time.Second), payload); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO backup_status(device_id,policy_key,status,observed_at,source_id) VALUES($1,'nightly','failure',$2,'maintenance-failure')`, dev, now.Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO device_maintenance_windows(device_id,starts_at,ends_at) VALUES($1,$2,$3)`, dev, now.Add(-time.Minute), now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := Evaluate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	assertCount(t, pool, `SELECT count(*) FROM alert_incidents WHERE status='firing'`, 0)
+	if _, err := pool.Exec(ctx, `UPDATE device_maintenance_windows SET ends_at=$2 WHERE device_id=$1`, dev, now.Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := Evaluate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	assertCount(t, pool, `SELECT count(*) FROM alert_incidents WHERE status='firing'`, 3)
+	assertCount(t, pool, `SELECT count(*) FROM alert_events WHERE transition='firing'`, 3)
+	if err := Evaluate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	assertCount(t, pool, `SELECT count(*) FROM alert_events WHERE transition='firing'`, 3)
+}
+
+func TestExpectedSleepPreservesExistingOfflineIncident(t *testing.T) {
+	pool := alertsTestPool(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	var dev string
+	if err := pool.QueryRow(ctx, `INSERT INTO devices(display_name,last_seen_at) VALUES('sleep-preservation-test',$1) RETURNING id::text`, now.Add(-10*time.Minute)).Scan(&dev); err != nil {
+		t.Fatal(err)
+	}
+	insertRule(t, pool, "sleep offline", "device_unavailable", Config{DeviceID: dev, StaleAfterSeconds: 30})
+	if err := Evaluate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	assertCount(t, pool, `SELECT count(*) FROM alert_incidents WHERE status='firing'`, 1)
+	assertCount(t, pool, `SELECT count(*) FROM alert_events`, 1)
+	loc, _ := time.LoadLocation("America/New_York")
+	future := now.In(loc).Add(time.Hour)
+	finish := future.Add(5 * time.Minute)
+	days, _ := json.Marshal([]string{future.Weekday().String()})
+	if _, err := pool.Exec(ctx, `INSERT INTO device_availability_policies(device_id,weekdays,awake_start,awake_end,timezone) VALUES($1,$2,$3::time,$4::time,'America/New_York')`, dev, days, future.Format("15:04"), finish.Format("15:04")); err != nil {
+		t.Fatal(err)
+	}
+	if err := Evaluate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	assertCount(t, pool, `SELECT count(*) FROM alert_incidents WHERE status='firing'`, 1)
+	assertCount(t, pool, `SELECT count(*) FROM alert_incidents WHERE status='resolved'`, 0)
+	assertCount(t, pool, `SELECT count(*) FROM alert_events`, 1)
+}
+
+func TestMaintenanceKeepsFiringStateUntilHealthyEvidence(t *testing.T) {
+	pool := alertsTestPool(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	var dev string
+	if err := pool.QueryRow(ctx, `INSERT INTO devices(display_name,last_seen_at) VALUES('maintenance-preservation-test',$1) RETURNING id::text`, now.Add(-10*time.Minute)).Scan(&dev); err != nil {
+		t.Fatal(err)
+	}
+	insertRule(t, pool, "maintenance preservation", "device_unavailable", Config{DeviceID: dev, StaleAfterSeconds: 30})
+	if err := Evaluate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO device_maintenance_windows(device_id,starts_at,ends_at) VALUES($1,$2,$3)`, dev, now.Add(-time.Minute), now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := Evaluate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	assertCount(t, pool, `SELECT count(*) FROM alert_incidents WHERE status='firing'`, 1)
+	assertCount(t, pool, `SELECT count(*) FROM alert_events`, 1)
+	if _, err := pool.Exec(ctx, `UPDATE devices SET last_seen_at=$2 WHERE id=$1`, dev, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if err := Evaluate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	assertCount(t, pool, `SELECT count(*) FROM alert_incidents WHERE status='resolved'`, 1)
+	assertCount(t, pool, `SELECT count(*) FROM alert_events WHERE transition='resolved'`, 1)
+}
+
+func TestAuthenticatedAvailabilityAPI(t *testing.T) {
+	pool := alertsTestPool(t)
+	ctx := context.Background()
+	var dev string
+	if err := pool.QueryRow(ctx, `INSERT INTO devices(display_name) VALUES('availability-api-test') RETURNING id::text`).Scan(&dev); err != nil {
+		t.Fatal(err)
+	}
+	service := auth.NewService(pool, db.New(pool))
+	session, err := service.CreateFirstUser(ctx, "availability-admin", "Administrator", "correct horse battery staple", "correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	NewHandler(pool, service).Register(mux)
+	request := func(method, path, body string, authenticated bool) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		if authenticated {
+			req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: session.Token})
+		}
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		return w
+	}
+	base := "/api/devices/" + dev + "/availability"
+	if w := request(http.MethodGet, base, "", false); w.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated GET status=%d", w.Code)
+	}
+	if w := request(http.MethodPut, base, `{"awake":{"weekdays":["Monday"],"start":"09:00","end":"10:00","timezone":"Not/AZone"}}`, true); w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid timezone status=%d", w.Code)
+	}
+	policy := `{"awake":{"weekdays":["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"],"start":"00:00","end":"23:59","timezone":"America/New_York"}}`
+	if w := request(http.MethodPut, base, policy, true); w.Code != http.StatusOK {
+		t.Fatalf("PUT status=%d body=%s", w.Code, w.Body.String())
+	}
+	now := time.Now().UTC()
+	window := fmt.Sprintf(`{"startsAt":%q,"endsAt":%q}`, now.Add(-time.Minute).Format(time.RFC3339), now.Add(time.Minute).Format(time.RFC3339))
+	w := request(http.MethodPost, "/api/devices/"+dev+"/maintenance", window, true)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("maintenance POST status=%d body=%s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("maintenance response content-type=%q", got)
+	}
+	var created MaintenanceWindow
+	if err = json.Unmarshal(w.Body.Bytes(), &created); err != nil || created.ID == "" {
+		t.Fatalf("invalid maintenance response: %s err=%v", w.Body.String(), err)
+	}
+	w = request(http.MethodGet, base, "", true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET status=%d body=%s", w.Code, w.Body.String())
+	}
+	var got struct {
+		ExpectedAwake     bool      `json:"expectedAwake"`
+		MaintenanceActive bool      `json:"maintenanceActive"`
+		EvaluatedAt       time.Time `json:"evaluatedAt"`
+	}
+	if err = json.Unmarshal(w.Body.Bytes(), &got); err != nil || !got.ExpectedAwake || !got.MaintenanceActive || got.EvaluatedAt.IsZero() {
+		t.Fatalf("availability computed state=%+v err=%v body=%s", got, err, w.Body.String())
+	}
+	if w = request(http.MethodDelete, "/api/devices/"+dev+"/maintenance/"+created.ID, "", true); w.Code != http.StatusNoContent {
+		t.Fatalf("maintenance DELETE status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
 func insertRule(t *testing.T, pool *pgxpool.Pool, name, kind string, c Config) {
 	t.Helper()
 	b, _ := json.Marshal(c)
@@ -191,7 +393,7 @@ func alertsTestPool(t *testing.T) *pgxpool.Pool {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	for _, name := range []string{"000001_initial_schema.up.sql", "000003_agent_enrollment.up.sql", "000005_telemetry.up.sql", "000007_alerts.up.sql"} {
+	for _, name := range []string{"000001_initial_schema.up.sql", "000002_local_auth.up.sql", "000003_agent_enrollment.up.sql", "000005_telemetry.up.sql", "000007_alerts.up.sql", "000008_availability_policy.up.sql"} {
 		migration, err := os.ReadFile("../../migrations/" + name)
 		if err != nil {
 			t.Fatal(err)
