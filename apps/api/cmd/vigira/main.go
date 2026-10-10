@@ -20,6 +20,7 @@ import (
 	"github.com/deranjer/vigara/apps/api/internal/config"
 	"github.com/deranjer/vigara/apps/api/internal/database"
 	"github.com/deranjer/vigara/apps/api/internal/db"
+	"github.com/deranjer/vigara/apps/api/internal/inventoryview"
 	"github.com/deranjer/vigara/apps/api/internal/telemetry"
 	"github.com/go-chi/chi/v5"
 )
@@ -62,6 +63,8 @@ func main() {
 	telemetryMux := http.NewServeMux()
 	telemetryStore := telemetry.NewPostgresStore(database.Pool)
 	telemetry.NewHandler(database.Pool, telemetryStore).Register(telemetryMux)
+	inventoryMux := http.NewServeMux()
+	inventoryview.NewHandler(database.Pool, authService).Register(inventoryMux)
 
 	router := chi.NewRouter()
 	router.Use(auth.NewAttemptLimiter().Middleware)
@@ -83,6 +86,7 @@ func main() {
 	router.Handle("/api/devices/{deviceID}/maintenance/{windowID}", alertsMux)
 	router.Handle("/api/agents/*", agentMux)
 	router.Handle("/api/devices/*", agentMux)
+	router.Handle("/api/inventory/*", inventoryMux)
 	auth.RegisterAPI(api, authService, cfg.SecureSessionCookie)
 	staticFS, err := fs.Sub(webassets.FS, "web")
 	if err != nil {

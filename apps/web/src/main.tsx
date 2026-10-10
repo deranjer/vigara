@@ -2,6 +2,7 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { useEffect, useState, type FormEvent } from 'react'
 import { Alert, AppShell, Badge, Button, MantineProvider, PasswordInput, Text, TextInput, Title } from '@mantine/core'
+import { Devices } from './devices'
 import '@mantine/core/styles.css'
 import './styles.css'
 
@@ -138,12 +139,7 @@ function App() {
             <Button type="submit" loading={busy}>Log in</Button>
           </form>
         </section>}
-        {view === 'dashboard' && <section className="welcome">
-          <Text c="dimmed" size="sm" fw={600} tt="uppercase">Home infrastructure</Text>
-          <Title order={1} mt="xs">Know what’s healthy. Know what’s safe.</Title>
-          <Text c="dimmed" mt="md" maw={600}>Signed in as {user?.displayName}. Device inventory, monitoring, alerts, and recoverable backups will appear here.</Text>
-          <div className="empty-state"><Text fw={600}>No devices yet</Text><Text c="dimmed" size="sm" mt={6}>When you enroll an agent, it will appear here with its latest health and backup status.</Text></div>
-        </section>}
+        {view === 'dashboard' && <Devices key={user?.id} displayName={user?.displayName ?? 'Administrator'} onLogout={() => void logout()} />}
       </AppShell.Main>
     </AppShell>
   </MantineProvider>
