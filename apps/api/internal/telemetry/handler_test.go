@@ -306,3 +306,15 @@ func TestTelemetryLimitsAndRetentionAreBoundedAndIdempotent(t *testing.T) {
 		t.Fatalf("latest host snapshot count = %d, want 1", latestCount)
 	}
 }
+
+func TestRetentionConfigRequiresAlertCompatibleRawWindow(t *testing.T) {
+	base := RetentionConfig{RollupAge: 90 * 24 * time.Hour}
+	base.RawAge = 24 * time.Hour
+	if err := base.Validate(); err == nil {
+		t.Fatal("accepted a 24-hour raw window, below the alert freshness margin")
+	}
+	base.RawAge = 25 * time.Hour
+	if err := base.Validate(); err != nil {
+		t.Fatalf("rejected the 25-hour minimum raw window: %v", err)
+	}
+}

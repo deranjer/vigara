@@ -122,8 +122,8 @@ type RetentionConfig struct {
 }
 
 func (c RetentionConfig) Validate() error {
-	if c.RawAge < 24*time.Hour || c.RawAge > 7*24*time.Hour {
-		return fmt.Errorf("raw telemetry retention must be between 24h and 168h")
+	if c.RawAge < 25*time.Hour || c.RawAge > 7*24*time.Hour {
+		return fmt.Errorf("raw telemetry retention must be between 25h and 168h")
 	}
 	if c.RollupAge < c.RawAge || c.RollupAge > 365*24*time.Hour {
 		return fmt.Errorf("telemetry rollup retention must be at least raw retention and at most 365d")
