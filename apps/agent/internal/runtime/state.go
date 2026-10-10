@@ -11,6 +11,7 @@ import (
 )
 
 const MaxQueuedReports = 500
+const MaxQueuedTelemetry = 100
 
 type State struct {
 	ServerURL     string                       `json:"serverUrl"`
@@ -18,6 +19,7 @@ type State struct {
 	Credential    string                       `json:"credential"`
 	Configuration *protocol.AgentConfiguration `json:"configuration,omitempty"`
 	Pending       []protocol.JobResult         `json:"pending,omitempty"`
+	Telemetry     []protocol.TelemetrySnapshot `json:"telemetryPending,omitempty"`
 }
 
 func Load(path string) (State, error) {
@@ -35,6 +37,9 @@ func Load(path string) (State, error) {
 	if len(state.Pending) > MaxQueuedReports {
 		return State{}, fmt.Errorf("agent state contains more than %d queued reports", MaxQueuedReports)
 	}
+	if len(state.Telemetry) > MaxQueuedTelemetry {
+		return State{}, fmt.Errorf("agent state contains more than %d queued telemetry snapshots", MaxQueuedTelemetry)
+	}
 	return state, nil
 }
 
@@ -43,6 +48,9 @@ func Load(path string) (State, error) {
 func Save(path string, state State) error {
 	if len(state.Pending) > MaxQueuedReports {
 		return fmt.Errorf("offline report queue is full (%d)", MaxQueuedReports)
+	}
+	if len(state.Telemetry) > MaxQueuedTelemetry {
+		return fmt.Errorf("telemetry queue is full (%d)", MaxQueuedTelemetry)
 	}
 	directory := filepath.Dir(path)
 	_, statErr := os.Stat(directory)
@@ -92,5 +100,13 @@ func (s *State) Enqueue(report protocol.JobResult) error {
 		return fmt.Errorf("offline report queue is full (%d)", MaxQueuedReports)
 	}
 	s.Pending = append(s.Pending, report)
+	return nil
+}
+
+func (s *State) EnqueueTelemetry(snapshot protocol.TelemetrySnapshot) error {
+	if len(s.Telemetry) >= MaxQueuedTelemetry {
+		return fmt.Errorf("telemetry queue is full (%d)", MaxQueuedTelemetry)
+	}
+	s.Telemetry = append(s.Telemetry, snapshot)
 	return nil
 }

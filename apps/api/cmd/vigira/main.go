@@ -19,6 +19,7 @@ import (
 	"github.com/deranjer/vigara/apps/api/internal/config"
 	"github.com/deranjer/vigara/apps/api/internal/database"
 	"github.com/deranjer/vigara/apps/api/internal/db"
+	"github.com/deranjer/vigara/apps/api/internal/telemetry"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -55,6 +56,8 @@ func main() {
 	}
 	agentMux := http.NewServeMux()
 	agent.NewHandler(database.Pool, authService).Register(agentMux)
+	telemetryMux := http.NewServeMux()
+	telemetry.NewHandler(database.Pool).Register(telemetryMux)
 
 	router := chi.NewRouter()
 	router.Use(auth.NewAttemptLimiter().Middleware)
@@ -68,6 +71,7 @@ func main() {
 		return out, nil
 	})
 	router.Handle("/api/agent/*", agentMux)
+	router.Handle("/api/agent/telemetry", telemetryMux)
 	router.Handle("/api/agents/*", agentMux)
 	router.Handle("/api/devices/*", agentMux)
 	auth.RegisterAPI(api, authService, cfg.SecureSessionCookie)

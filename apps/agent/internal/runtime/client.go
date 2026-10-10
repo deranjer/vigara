@@ -6,8 +6,10 @@ import (
 	cryptorand "crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/rand/v2"
 	"net"
 	"net/http"
@@ -16,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/deranjer/vigara/apps/agent/internal/collector"
 	"github.com/deranjer/vigara/internal/protocol"
 )
 
@@ -25,14 +28,22 @@ type Client struct {
 	StatePath string
 	State     State
 	HTTP      *http.Client
+	Collector *collector.Collector
 }
+
+// TelemetryDeliveryError reports a rejected telemetry batch after Cycle has
+// still completed the normal poll. The snapshots remain queued for retry.
+type TelemetryDeliveryError struct{ Err error }
+
+func (e *TelemetryDeliveryError) Error() string { return "submit queued telemetry: " + e.Err.Error() }
+func (e *TelemetryDeliveryError) Unwrap() error { return e.Err }
 
 func NewClient(statePath string) (*Client, error) {
 	state, err := Load(statePath)
 	if err != nil {
 		return nil, err
 	}
-	return &Client{StatePath: statePath, State: state, HTTP: &http.Client{Timeout: 20 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}}, nil
+	return &Client{StatePath: statePath, State: state, HTTP: &http.Client{Timeout: 20 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}, Collector: collector.New()}, nil
 }
 
 func (c *Client) Enroll(ctx context.Context, serverURL, token, name string) error {
@@ -76,9 +87,13 @@ func (c *Client) Cycle(ctx context.Context) (time.Duration, error) {
 	if c.State.AgentID == "" || c.State.Credential == "" || c.State.ServerURL == "" {
 		return 0, fmt.Errorf("agent is not enrolled; run enroll first")
 	}
-	if err := c.flush(ctx); err != nil {
+	if err := c.collectTelemetry(ctx); err != nil {
 		return 0, err
 	}
+	if err := c.flushReports(ctx); err != nil {
+		return 0, err
+	}
+	telemetryErr := c.flushTelemetry(ctx)
 	request := protocol.AgentRequest{ProtocolVersion: protocol.CurrentVersion, AgentID: c.State.AgentID, AgentVersion: AgentVersion, Platform: runtime.GOOS, Architecture: runtime.GOARCH, Capabilities: []string{}}
 	if c.State.Configuration != nil {
 		request.KnownConfigVersion = c.State.Configuration.Version
@@ -113,7 +128,11 @@ func (c *Client) Cycle(ctx context.Context) (time.Duration, error) {
 	if delay > 300*time.Second {
 		delay = 300 * time.Second
 	}
-	return delay + time.Duration(rand.Int64N(int64(delay/10+1))), nil
+	delay += time.Duration(rand.Int64N(int64(delay/10 + 1)))
+	if telemetryErr != nil {
+		return delay, &TelemetryDeliveryError{Err: telemetryErr}
+	}
+	return delay, nil
 }
 
 func (c *Client) Run(ctx context.Context) error {
@@ -124,18 +143,24 @@ func (c *Client) Run(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return nil
 			}
-			timer := time.NewTimer(backoff + time.Duration(rand.Int64N(int64(backoff/4+1))))
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return nil
-			case <-timer.C:
+			var deliveryErr *TelemetryDeliveryError
+			if errors.As(err, &deliveryErr) {
+				slog.Warn("telemetry delivery failed; queued snapshots retained while polling continues", "error", deliveryErr.Err)
+				backoff = time.Second
+			} else {
+				timer := time.NewTimer(backoff + time.Duration(rand.Int64N(int64(backoff/4+1))))
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return nil
+				case <-timer.C:
+				}
+				backoff *= 2
+				if backoff > 60*time.Second {
+					backoff = 60 * time.Second
+				}
+				continue
 			}
-			backoff *= 2
-			if backoff > 60*time.Second {
-				backoff = 60 * time.Second
-			}
-			continue
 		}
 		backoff = time.Second
 		timer := time.NewTimer(delay)
@@ -148,7 +173,7 @@ func (c *Client) Run(ctx context.Context) error {
 	}
 }
 
-func (c *Client) flush(ctx context.Context) error {
+func (c *Client) flushReports(ctx context.Context) error {
 	for len(c.State.Pending) > 0 {
 		count := len(c.State.Pending)
 		if count > 100 {
@@ -167,6 +192,49 @@ func (c *Client) flush(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (c *Client) flushTelemetry(ctx context.Context) error {
+	for len(c.State.Telemetry) > 0 {
+		count := len(c.State.Telemetry)
+		if count > 5 {
+			count = 5
+		}
+		batch := protocol.TelemetrySnapshotBatch{ProtocolVersion: protocol.CurrentVersion, AgentID: c.State.AgentID, Snapshots: c.State.Telemetry[:count]}
+		if err := c.post(ctx, c.State.ServerURL, "/api/agent/telemetry", c.State.Credential, batch, nil); err != nil {
+			return err
+		}
+		c.State.Telemetry = append([]protocol.TelemetrySnapshot(nil), c.State.Telemetry[count:]...)
+		if err := Save(c.StatePath, c.State); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Client) collectTelemetry(ctx context.Context) error {
+	if c.Collector == nil {
+		c.Collector = collector.New()
+	}
+	if len(c.State.Telemetry) >= MaxQueuedTelemetry {
+		return nil
+	}
+	collectionCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	snapshot := c.Collector.Collect(collectionCtx)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	id, err := randomID()
+	if err != nil {
+		return err
+	}
+	snapshot.ID, snapshot.AgentID = id, c.State.AgentID
+	snapshot.Host.AgentVersion = AgentVersion
+	if err := c.State.EnqueueTelemetry(snapshot); err != nil {
+		return err
+	}
+	return Save(c.StatePath, c.State)
 }
 
 func (c *Client) post(ctx context.Context, base, path, credential string, body, output any) error {

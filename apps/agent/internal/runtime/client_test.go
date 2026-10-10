@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -68,6 +70,96 @@ func TestOfflineReportsRemainPersistedWhenServerRejectsBatch(t *testing.T) {
 	if len(reloaded.Pending) != 1 || reloaded.Pending[0].ID != "stable-result-id" {
 		t.Fatalf("offline report was lost after rejection: %+v", reloaded.Pending)
 	}
+	if len(reloaded.Telemetry) != 1 || reloaded.Telemetry[0].ID == "" {
+		t.Fatalf("collected telemetry was not persisted before retry: %+v", reloaded.Telemetry)
+	}
+}
+
+func TestTelemetrySnapshotIDsStayStableAcrossRejectedRetries(t *testing.T) {
+	var received [][]string
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var batch protocol.TelemetrySnapshotBatch
+		if r.URL.Path == "/api/agent/telemetry" {
+			if err := json.NewDecoder(r.Body).Decode(&batch); err != nil {
+				t.Errorf("decode telemetry batch: %v", err)
+			}
+			ids := make([]string, len(batch.Snapshots))
+			for i, snapshot := range batch.Snapshots {
+				ids[i] = snapshot.ID
+			}
+			received = append(received, ids)
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	path := filepath.Join(t.TempDir(), "state", "agent.json")
+	client, err := NewClient(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.State = State{ServerURL: server.URL, AgentID: "agent", Credential: "secret"}
+	client.HTTP.Transport = server.Client().Transport
+	for i := 0; i < 2; i++ {
+		if _, err := client.Cycle(context.Background()); err == nil {
+			t.Fatal("expected server rejection")
+		}
+	}
+	if len(received) != 2 || len(received[0]) == 0 || len(received[1]) < len(received[0]) {
+		t.Fatalf("unexpected retry batches: %+v", received)
+	}
+	if received[0][0] != received[1][0] {
+		t.Fatalf("snapshot retry ID changed: %q != %q", received[0][0], received[1][0])
+	}
+	reloaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.Telemetry) < 2 || reloaded.Telemetry[0].ID != received[0][0] {
+		t.Fatalf("queue did not retain retry identity: %+v", reloaded.Telemetry)
+	}
+}
+
+func TestRejectedTelemetryDoesNotBlockNormalPoll(t *testing.T) {
+	pollCalled := false
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/agent/telemetry":
+			http.Error(w, "snapshot rejected", http.StatusBadRequest)
+		case "/api/agent/poll":
+			pollCalled = true
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(protocol.AgentResponse{ProtocolVersion: protocol.CurrentVersion, PollAfterSeconds: 30})
+		default:
+			t.Errorf("unexpected agent request %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	path := filepath.Join(t.TempDir(), "state", "agent.json")
+	client, err := NewClient(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.State = State{ServerURL: server.URL, AgentID: "agent", Credential: "secret"}
+	client.HTTP.Transport = server.Client().Transport
+	delay, err := client.Cycle(context.Background())
+	var deliveryErr *TelemetryDeliveryError
+	if !errors.As(err, &deliveryErr) {
+		t.Fatalf("Cycle error = %v, want surfaced nonfatal telemetry delivery error", err)
+	}
+	if !pollCalled {
+		t.Fatal("telemetry rejection prevented normal server poll")
+	}
+	if delay < 30*time.Second {
+		t.Fatalf("poll delay = %s, want normal server cadence", delay)
+	}
+	reloaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.Telemetry) != 1 || reloaded.Telemetry[0].ID == "" {
+		t.Fatalf("rejected snapshot was not retained: %+v", reloaded.Telemetry)
+	}
 }
 
 func TestServerURLRequiresHTTPSOutsideLoopback(t *testing.T) {
@@ -91,8 +183,16 @@ func TestStateIsAtomicPrivateAndQueueBounded(t *testing.T) {
 			t.Fatalf("enqueue %d: %v", i, err)
 		}
 	}
+	for i := 0; i < MaxQueuedTelemetry; i++ {
+		if err := state.EnqueueTelemetry(protocol.TelemetrySnapshot{ID: fmt.Sprint(i), AgentID: "agent"}); err != nil {
+			t.Fatalf("enqueue telemetry %d: %v", i, err)
+		}
+	}
 	if err := state.Enqueue(protocol.JobResult{ID: "overflow"}); err == nil {
 		t.Fatal("queue accepted more than its configured bound")
+	}
+	if err := state.EnqueueTelemetry(protocol.TelemetrySnapshot{ID: "overflow"}); err == nil {
+		t.Fatal("telemetry queue accepted more than its configured bound")
 	}
 	if err := Save(path, state); err != nil {
 		t.Fatal(err)
@@ -101,8 +201,8 @@ func TestStateIsAtomicPrivateAndQueueBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reloaded.AgentID != state.AgentID || len(reloaded.Pending) != MaxQueuedReports {
-		t.Fatalf("reloaded state lost data: agent=%q pending=%d", reloaded.AgentID, len(reloaded.Pending))
+	if reloaded.AgentID != state.AgentID || len(reloaded.Pending) != MaxQueuedReports || len(reloaded.Telemetry) != MaxQueuedTelemetry {
+		t.Fatalf("reloaded state lost data: agent=%q pending=%d telemetry=%d", reloaded.AgentID, len(reloaded.Pending), len(reloaded.Telemetry))
 	}
 	assertPrivateStateFile(t, path)
 }
