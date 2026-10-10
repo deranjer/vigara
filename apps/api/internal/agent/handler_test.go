@@ -35,6 +35,9 @@ func agentTestService(t *testing.T) (*pgxpool.Pool, *auth.Service) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = admin.Close(context.Background()) })
+	if _, err := admin.Exec(ctx, `BEGIN; SELECT pg_advisory_xact_lock(138139136); CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public; COMMIT;`); err != nil {
+		t.Fatalf("bootstrap shared test extension: %v", err)
+	}
 	schema := pgx.Identifier{fmt.Sprintf("agent_test_%d", time.Now().UnixNano())}.Sanitize()
 	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
 		t.Fatal(err)
