@@ -322,8 +322,12 @@ func TestBackupProgressIsLeaseBoundSequencedAndIdempotent(t *testing.T) {
 	if err = pool.QueryRow(ctx, `SELECT progress_sequence,progress_payload FROM backup_job_attempts WHERE job_id=$1`, jobID).Scan(&sequence, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if sequence != 1 || !bytes.Contains(payload, []byte(`"bytesDone":1024`)) {
-		t.Fatalf("stored progress sequence=%d payload=%s", sequence, payload)
+	var stored protocol.BackupProgress
+	if err = json.Unmarshal(payload, &stored); err != nil {
+		t.Fatalf("decode stored progress: %v", err)
+	}
+	if sequence != 1 || stored != p {
+		t.Fatalf("stored progress sequence=%d got=%+v want=%+v", sequence, stored, p)
 	}
 	p.BytesDone = 2048
 	if code := post(); code != http.StatusConflict {
@@ -332,7 +336,7 @@ func TestBackupProgressIsLeaseBoundSequencedAndIdempotent(t *testing.T) {
 	p.Sequence = 2
 	p.ID = "event-2"
 	p.ObservedAt = time.Now().UTC()
-	if _, err = pool.Exec(ctx, `UPDATE backup_job_attempts SET lease_expires_at=now()-interval '1 second' WHERE job_id=$1`, jobID); err != nil {
+	if _, err = pool.Exec(ctx, `UPDATE backup_job_attempts SET leased_at=now()-interval '2 seconds',lease_expires_at=now()-interval '1 second' WHERE job_id=$1`, jobID); err != nil {
 		t.Fatal(err)
 	}
 	if code := post(); code != http.StatusConflict {
