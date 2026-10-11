@@ -43,6 +43,20 @@ func TestValidateRejectsBadUnitsAndFutureObservationButAllowsOfflineData(t *test
 	}
 }
 
+func TestValidateAcceptsBoundedDockerInventoryAndUnits(t *testing.T) {
+	now := time.Now().UTC()
+	s := validSnapshot("agent", "docker", now)
+	s.DockerContainers = []protocol.DockerContainer{{ID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Name: "web", Image: "demo:latest", State: "running"}}
+	s.Metrics = []protocol.TelemetryMetric{{Name: "docker_memory_usage_bytes", Value: 1024, Unit: "By", Labels: map[string]string{"container_id": s.DockerContainers[0].ID}}, {Name: "docker_cpu_capacity_used_percent", Value: 25, Unit: "%", Labels: map[string]string{"container_id": s.DockerContainers[0].ID}}}
+	if err := validate(s, "agent", now); err != nil {
+		t.Fatalf("valid Docker snapshot rejected: %v", err)
+	}
+	s.DockerContainers = append(s.DockerContainers, s.DockerContainers[0])
+	if err := validate(s, "agent", now); err == nil {
+		t.Fatal("accepted duplicate Docker container IDs")
+	}
+}
+
 func TestTelemetryIngestIsIdempotentAndRejectsRevokedIdentity(t *testing.T) {
 	pool := telemetryTestPool(t)
 	ctx := context.Background()
@@ -97,6 +111,48 @@ func TestTelemetryIngestIsIdempotentAndRejectsRevokedIdentity(t *testing.T) {
 	}
 	if w := request(); w.Code != http.StatusUnauthorized {
 		t.Fatalf("revoked identity returned %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestDockerInventorySnapshotIngestsAndPersists(t *testing.T) {
+	pool := telemetryTestPool(t)
+	ctx := context.Background()
+	const credential = "docker-telemetry-test-credential"
+	var deviceID, agentID string
+	if err := pool.QueryRow(ctx, `INSERT INTO devices(display_name) VALUES('docker-telemetry-test') RETURNING id::text`).Scan(&deviceID); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte(credential))
+	if err := pool.QueryRow(ctx, `INSERT INTO agent_identities(device_id,credential_hash,protocol_version,platform,architecture,agent_version,capabilities,allowed_capabilities) VALUES($1,$2,'v1','linux','amd64','test','[]','{}') RETURNING id::text`, deviceID, sum[:]).Scan(&agentID); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := validSnapshot(agentID, "docker-inventory-snapshot", time.Now().UTC())
+	snapshot.DockerContainers = []protocol.DockerContainer{{ID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Name: "web", Image: "demo:latest", State: "running"}}
+	snapshot.Capabilities = append(snapshot.Capabilities, "docker_inventory", "docker_container_resources")
+	snapshot.Metrics = []protocol.TelemetryMetric{{Name: "docker_memory_usage_bytes", Value: 4096, Unit: "By", Labels: map[string]string{"container_id": snapshot.DockerContainers[0].ID}}, {Name: "docker_cpu_capacity_used_percent", Value: 17, Unit: "%", Labels: map[string]string{"container_id": snapshot.DockerContainers[0].ID}}}
+	body, err := json.Marshal(protocol.TelemetrySnapshotBatch{ProtocolVersion: protocol.CurrentVersion, AgentID: agentID, Snapshots: []protocol.TelemetrySnapshot{snapshot}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	NewHandler(pool).Register(mux)
+	request := httptest.NewRequest(http.MethodPost, "/api/agent/telemetry", bytes.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+credential)
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("Docker snapshot ingest returned %d: %s", response.Code, response.Body.String())
+	}
+	var payload []byte
+	if err := pool.QueryRow(ctx, `SELECT payload FROM agent_telemetry_latest WHERE agent_id=$1`, agentID).Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	var stored protocol.TelemetrySnapshot
+	if err := json.Unmarshal(payload, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.DockerContainers) != 1 || stored.DockerContainers[0].Name != "web" || len(stored.Metrics) != 2 {
+		t.Fatalf("persisted latest snapshot lost Docker inventory or metrics: %+v", stored)
 	}
 }
 
