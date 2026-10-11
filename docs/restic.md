@@ -25,7 +25,7 @@ The agent advertises `restic.backup` only when it has at least one enabled, vali
 
 The bounded report output contains `resticStatus`, `resticVersion`, `snapshotIds`, and an optional stable `errorCode`. Restic `succeeded` maps to protocol `succeeded`; `canceled` maps to protocol `cancelled`; an expired job deadline maps to `timed_out`. The v1 protocol has no `partial` or `interrupted` job status, so these runner outcomes map to protocol `failed` while retaining the precise Restic status and snapshot IDs in structured output. Other failures also map to `failed` with a safe code. Reports are persisted in the bounded offline queue and retain their IDs across retries.
 
-This change connects the runner to agent job dispatch. Server scheduling, repository/profile CRUD, and resilient coordination remain separate work; current server polling does not yet deliver backup jobs. A process crash between executing a backup and persisting its report can cause the server to redeliver the job; the report queue provides delivery retry after the result has been saved.
+The agent persists a private execution journal (job ID, attempt token, and stable result ID) before starting Restic. It saves the terminal result before clearing that journal. After restart, a leftover journal becomes an `unknown_outcome` report and is never executed again. The report queue retains result IDs across delivery retries. The server holds unknown attempts for operator reconciliation and does not blindly retry them. A lease expiry cannot prove that a remote Restic process stopped; Restic locks remain authoritative and are never removed automatically.
 
 ## Runner behavior
 

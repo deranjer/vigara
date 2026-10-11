@@ -96,6 +96,17 @@ func (c *Client) Cycle(ctx context.Context) (time.Duration, error) {
 	if err := c.flushReports(ctx); err != nil {
 		return 0, err
 	}
+	if c.State.ActiveJob != nil {
+		if err := recoverInterruptedBackup(&c.State); err != nil {
+			return 0, err
+		}
+		if err := Save(c.StatePath, c.State); err != nil {
+			return 0, err
+		}
+		if err := c.flushReports(ctx); err != nil {
+			return 0, err
+		}
+	}
 	telemetryErr := c.flushTelemetry(ctx)
 	request := protocol.AgentRequest{ProtocolVersion: protocol.CurrentVersion, AgentID: c.State.AgentID, AgentVersion: AgentVersion, Platform: runtime.GOOS, Architecture: runtime.GOARCH, Capabilities: c.capabilities()}
 	if c.State.Configuration != nil {
@@ -122,10 +133,19 @@ func (c *Client) Cycle(ctx context.Context) (time.Duration, error) {
 		if err != nil {
 			return 0, err
 		}
+		if response.Job.ModuleID == resticModuleID {
+			c.State.ActiveJob = &ExecutionJournal{Job: *response.Job, ResultID: resultID, StartedAt: time.Now().UTC()}
+			if err := Save(c.StatePath, c.State); err != nil {
+				c.State.ActiveJob = nil
+				return 0, err
+			}
+		}
 		result := c.executeJob(ctx, *response.Job, resultID)
+		result.AttemptToken = response.Job.AttemptToken
 		if err := c.State.Enqueue(result); err != nil {
 			return 0, err
 		}
+		c.State.ActiveJob = nil
 	}
 	if err := Save(c.StatePath, c.State); err != nil {
 		return 0, err
@@ -142,6 +162,19 @@ func (c *Client) Cycle(ctx context.Context) (time.Duration, error) {
 		return delay, &TelemetryDeliveryError{Err: telemetryErr}
 	}
 	return delay, nil
+}
+
+func recoverInterruptedBackup(state *State) error {
+	if state.ActiveJob == nil {
+		return nil
+	}
+	j := state.ActiveJob
+	unknown := protocol.JobResult{ProtocolVersion: protocol.CurrentVersion, ID: j.ResultID, JobID: j.Job.ID, AttemptToken: j.Job.AttemptToken, AgentID: state.AgentID, ModuleID: j.Job.ModuleID, ModuleVersion: j.Job.ModuleVersion, Status: protocol.JobFailed, StartedAt: j.StartedAt, FinishedAt: time.Now().UTC(), Error: &protocol.Failure{Code: "unknown_outcome", Message: "The agent restarted while this backup was running; its outcome is unknown and it was not replayed", Retryable: false}}
+	if err := state.Enqueue(unknown); err != nil {
+		return err
+	}
+	state.ActiveJob = nil
+	return nil
 }
 
 func (c *Client) capabilities() []string {

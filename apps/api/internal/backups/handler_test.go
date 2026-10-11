@@ -86,7 +86,7 @@ func backupTestDB(t *testing.T) *pgxpool.Pool {
 		t.Fatal(e)
 	}
 	t.Cleanup(pool.Close)
-	for _, f := range []string{"000001_initial_schema.up.sql", "000002_local_auth.up.sql", "000003_agent_enrollment.up.sql", "000009_backup_policies.up.sql"} {
+	for _, f := range []string{"000001_initial_schema.up.sql", "000002_local_auth.up.sql", "000003_agent_enrollment.up.sql", "000009_backup_policies.up.sql", "000010_backup_coordination.up.sql"} {
 		b, e := os.ReadFile("../../migrations/" + f)
 		if e != nil {
 			t.Fatal(e)

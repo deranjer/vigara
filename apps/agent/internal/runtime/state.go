@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/deranjer/vigara/internal/protocol"
 )
@@ -32,6 +33,15 @@ type State struct {
 	ResticProfiles map[string]ResticProfile     `json:"resticProfiles,omitempty"`
 	Pending        []protocol.JobResult         `json:"pending,omitempty"`
 	Telemetry      []protocol.TelemetrySnapshot `json:"telemetryPending,omitempty"`
+	ActiveJob      *ExecutionJournal            `json:"activeBackup,omitempty"`
+}
+
+// ExecutionJournal is fsynced through Save before the backup subprocess starts.
+// A surviving journal after restart is always reported as unknown; it is never replayed.
+type ExecutionJournal struct {
+	Job       protocol.Job `json:"job"`
+	ResultID  string       `json:"resultId"`
+	StartedAt time.Time    `json:"startedAt"`
 }
 
 func Load(path string) (State, error) {
@@ -100,6 +110,9 @@ func Save(path string, state State) error {
 	}
 	if err = file.Chmod(0600); err == nil {
 		_, err = file.Write(data)
+	}
+	if err == nil {
+		err = file.Sync()
 	}
 	if closeErr := file.Close(); err == nil {
 		err = closeErr

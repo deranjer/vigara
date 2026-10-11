@@ -50,6 +50,7 @@ type ModuleConfiguration struct {
 // failed result and continue polling rather than stopping the agent process.
 type Job struct {
 	ID             string         `json:"id"`
+	AttemptToken   string         `json:"attemptToken,omitempty"`
 	ModuleID       string         `json:"moduleId"`
 	ModuleVersion  string         `json:"moduleVersion"`
 	Kind           string         `json:"kind"`
@@ -99,6 +100,7 @@ type JobResult struct {
 	ProtocolVersion string         `json:"protocolVersion"`
 	ID              string         `json:"id"`
 	JobID           string         `json:"jobId"`
+	AttemptToken    string         `json:"attemptToken,omitempty"`
 	AgentID         string         `json:"agentId"`
 	ModuleID        string         `json:"moduleId"`
 	ModuleVersion   string         `json:"moduleVersion"`

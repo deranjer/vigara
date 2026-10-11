@@ -323,7 +323,13 @@ func (h *Handler) poll(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not update agent status", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, protocol.AgentResponse{ProtocolVersion: protocol.CurrentVersion, ServerTime: time.Now().UTC(), PollAfterSeconds: 30})
+	job, leaseErr := leaseBackupJob(r.Context(), h.pool, agentID)
+	if leaseErr != nil {
+		http.Error(w, "could not coordinate backup job", http.StatusInternalServerError)
+		return
+	}
+	configuration := &protocol.AgentConfiguration{Version: "backup-v1", GeneratedAt: time.Now().UTC(), Modules: []protocol.ModuleConfiguration{{ModuleID: "restic.backup", ModuleVersion: "1.0.0", Enabled: true}}}
+	writeJSON(w, protocol.AgentResponse{ProtocolVersion: protocol.CurrentVersion, ServerTime: time.Now().UTC(), PollAfterSeconds: 30, Configuration: configuration, Job: job})
 }
 
 func (h *Handler) reports(w http.ResponseWriter, r *http.Request) {
@@ -349,6 +355,12 @@ func (h *Handler) reports(w http.ResponseWriter, r *http.Request) {
 		if result.ID == "" || result.AgentID != agentID || result.ProtocolVersion != protocol.CurrentVersion {
 			http.Error(w, "invalid job result identity", http.StatusBadRequest)
 			return
+		}
+		if result.ModuleID == "restic.backup" {
+			if err = recordBackupResult(r.Context(), tx, agentID, result); err != nil {
+				http.Error(w, "invalid or conflicting backup result", http.StatusConflict)
+				return
+			}
 		}
 		payload, _ := json.Marshal(result)
 		if _, err = tx.Exec(r.Context(), `INSERT INTO agent_reports(agent_id, report_id, payload) VALUES($1,$2,$3) ON CONFLICT(agent_id,report_id) DO NOTHING`, agentID, result.ID, payload); err != nil {

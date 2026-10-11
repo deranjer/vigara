@@ -37,7 +37,10 @@ logged or included in ordinary diagnostic output.
 ## Jobs, grants, and failure reporting
 
 A job has a stable ID, kind, module ID/version, creation/deadline timestamps,
-positive `timeoutSeconds`, settings, and explicit permissions. The agent must
+positive `timeoutSeconds`, settings, and explicit permissions. Leased backup
+jobs also carry an opaque `attemptToken` that binds execution and its result to
+one server-issued attempt. The agent must retain it with queued results and
+must not replay that attempt after restart. The agent must
 match the requested module version and advertised capability before execution.
 The deadline is authoritative; a runner creates a bounded context and stops
 work at timeout. A module receives only the job's settings and permission
@@ -45,7 +48,7 @@ grants. Declaring a permission in a module descriptor does not grant it; every
 access must be covered by a job grant, including any required scope.
 
 The agent submits one `JobResult` with stable result/job/agent/module identity,
-start and finish timestamps, status (`succeeded`, `failed`, `timed_out`, or
+the attempt token when present, start and finish timestamps, status (`succeeded`, `failed`, `timed_out`, or
 `cancelled`), optional output, and a structured failure code/message/retryable
 flag when applicable. Retries preserve IDs and payload. Error messages must
 not contain credentials or other secret values. A failed, timed-out, or
