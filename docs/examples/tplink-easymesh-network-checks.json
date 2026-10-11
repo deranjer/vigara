@@ -1,0 +1,6 @@
+{
+  "checks": [
+    {"name":"archer-be550-admin-port","type":"tcp","address":"192.168.0.1:443"},
+    {"name":"re653be-admin-port","type":"tcp","address":"192.168.0.2:443"}
+  ]
+}

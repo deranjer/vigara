@@ -90,6 +90,23 @@ func TestPerCheckTimeoutIsBounded(t *testing.T) {
 		t.Fatalf("timeout not bounded: %s %+v", time.Since(start), got)
 	}
 }
+
+func TestTPLinkExampleUsesSupportedChecks(t *testing.T) {
+	path := filepath.Join("..", "..", "..", "..", "docs", "examples", "tplink-easymesh-network-checks.json")
+	checks, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(checks) != 2 || checks[0].Name != "archer-be550-admin-port" || checks[1].Name != "re653be-admin-port" {
+		t.Fatalf("unexpected TP-Link example checks: %+v", checks)
+	}
+	for _, check := range checks {
+		if check.Type != "tcp" || validateAddress(check.Address) != nil {
+			t.Fatalf("example must use a supported local TCP target: %+v", check)
+		}
+	}
+}
+
 func writeConfig(t *testing.T, cfg config) string {
 	t.Helper()
 	b, err := json.Marshal(cfg)
