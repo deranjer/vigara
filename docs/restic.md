@@ -1,11 +1,32 @@
-# Managed restic runner
+# Restic backup module
 
-`internal/restic` is a standalone Go package for validating a restic repository and running one backup. It invokes restic with argument arrays, passes credentials through an explicit environment map, checks the executable version before each operation, parses backup JSON-lines output, and returns only a safe status, version, snapshot IDs, and stable error code. Command output and repository addresses are never copied into returned errors. Output capture is bounded to 16 MiB.
+The agent includes a `restic.backup` module (`1.0.0`) for local and network-drive repositories. It invokes the locally installed Restic executable with argument arrays, checks the pinned `0.19.1` version before repository access and backup, validates the repository without initializing it, and parses bounded JSON-lines backup output. Output and error messages do not contain command output, repository addresses, credentials, or executable paths.
 
-The package pins restic `0.19.1` by default. This was the latest stable release at implementation time; the [official releases](https://github.com/restic/restic/releases) and [restic 0.19.1 scripting documentation](https://restic.readthedocs.io/en/stable/075_scripting.html) define the JSON output and exit codes used here. Updating `PinnedVersion` should include reviewing those compatibility points and adjusting the package tests. A binary with any other version is rejected before repository access or backup.
+## Operator-owned profile
 
-`ValidateRepository` runs `restic cat config` and requires valid JSON metadata. It does not initialize a repository. `Backup` accepts a repository and source paths, checks the pinned version, and runs `restic --repo <repository> --json --quiet backup -- <paths...>`. The `--` separator prevents a source path from being interpreted as a restic option. Restic's scripting documentation says `--quiet` disables recurring status messages while preserving the summary output, so the runner can capture bounded output even for long backups. Restic's documented exit code 3 is a partial result only when valid summary output is available; exit code 130 is reported as interrupted. Cancellation from the caller's context is reported as canceled, and a deadline as interrupted. Other exit codes are failures. Snapshot IDs are retained when restic returned a valid summary, including partial backups.
+Backup destinations, source paths, credentials, and an optional executable path come from the trusted local operator's private agent state file. A server job can select only a profile ID; it cannot supply paths, credentials, environment variables, or executable paths. The state file is protected by the agent's private-file permissions and should be edited only by the service account or an administrator. Add a profile before enrollment if the agent should advertise the backup capability at enrollment. For example, add this field to the JSON state file before running `enroll`:
 
-Supply `RESTIC_PASSWORD` and backend credentials through `Config.Environment`; never put secrets in source paths, repository URLs, argument lists, or log messages. The runner removes ambient `RESTIC_*` settings and inherits only basic process environment values needed to locate files and executables, then adds configured values. It rejects environment keys that could make restic execute a password command or substitute a repository file. Error messages intentionally omit restic stderr because it may contain repository or backend details.
+```json
+"resticProfiles": {
+  "home": {
+    "enabled": true,
+    "repository": "/mnt/backup/restic",
+    "sourcePaths": ["/home/alice/Documents"],
+    "environment": {"RESTIC_PASSWORD": "replace-with-a-local-secret"}
+  }
+}
+```
 
-This package is not yet connected to Loopira transport or job execution. That work depends on ENG-136 enrollment and its agent lifecycle. The runner can be adopted by that integration once enrollment and job delivery are available; this package does not change protocol, migrations, server, or agent behavior.
+On Windows, use a drive path or UNC network share. `local:` repository paths are also accepted. Backend URL/scheme repositories such as S3, REST, and SFTP are outside the current destination scope. The profile may include `"executable": "C:\\Program Files\\Restic\\restic.exe"` when the executable is not on the service account's PATH; omit it to use `restic` from PATH. Keep the state file and its containing directory private. Never place secrets in the repository, source paths, executable field, job settings, or logs. Environment keys that enable password commands or repository-file substitution are rejected.
+
+The agent advertises `restic.backup` only when it has at least one enabled, valid local profile. The enrollment token must authorize that capability; an existing identity whose token did not include it must be enrolled again with an appropriately scoped token before the agent can advertise it. An enabled `restic.backup` entry in the received module configuration is also required before a job runs. Each job must use kind `backup`, module version `1.0.0`, a timeout from one second through seven days, a single `profileId` setting, and a `restic.backup` permission grant with scope `profile:<profileId>`.
+
+## Results and boundaries
+
+The bounded report output contains `resticStatus`, `resticVersion`, `snapshotIds`, and an optional stable `errorCode`. Restic `succeeded` maps to protocol `succeeded`; `canceled` maps to protocol `cancelled`; an expired job deadline maps to `timed_out`. The v1 protocol has no `partial` or `interrupted` job status, so these runner outcomes map to protocol `failed` while retaining the precise Restic status and snapshot IDs in structured output. Other failures also map to `failed` with a safe code. Reports are persisted in the bounded offline queue and retain their IDs across retries.
+
+This change connects the runner to agent job dispatch. Server scheduling, repository/profile CRUD, and resilient coordination remain separate work; current server polling does not yet deliver backup jobs. A process crash between executing a backup and persisting its report can cause the server to redeliver the job; the report queue provides delivery retry after the result has been saved.
+
+## Runner behavior
+
+The `internal/restic` package invokes `restic --repo <repository> --json --quiet backup -- <paths...>`. The `--` separator prevents a source path from being interpreted as an option. Output capture is bounded to 16 MiB. Documented exit code 3 is partial only when valid summary output is available; exit code 130 is interrupted. Context cancellation is canceled and a deadline is interrupted at the runner boundary. Snapshot IDs are limited to 64 lowercase hexadecimal characters and retained when Restic returns a valid summary, including successful, partial, and interrupted outcomes. Updating `PinnedVersion` requires reviewing the [official releases](https://github.com/restic/restic/releases), [scripting documentation](https://restic.readthedocs.io/en/stable/075_scripting.html), and compatibility tests.

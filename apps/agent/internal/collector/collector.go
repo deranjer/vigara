@@ -3,8 +3,10 @@ package collector
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"os"
 	"reflect"
 	"runtime"
@@ -12,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	dockercollector "github.com/deranjer/vigara/apps/agent/internal/collector/docker"
 	"github.com/deranjer/vigara/apps/agent/internal/networkcheck"
 	"github.com/deranjer/vigara/internal/protocol"
 	"github.com/shirou/gopsutil/v4/cpu"
@@ -40,9 +43,26 @@ type Collector struct {
 	networkChecksAt     time.Time
 	networkChecks       []networkcheck.Check
 	networkCheckResults []networkcheck.Result
+	docker              *dockercollector.Collector
+	dockerConfigError   error
 }
 
-func New() *Collector { return &Collector{} }
+func New() *Collector {
+	c := &Collector{}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("VIGIRA_DOCKER_ENABLED")), "true") {
+		c.docker, c.dockerConfigError = dockercollector.New(dockercollector.Config{Enabled: true, Host: strings.TrimSpace(os.Getenv("VIGIRA_DOCKER_HOST"))})
+	}
+	return c
+}
+
+// NewWithDockerConfig makes the opt-in boundary explicit for embedders.
+func NewWithDockerConfig(enabled bool, host string, client *http.Client) *Collector {
+	c := &Collector{}
+	if enabled {
+		c.docker, c.dockerConfigError = dockercollector.New(dockercollector.Config{Enabled: true, Host: host, HTTPClient: client})
+	}
+	return c
+}
 
 // Collect makes one bounded pass over supported host APIs. Every failed
 // capability is represented as an error and produces no fabricated metric.
@@ -172,6 +192,7 @@ func (c *Collector) Collect(ctx context.Context) protocol.TelemetrySnapshot {
 		c.networkCheckResults = nil
 		c.networkChecksAt = time.Time{}
 	}
+	c.collectDocker(&snapshot, capabilities, fail, ctx)
 	for capability := range capabilities {
 		snapshot.Capabilities = append(snapshot.Capabilities, capability)
 	}
@@ -181,6 +202,32 @@ func (c *Collector) Collect(ctx context.Context) protocol.TelemetrySnapshot {
 		snapshot.Errors = snapshot.Errors[:128]
 	}
 	return snapshot
+}
+
+func (c *Collector) collectDocker(snapshot *protocol.TelemetrySnapshot, capabilities map[string]bool, fail func(string, error), ctx context.Context) {
+	if c.dockerConfigError != nil {
+		fail("docker_inventory", c.dockerConfigError)
+		return
+	}
+	if c.docker == nil {
+		return
+	}
+	result := c.docker.Collect(ctx)
+	for _, metric := range result.Metrics {
+		if len(snapshot.Metrics) < 512 {
+			snapshot.Metrics = append(snapshot.Metrics, metric)
+		} else {
+			fail("docker_container_resources", errors.New("snapshot metric limit reached; Docker metrics omitted"))
+			break
+		}
+	}
+	snapshot.DockerContainers = result.Containers
+	for _, capability := range result.Capabilities {
+		capabilities[capability] = true
+	}
+	for _, collectionError := range result.Errors {
+		fail(collectionError.Capability, errors.New(collectionError.Message))
+	}
 }
 
 func (c *Collector) collectDiskRates(ctx context.Context, now time.Time, add func(string, string, float64, string, map[string]string), fail func(string, error)) {

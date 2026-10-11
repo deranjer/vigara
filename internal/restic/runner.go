@@ -111,20 +111,28 @@ func New(config Config) *Runner {
 // ValidateRepository verifies the repository can be opened with the supplied
 // credentials by reading its config. It does not initialize or modify it.
 func (r *Runner) ValidateRepository(ctx context.Context, repository string) error {
+	_, err := r.ValidateRepositoryVersion(ctx, repository)
+	return err
+}
+
+// ValidateRepositoryVersion validates a repository and reports the pinned
+// binary version observed during the validation.
+func (r *Runner) ValidateRepositoryVersion(ctx context.Context, repository string) (string, error) {
 	if strings.TrimSpace(repository) == "" {
-		return errors.New("restic: repository is required")
+		return "", errors.New("restic: repository is required")
 	}
-	if _, err := r.version(ctx); err != nil {
-		return err
+	version, err := r.version(ctx)
+	if err != nil {
+		return version, err
 	}
 	stdout, _, err := r.invoke(ctx, []string{"--repo", repository, "cat", "config"})
 	if err != nil {
-		return safeCommandError("validate repository", err)
+		return version, safeCommandError("validate repository", err)
 	}
 	if !json.Valid(bytes.TrimSpace(stdout)) {
-		return errors.New("restic: repository validation returned invalid metadata")
+		return version, errors.New("restic: repository validation returned invalid metadata")
 	}
-	return nil
+	return version, nil
 }
 
 // Backup runs one backup. Paths, repository, and credentials are never emitted
@@ -150,13 +158,13 @@ func (r *Runner) Backup(ctx context.Context, repository string, paths []string) 
 	summary, jsonPartial, parseErr := parseBackup(stdout)
 	if runErr != nil {
 		result.Status, result.ErrorCode = classifyRestic(ctx, runErr)
+		if parseErr == nil && summary != nil && summary.SnapshotID != "" {
+			result.SnapshotIDs = []string{summary.SnapshotID}
+		}
 		if result.Status == Partial {
 			if parseErr != nil || summary == nil {
 				result.Status, result.ErrorCode = Failed, "invalid_restic_output"
 				return result
-			}
-			if summary.SnapshotID != "" {
-				result.SnapshotIDs = []string{summary.SnapshotID}
 			}
 		}
 		return result
@@ -193,6 +201,7 @@ func (r *Runner) version(ctx context.Context) (string, error) {
 }
 
 var versionPattern = regexp.MustCompile(`(?m)^restic\s+(\d+\.\d+\.\d+)\b`)
+var snapshotIDPattern = regexp.MustCompile(`^[0-9a-f]{1,64}$`)
 
 func (r *Runner) invoke(ctx context.Context, args []string) ([]byte, []byte, error) {
 	return r.process.run(ctx, r.executable, args, environment(r.environment))
@@ -337,6 +346,9 @@ func parseBackup(data []byte) (*backupSummary, bool, error) {
 				partial = true
 			}
 		case "summary":
+			if message.SnapshotID != "" && !snapshotIDPattern.MatchString(message.SnapshotID) {
+				return nil, false, errors.New("restic: invalid snapshot identifier")
+			}
 			summary = &backupSummary{SnapshotID: message.SnapshotID}
 		case "error":
 			partial = true

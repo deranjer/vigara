@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -129,7 +130,12 @@ var metricUnits = map[string]string{
 	"disk_read_bytes_per_second": "By/s", "disk_write_bytes_per_second": "By/s",
 	"network_receive_bytes_per_second": "By/s", "network_send_bytes_per_second": "By/s",
 	"network_check_success": "1", "network_check_latency_milliseconds": "ms",
+	"docker_memory_usage_bytes": "By", "docker_memory_limit_bytes": "By", "docker_memory_used_percent": "%",
+	"docker_cpu_capacity_used_percent": "%", "docker_processes": "1",
+	"docker_network_receive_bytes_per_second": "By/s", "docker_network_transmit_bytes_per_second": "By/s",
 }
+
+var dockerIDPattern = regexp.MustCompile(`^[a-f0-9]{12,128}$`)
 
 func validate(s protocol.TelemetrySnapshot, agentID string, now time.Time) error {
 	if s.ProtocolVersion != protocol.CurrentVersion || s.ID == "" || len(s.ID) > 128 || s.AgentID != agentID {
@@ -143,6 +149,19 @@ func validate(s protocol.TelemetrySnapshot, agentID string, now time.Time) error
 	}
 	if len(s.Metrics) > 512 || len(s.Capabilities) > 128 || len(s.Errors) > 128 {
 		return errors.New("snapshot exceeds item limits")
+	}
+	if len(s.DockerContainers) > 32 {
+		return errors.New("too many Docker containers")
+	}
+	seenDocker := map[string]bool{}
+	for _, c := range s.DockerContainers {
+		if !dockerIDPattern.MatchString(c.ID) || seenDocker[c.ID] || len(c.Name) > 128 || len(c.Image) > 128 || len(c.State) > 32 {
+			return errors.New("invalid Docker container inventory")
+		}
+		if c.State != "created" && c.State != "restarting" && c.State != "running" && c.State != "removing" && c.State != "paused" && c.State != "exited" && c.State != "dead" {
+			return errors.New("invalid Docker container state")
+		}
+		seenDocker[c.ID] = true
 	}
 	seenCaps := map[string]bool{}
 	for _, cap := range s.Capabilities {
