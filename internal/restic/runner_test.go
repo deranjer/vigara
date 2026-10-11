@@ -162,11 +162,15 @@ func TestEnvironmentStripsAmbientResticSettingsAndUsesOnlyConfiguredCredentials(
 }
 
 func TestRealSubprocessInvocation(t *testing.T) {
-	runner := New(Config{Executable: os.Args[0], Environment: map[string]string{"RESTIC_TEST_HELPER": "1", "RESTIC_PASSWORD": "secret"}})
+	runner := New(Config{Executable: os.Args[0], Environment: map[string]string{"RESTIC_TEST_HELPER": "1", "RESTIC_TEST_PROGRESS": "1", "RESTIC_PASSWORD": "secret"}})
 	runner.process = testBinaryProcess{}
-	got := runner.Backup(context.Background(), "/repo", []string{"/source"})
+	var progress []Progress
+	got := runner.BackupWithProgress(context.Background(), "/repo", []string{"/source"}, func(value Progress) error { progress = append(progress, value); return nil })
 	if got.Status != Succeeded || !reflect.DeepEqual(got.SnapshotIDs, []string{"abc123"}) {
 		t.Fatalf("subprocess result = %#v", got)
+	}
+	if len(progress) != 1 || progress[0].FilesDone != 2 || progress[0].FilesTotal != 5 || progress[0].BytesDone != 1024 || progress[0].BytesTotal != 2048 || progress[0].PercentDone != 50 {
+		t.Fatalf("streamed progress = %#v", progress)
 	}
 }
 
@@ -191,6 +195,9 @@ func TestResticHelper(t *testing.T) {
 	if strings.Contains(args, "version") {
 		_, _ = os.Stdout.WriteString("restic 0.19.1\n")
 	} else {
+		if os.Getenv("RESTIC_TEST_PROGRESS") == "1" {
+			_, _ = os.Stdout.WriteString("{\"message_type\":\"status\",\"files_done\":2,\"total_files\":5,\"bytes_done\":1024,\"total_bytes\":2048,\"percent_done\":50}\n")
+		}
 		_, _ = os.Stdout.WriteString("{\"message_type\":\"summary\",\"snapshot_id\":\"abc123\"}\n")
 	}
 	os.Exit(0)

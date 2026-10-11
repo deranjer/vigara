@@ -86,7 +86,7 @@ func backupTestDB(t *testing.T) *pgxpool.Pool {
 		t.Fatal(e)
 	}
 	t.Cleanup(pool.Close)
-	for _, f := range []string{"000001_initial_schema.up.sql", "000002_local_auth.up.sql", "000003_agent_enrollment.up.sql", "000009_backup_policies.up.sql", "000010_backup_coordination.up.sql"} {
+	for _, f := range []string{"000001_initial_schema.up.sql", "000002_local_auth.up.sql", "000003_agent_enrollment.up.sql", "000009_backup_policies.up.sql", "000010_backup_coordination.up.sql", "000011_backup_progress.up.sql"} {
 		b, e := os.ReadFile("../../migrations/" + f)
 		if e != nil {
 			t.Fatal(e)
@@ -255,5 +255,55 @@ func TestAuthenticatedPolicyCRUDAndDurableScheduling(t *testing.T) {
 	mux.ServeHTTP(unauth, httptest.NewRequest(http.MethodGet, "/api/backups/policies", nil))
 	if unauth.Code != 401 {
 		t.Fatalf("unauthenticated policy access=%d", unauth.Code)
+	}
+}
+
+func TestJobsHistoryRetainsPartialSnapshotAndAggregateProgress(t *testing.T) {
+	pool := backupTestDB(t)
+	ctx := context.Background()
+	service := auth.NewService(pool, db.New(pool))
+	session, err := service.CreateFirstUser(ctx, "historyuser", "History User", "very-long-test-password-1", "very-long-test-password-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var device, agentID, policyID, jobID string
+	if err = pool.QueryRow(ctx, `INSERT INTO devices(display_name) VALUES('history-device') RETURNING id::text`).Scan(&device); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256([]byte("history-agent-credential"))
+	if err = pool.QueryRow(ctx, `INSERT INTO agent_identities(device_id,credential_hash,protocol_version,platform,architecture,agent_version,capabilities,allowed_capabilities) VALUES($1,$2,'v1','linux','amd64','test','["restic.backup"]','{restic.backup}') RETURNING id::text`, device, digest[:]).Scan(&agentID); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `INSERT INTO backup_policies(device_id,agent_id,profile_id,name,destination,included_paths,excluded_paths,retention,schedule,missed_run_policy,disconnected_device_policy,enabled,next_run_at) VALUES($1,$2,'home','Home','/safe/path','["/source"]','[]','{}','{}','run_once','wait',true,now()) RETURNING id::text`, device, agentID).Scan(&policyID); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `INSERT INTO backup_jobs(policy_id,agent_id,profile_id,policy_revision,policy_snapshot,scheduled_for,status,attempt_count) VALUES($1,$2,'home',1,'{"excluded_paths":[]}',now(),'completed',1) RETURNING id::text`, policyID, agentID).Scan(&jobID); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	progress, _ := json.Marshal(map[string]any{"protocolVersion": "v1", "id": "event-1", "jobId": jobID, "attemptToken": "00000000-0000-4000-8000-000000000001", "agentId": agentID, "sequence": 1, "observedAt": now, "phase": "backup", "filesDone": 2, "filesTotal": 5, "bytesDone": 1024, "bytesTotal": 2048, "percentDone": 50})
+	result := map[string]any{"output": map[string]any{"resticStatus": "partial", "backupOutcome": "partial", "snapshotIds": []string{"abc123"}}, "error": map[string]any{"code": "partial_backup", "message": "The backup saved a snapshot, but some files could not be read"}, "finishedAt": now}
+	resultBytes, _ := json.Marshal(result)
+	if _, err = pool.Exec(ctx, `INSERT INTO backup_job_attempts(job_id,attempt_number,lease_expires_at,finished_at,result_status,result_id,result_payload,outcome_unknown,progress_sequence,progress_payload,progress_at) VALUES($1,1,now()+interval '2 hours',now(),'failed','result-1',$2,false,1,$3,now())`, jobID, resultBytes, progress); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	NewHandler(pool, service).Register(mux)
+	req := httptest.NewRequest(http.MethodGet, "/api/backups/policies/"+policyID+"/history", nil)
+	req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: session.Token})
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("history status=%d body=%s", response.Code, response.Body.String())
+	}
+	var jobs []Job
+	if err = json.Unmarshal(response.Body.Bytes(), &jobs); err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 || jobs[0].ExecutionStatus != "partial" || jobs[0].Outcome != "partial" || len(jobs[0].SnapshotIDs) != 1 || jobs[0].SnapshotIDs[0] != "abc123" || jobs[0].Progress == nil || jobs[0].Progress.FilesDone != 2 || jobs[0].ErrorCode != "partial_backup" {
+		t.Fatalf("incomplete backup history projection: %+v", jobs)
+	}
+	if bytes.Contains(response.Body.Bytes(), []byte("attemptToken")) || bytes.Contains(response.Body.Bytes(), []byte("/safe/path")) {
+		t.Fatal("history leaked attempt token or destination path")
 	}
 }

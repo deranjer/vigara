@@ -39,9 +39,11 @@ type State struct {
 // ExecutionJournal is fsynced through Save before the backup subprocess starts.
 // A surviving journal after restart is always reported as unknown; it is never replayed.
 type ExecutionJournal struct {
-	Job       protocol.Job `json:"job"`
-	ResultID  string       `json:"resultId"`
-	StartedAt time.Time    `json:"startedAt"`
+	Job              protocol.Job             `json:"job"`
+	ResultID         string                   `json:"resultId"`
+	StartedAt        time.Time                `json:"startedAt"`
+	ProgressSequence uint64                   `json:"progressSequence,omitempty"`
+	LastProgress     *protocol.BackupProgress `json:"lastProgress,omitempty"`
 }
 
 func Load(path string) (State, error) {

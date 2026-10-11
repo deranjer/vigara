@@ -10,6 +10,9 @@ type Series = { name: string; unit: string; labels: Record<string, string>; poin
 type History = { range: string; windowStart: string; windowEnd: string; metrics: string[]; series: Series[] }
 type DevicePage = { devices: Device[]; total: number; offset: number; limit: number }
 type Availability = { expectedAwake: boolean; maintenanceActive: boolean }
+type BackupProgress = { observedAt: string; phase: string; filesDone?: number; filesTotal?: number; bytesDone?: number; bytesTotal?: number; percentDone?: number }
+type BackupJob = { id: string; profileId: string; scheduledFor: string; status: string; executionStatus: string; outcome?: string; snapshotIds?: string[]; errorCode?: string; errorMessage?: string; progress?: BackupProgress }
+type BackupPolicy = { id: string; name: string; profileId: string }
 
 async function get<T>(path: string): Promise<T> {
   const response = await fetch(path, { credentials: 'same-origin' })
@@ -57,6 +60,30 @@ function MetricChart({ series, range, windowStart, windowEnd }: { series: Series
   return <Stack gap="xs"><svg viewBox="0 0 400 122" role="img" aria-label={`${prettyName(series.name)} history chart`} className="metric-chart"><line x1="34" y1="18" x2="388" y2="18" /><line x1="34" y1="56" x2="388" y2="56" /><line x1="34" y1="94" x2="388" y2="94" /><text x="0" y="21">{formatValue(displayHigh, series.unit)}</text><text x="0" y="59">{formatValue((displayLow + displayHigh) / 2, series.unit)}</text><text x="0" y="97">{formatValue(displayLow, series.unit)}</text>{paths.map((path, index) => <path d={path} key={index} />)}{coords.map(({ x, y, point }) => <circle key={`${point.at}-${x}`} cx={x} cy={y} r="3.5"><title>{timeLabel(point.at)}: {point.value === null ? 'missing' : formatValue(point.value, series.unit)}</title></circle>)}</svg><Group justify="space-between"><Text size="xs" c="dimmed">{timeLabel(windowStart)}</Text><Text size="xs" c="dimmed">{timeLabel(windowEnd)}</Text></Group><Text size="xs" c="dimmed">{coords.length} plotted points, {averagePeriod}; gaps are left empty.</Text></Stack>
 }
 
+function BackupHistory({ refresh }: { refresh: number }) {
+  const [rows, setRows] = useState<{ policy: BackupPolicy; jobs: BackupJob[] }[]>([])
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(true)
+  useEffect(() => {
+    let active = true
+    const load = async () => {
+      try {
+        const policies = await get<BackupPolicy[]>('/api/backups/policies?limit=100')
+        const result = await Promise.all(policies.map(async (policy) => ({ policy, jobs: await get<BackupJob[]>(`/api/backups/policies/${encodeURIComponent(policy.id)}/history?limit=20`) })))
+        if (active) { setRows(result); setError('') }
+      } catch (cause) { if (active) setError(cause instanceof Error ? cause.message : 'Could not load backup history.') }
+      finally { if (active) setLoading(false) }
+    }
+    void load()
+    const timer = window.setInterval(() => { void load() }, 15_000)
+    return () => { active = false; window.clearInterval(timer) }
+  }, [refresh])
+  return <Card withBorder radius="md" padding="lg" mb="lg">
+    <Group justify="space-between" mb="md"><div><Title order={3}>Backup history</Title><Text size="sm" c="dimmed">Execution state and recent snapshots for configured backup policies</Text></div><Badge variant="light">Refreshes every 15 seconds</Badge></Group>
+    {error ? <Alert color="red" title="Backup history could not be loaded">{error}</Alert> : loading ? <Group><Loader size="xs" /><Text size="sm" c="dimmed">Loading backup history…</Text></Group> : rows.length === 0 ? <Text c="dimmed">No backup policies are configured.</Text> : <Stack gap="md">{rows.map(({ policy, jobs }) => <div key={policy.id}><Group justify="space-between" mb="xs"><Text fw={600}>{policy.name}</Text><Text size="xs" c="dimmed">Profile {policy.profileId}</Text></Group>{jobs.length === 0 ? <Text size="sm" c="dimmed">No scheduled runs yet.</Text> : <Table.ScrollContainer minWidth={650}><Table striped><Table.Thead><Table.Tr><Table.Th>Scheduled</Table.Th><Table.Th>Execution</Table.Th><Table.Th>Outcome</Table.Th><Table.Th>Progress</Table.Th><Table.Th>Snapshot</Table.Th><Table.Th>Details</Table.Th></Table.Tr></Table.Thead><Table.Tbody>{jobs.map((job) => <Table.Tr key={job.id}><Table.Td>{timeLabel(job.scheduledFor)}</Table.Td><Table.Td><Badge color={['running', 'succeeded'].includes(job.executionStatus) ? 'green' : ['stale', 'unknown'].includes(job.executionStatus) ? 'yellow' : ['failed', 'partial', 'interrupted', 'canceled', 'timed_out'].includes(job.executionStatus) ? 'red' : 'gray'} variant="light">{job.executionStatus}</Badge></Table.Td><Table.Td>{job.outcome || job.status}</Table.Td><Table.Td>{job.progress ? <Text size="sm">{job.progress.phase}{job.progress.percentDone ? ` · ${job.progress.percentDone.toFixed(1)}%` : ''}{job.progress.filesTotal ? ` · ${job.progress.filesDone ?? 0}/${job.progress.filesTotal} files` : ''}{job.progress.bytesTotal ? ` · ${formatValue(job.progress.bytesDone ?? 0, 'By')}/${formatValue(job.progress.bytesTotal, 'By')}` : ''}</Text> : '—'}</Table.Td><Table.Td>{job.snapshotIds?.length ? job.snapshotIds.map((id) => <Text key={id} size="xs" ff="monospace">{id}</Text>) : '—'}</Table.Td><Table.Td>{job.errorMessage ? <Text size="xs" c="red">{job.errorMessage}{job.errorCode ? ` (${job.errorCode})` : ''}</Text> : job.errorCode || '—'}</Table.Td></Table.Tr>)}</Table.Tbody></Table></Table.ScrollContainer>}</div>)}</Stack>}
+  </Card>
+}
+
 export function Devices({ displayName, onLogout }: { displayName: string; onLogout: () => void }) {
   const [devices, setDevices] = useState<Device[]>([]); const [selectedId, setSelectedId] = useState<string | null>(null); const [history, setHistory] = useState<History | null>(null); const [range, setRange] = useState('24h'); const [error, setError] = useState(''); const [historyError, setHistoryError] = useState(''); const [loading, setLoading] = useState(true); const [offset, setOffset] = useState(0); const [total, setTotal] = useState(0); const [refresh, setRefresh] = useState(0); const [metricName, setMetricName] = useState('')
   const [availability, setAvailability] = useState<Availability | null>(null)
@@ -73,6 +100,7 @@ export function Devices({ displayName, onLogout }: { displayName: string; onLogo
   return <section className="devices-page">
     <Group justify="space-between" align="center" mb="xl"><div><Text c="dimmed" size="sm" fw={600} tt="uppercase">Home infrastructure</Text><Title order={1} mt={4}>{selected ? selected.name : 'Devices'}</Title><Text c="dimmed" mt={6}>{selected ? 'Latest check-in and recorded resource measurements.' : `Signed in as ${displayName}. Device health is based on agent check-ins and collection reports.`}</Text></div><Group><Button variant="default" onClick={() => setRefresh((value) => value + 1)}>Refresh</Button><Button variant="subtle" onClick={selected ? backToList : onLogout}>{selected ? '← All devices' : 'Log out'}</Button></Group></Group>
     {error && <Alert color="red" mb="md" title="Unable to load information" onClose={() => setError('')} withCloseButton>{error}</Alert>}
+    {!selected && <BackupHistory refresh={refresh} />}
     {loading ? <div className="device-empty"><Loader size="sm" /><Text c="dimmed" mt="sm">Loading devices…</Text></div> : selected ? <Stack gap="lg">
       <Card withBorder radius="md" padding="lg"><Group justify="space-between" align="flex-start"><div><Group><Title order={3}>{selected.name}</Title><Badge color={statusColor[selected.status]} variant="light">{statusLabel[selected.status]}</Badge>{availability?.maintenanceActive && <Badge color="blue" variant="light">Maintenance active</Badge>}{availability && !availability.expectedAwake && <Badge color="gray" variant="light">Expected offline</Badge>}</Group><Text c="dimmed" mt="xs">{[selected.platform, selected.architecture].filter(Boolean).join(' · ') || 'Platform not reported'}{selected.agentVersion ? ` · Agent ${selected.agentVersion}` : ''}</Text></div><div className="checkin"><Text size="xs" c="dimmed">Last check-in</Text><Text fw={600}>{relativeLabel(selected.lastSeenAt)}</Text><Text size="xs" c="dimmed">{timeLabel(selected.lastSeenAt)}</Text></div></Group>
         {selected.latest?.host && <div className="host-grid">{selected.latest.host.cpuModel && <div><Text size="xs" c="dimmed">Processor</Text><Text size="sm">{selected.latest.host.cpuModel} · {selected.latest.host.logicalCpus ?? '—'} cores</Text></div>}{selected.latest.host.totalMemoryBytes !== undefined && selected.latest.host.totalMemoryBytes !== 0 && <div><Text size="xs" c="dimmed">Memory</Text><Text size="sm">{formatValue(selected.latest.host.totalMemoryBytes, 'By')}</Text></div>}{selected.latest.host.uptimeSeconds !== undefined && <div><Text size="xs" c="dimmed">Uptime</Text><Text size="sm">{Math.floor(selected.latest.host.uptimeSeconds / 86400)} day{Math.floor(selected.latest.host.uptimeSeconds / 86400) === 1 ? '' : 's'}</Text></div>}<div><Text size="xs" c="dimmed">Telemetry observed</Text><Text size="sm">{timeLabel(selected.telemetryObservedAt)}</Text></div></div>}

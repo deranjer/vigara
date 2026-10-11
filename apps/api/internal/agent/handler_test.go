@@ -53,7 +53,7 @@ func agentTestService(t *testing.T) (*pgxpool.Pool, *auth.Service) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	for _, name := range []string{"000001_initial_schema.up.sql", "000002_local_auth.up.sql", "000003_agent_enrollment.up.sql", "000004_inventory.up.sql", "000009_backup_policies.up.sql", "000010_backup_coordination.up.sql"} {
+	for _, name := range []string{"000001_initial_schema.up.sql", "000002_local_auth.up.sql", "000003_agent_enrollment.up.sql", "000004_inventory.up.sql", "000009_backup_policies.up.sql", "000010_backup_coordination.up.sql", "000011_backup_progress.up.sql"} {
 		migration, err := os.ReadFile("../../migrations/" + name)
 		if err != nil {
 			t.Fatal(err)
@@ -197,8 +197,12 @@ func TestBackupLeaseRedeliveryAndIdempotentResult(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	NewHandler(pool, sessions).Register(mux)
-	poll := func() protocol.AgentResponse {
-		body, _ := json.Marshal(protocol.AgentRequest{ProtocolVersion: protocol.CurrentVersion, AgentID: device.agentID, AgentVersion: "test", Platform: "linux", Architecture: "amd64", Capabilities: []string{"restic.backup"}})
+	poll := func(supportsProgress ...bool) protocol.AgentResponse {
+		request := protocol.AgentRequest{ProtocolVersion: protocol.CurrentVersion, AgentID: device.agentID, AgentVersion: "test", Platform: "linux", Architecture: "amd64", Capabilities: []string{"restic.backup"}}
+		if len(supportsProgress) > 0 {
+			request.SupportsBackupProgress = supportsProgress[0]
+		}
+		body, _ := json.Marshal(request)
 		r := httptest.NewRequest(http.MethodPost, "/api/agent/poll", bytes.NewReader(body))
 		r.Header.Set("Authorization", "Bearer "+device.credential)
 		w := httptest.NewRecorder()
@@ -216,6 +220,14 @@ func TestBackupLeaseRedeliveryAndIdempotentResult(t *testing.T) {
 	second := poll()
 	if first.Job == nil || second.Job == nil || first.Job.ID != jobID || second.Job.ID != jobID || first.Job.AttemptToken == "" || first.Job.AttemptToken != second.Job.AttemptToken {
 		t.Fatalf("active lease was not redelivered consistently: first=%+v second=%+v", first.Job, second.Job)
+	}
+	legacy := poll()
+	modern := poll(true)
+	if legacy.BackupProgressEnabled || legacy.Job == nil || legacy.Job.TimeoutSeconds != int(backupLease/time.Second) {
+		t.Fatalf("legacy negotiation changed bounded job behavior: %+v", legacy)
+	}
+	if !modern.BackupProgressEnabled || modern.Job == nil || modern.Job.TimeoutSeconds != int(backupExecutionLimit/time.Second) {
+		t.Fatalf("progress negotiation did not enable extended lease deadline: %+v", modern)
 	}
 	now := time.Now().UTC()
 	result := protocol.JobResult{ProtocolVersion: protocol.CurrentVersion, ID: "stable-result", JobID: jobID, AttemptToken: first.Job.AttemptToken, AgentID: device.agentID, ModuleID: "restic.backup", ModuleVersion: "1.0.0", Status: protocol.JobSucceeded, StartedAt: now, FinishedAt: now}
@@ -261,6 +273,77 @@ func TestBackupLeaseRedeliveryAndIdempotentResult(t *testing.T) {
 	}
 	if unknownStatus != "unknown" {
 		t.Fatalf("expired attempt status=%s", unknownStatus)
+	}
+}
+
+func TestBackupProgressIsLeaseBoundSequencedAndIdempotent(t *testing.T) {
+	pool, sessions := agentTestService(t)
+	ctx := context.Background()
+	device, err := createTestBackupAgent(ctx, t, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobID, err := createTestBackupJob(ctx, pool, device.agentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := leaseBackupJob(ctx, pool, device.agentID)
+	if err != nil || job == nil || job.ID != jobID {
+		t.Fatalf("lease=%+v err=%v", job, err)
+	}
+	mux := http.NewServeMux()
+	NewHandler(pool, sessions).Register(mux)
+	p := protocol.BackupProgress{ProtocolVersion: protocol.CurrentVersion, ID: "event-1", JobID: job.ID, AttemptToken: job.AttemptToken, AgentID: device.agentID, Sequence: 1, ObservedAt: time.Now().UTC(), Phase: "backup", FilesDone: 2, FilesTotal: 5, BytesDone: 1024, BytesTotal: 2048, PercentDone: 50}
+	post := func() int {
+		b, _ := json.Marshal(p)
+		r := httptest.NewRequest(http.MethodPost, "/api/agent/backups/progress", bytes.NewReader(b))
+		r.Header.Set("Authorization", "Bearer "+device.credential)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, r)
+		return w.Code
+	}
+	if code := post(); code != http.StatusAccepted {
+		t.Fatalf("first progress status=%d", code)
+	}
+	if code := post(); code != http.StatusAccepted {
+		t.Fatalf("replayed progress status=%d", code)
+	}
+	p.AttemptToken = "00000000-0000-4000-8000-000000000001"
+	p.Sequence = 2
+	p.ID = "forged-event"
+	if code := post(); code != http.StatusConflict {
+		t.Fatalf("foreign attempt token status=%d", code)
+	}
+	p.AttemptToken = job.AttemptToken
+	p.Sequence = 1
+	p.ID = "event-1"
+	var sequence int64
+	var payload []byte
+	if err = pool.QueryRow(ctx, `SELECT progress_sequence,progress_payload FROM backup_job_attempts WHERE job_id=$1`, jobID).Scan(&sequence, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if sequence != 1 || !bytes.Contains(payload, []byte(`"bytesDone":1024`)) {
+		t.Fatalf("stored progress sequence=%d payload=%s", sequence, payload)
+	}
+	p.BytesDone = 2048
+	if code := post(); code != http.StatusConflict {
+		t.Fatalf("conflicting sequence status=%d", code)
+	}
+	p.Sequence = 2
+	p.ID = "event-2"
+	p.ObservedAt = time.Now().UTC()
+	if _, err = pool.Exec(ctx, `UPDATE backup_job_attempts SET lease_expires_at=now()-interval '1 second' WHERE job_id=$1`, jobID); err != nil {
+		t.Fatal(err)
+	}
+	if code := post(); code != http.StatusConflict {
+		t.Fatalf("expired lease progress status=%d", code)
+	}
+	var status string
+	if err = pool.QueryRow(ctx, `SELECT status FROM backup_jobs WHERE id=$1`, jobID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "leased" {
+		t.Fatalf("expired heartbeat resurrected/reclassified job prematurely: %s", status)
 	}
 }
 

@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"time"
 
@@ -75,9 +77,72 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/agent/enroll", h.enroll)
 	mux.HandleFunc("POST /api/agent/poll", h.poll)
 	mux.HandleFunc("POST /api/agent/reports", h.reports)
+	mux.HandleFunc("POST /api/agent/backups/progress", h.backupProgress)
 	mux.HandleFunc("POST /api/agents/enrollment-tokens", h.createEnrollmentToken)
 	mux.HandleFunc("POST /api/agents/{agentID}/revoke", h.revoke)
 	mux.HandleFunc("POST /api/devices/discovery", h.discover)
+}
+
+func (h *Handler) backupProgress(w http.ResponseWriter, r *http.Request) {
+	var p protocol.BackupProgress
+	if !decodeJSON(w, r, &p) {
+		return
+	}
+	agentID, ok := h.authenticatedAgent(w, r)
+	if !ok {
+		return
+	}
+	if p.ProtocolVersion != protocol.CurrentVersion || p.AgentID != agentID || p.ID == "" || len(p.ID) > 128 || !validUUID(p.JobID) || !validUUID(p.AttemptToken) || p.Sequence == 0 || p.Sequence > 1_000_000_000_000 || p.Phase != "starting" && p.Phase != "validating" && p.Phase != "backup" || p.FilesDone > 1_000_000_000_000 || p.FilesTotal > 1_000_000_000_000 || p.BytesDone > 1<<60 || p.BytesTotal > 1<<60 || p.FilesTotal > 0 && p.FilesDone > p.FilesTotal || p.BytesTotal > 0 && p.BytesDone > p.BytesTotal || math.IsNaN(p.PercentDone) || math.IsInf(p.PercentDone, 0) || p.PercentDone < 0 || p.PercentDone > 100 || p.ObservedAt.IsZero() || p.ObservedAt.After(time.Now().UTC().Add(2*time.Minute)) || p.ObservedAt.Before(time.Now().UTC().Add(-5*time.Minute)) {
+		http.Error(w, "invalid backup progress", http.StatusBadRequest)
+		return
+	}
+	tx, err := h.pool.Begin(r.Context())
+	if err != nil {
+		http.Error(w, "could not accept backup progress", 500)
+		return
+	}
+	defer tx.Rollback(r.Context())
+	var attemptID string
+	var sequence int64
+	var oldPayload []byte
+	var progressAt *time.Time
+	err = tx.QueryRow(r.Context(), `SELECT a.id::text,a.progress_sequence,a.progress_payload,a.progress_at FROM backup_job_attempts a JOIN backup_jobs j ON j.id=a.job_id WHERE a.job_id=$1 AND a.lease_token=$2::uuid AND j.agent_id=$3 AND j.status='leased' AND a.finished_at IS NULL AND a.lease_expires_at>now() FOR UPDATE OF a,j`, p.JobID, p.AttemptToken, agentID).Scan(&attemptID, &sequence, &oldPayload, &progressAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		http.Error(w, "backup attempt is no longer active", http.StatusConflict)
+		return
+	}
+	if err != nil {
+		http.Error(w, "could not accept backup progress", 500)
+		return
+	}
+	if p.Sequence == uint64(sequence) {
+		var existing protocol.BackupProgress
+		if json.Unmarshal(oldPayload, &existing) == nil && reflect.DeepEqual(existing, p) {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		http.Error(w, "conflicting backup progress sequence", http.StatusConflict)
+		return
+	}
+	if p.Sequence < uint64(sequence) {
+		http.Error(w, "stale backup progress sequence", http.StatusConflict)
+		return
+	}
+	if progressAt != nil && time.Since(*progressAt) < 5*time.Second {
+		http.Error(w, "backup progress rate limited", http.StatusTooManyRequests)
+		return
+	}
+	payload, _ := json.Marshal(p)
+	_, err = tx.Exec(r.Context(), `UPDATE backup_job_attempts SET progress_sequence=$2,progress_payload=$3,progress_at=now(),lease_expires_at=now()+($4 * interval '1 second') WHERE id=$1 AND finished_at IS NULL AND lease_expires_at>now()`, attemptID, int64(p.Sequence), payload, int(backupLease/time.Second))
+	if err != nil {
+		http.Error(w, "could not accept backup progress", 500)
+		return
+	}
+	if err = tx.Commit(r.Context()); err != nil {
+		http.Error(w, "could not accept backup progress", 500)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
 }
 
 // discover accepts an authenticated external inventory observation. The source
@@ -328,8 +393,12 @@ func (h *Handler) poll(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not coordinate backup job", http.StatusInternalServerError)
 		return
 	}
+	if req.SupportsBackupProgress && job != nil {
+		job.TimeoutSeconds = int(backupExecutionLimit / time.Second)
+		job.Deadline = time.Now().UTC().Add(backupExecutionLimit)
+	}
 	configuration := &protocol.AgentConfiguration{Version: "backup-v1", GeneratedAt: time.Now().UTC(), Modules: []protocol.ModuleConfiguration{{ModuleID: "restic.backup", ModuleVersion: "1.0.0", Enabled: true}}}
-	writeJSON(w, protocol.AgentResponse{ProtocolVersion: protocol.CurrentVersion, ServerTime: time.Now().UTC(), PollAfterSeconds: 30, Configuration: configuration, Job: job})
+	writeJSON(w, protocol.AgentResponse{ProtocolVersion: protocol.CurrentVersion, ServerTime: time.Now().UTC(), PollAfterSeconds: 30, Configuration: configuration, Job: job, BackupProgressEnabled: req.SupportsBackupProgress})
 }
 
 func (h *Handler) reports(w http.ResponseWriter, r *http.Request) {
@@ -430,6 +499,21 @@ func writeJSON(w http.ResponseWriter, value any) {
 }
 
 func hash(value string) []byte { sum := sha256.Sum256([]byte(value)); return sum[:] }
+
+func validUUID(value string) bool {
+	if len(value) != 36 || value[8] != '-' || value[13] != '-' || value[18] != '-' || value[23] != '-' {
+		return false
+	}
+	for i, c := range value {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			continue
+		}
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+			return false
+		}
+	}
+	return true
+}
 
 func newCredential() (string, []byte, error) {
 	data := make([]byte, 32)

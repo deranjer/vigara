@@ -11,24 +11,26 @@ const CurrentVersion = "v1"
 // AgentRequest is sent by an enrolled agent when polling for current desired
 // state and work. AgentID is the stable server-issued device identity.
 type AgentRequest struct {
-	ProtocolVersion    string   `json:"protocolVersion"`
-	AgentID            string   `json:"agentId"`
-	AgentVersion       string   `json:"agentVersion"`
-	Platform           string   `json:"platform"`
-	Architecture       string   `json:"architecture"`
-	Capabilities       []string `json:"capabilities"`
-	KnownConfigVersion string   `json:"knownConfigVersion,omitempty"`
-	LastSeenJobID      string   `json:"lastSeenJobId,omitempty"`
+	ProtocolVersion        string   `json:"protocolVersion"`
+	AgentID                string   `json:"agentId"`
+	AgentVersion           string   `json:"agentVersion"`
+	Platform               string   `json:"platform"`
+	Architecture           string   `json:"architecture"`
+	Capabilities           []string `json:"capabilities"`
+	KnownConfigVersion     string   `json:"knownConfigVersion,omitempty"`
+	LastSeenJobID          string   `json:"lastSeenJobId,omitempty"`
+	SupportsBackupProgress bool     `json:"supportsBackupProgress,omitempty"`
 }
 
 // AgentResponse returns the latest configuration and at most one authorized
 // job. Empty Job means no work is currently available.
 type AgentResponse struct {
-	ProtocolVersion  string              `json:"protocolVersion"`
-	ServerTime       time.Time           `json:"serverTime"`
-	PollAfterSeconds int                 `json:"pollAfterSeconds"`
-	Configuration    *AgentConfiguration `json:"configuration,omitempty"`
-	Job              *Job                `json:"job,omitempty"`
+	ProtocolVersion       string              `json:"protocolVersion"`
+	ServerTime            time.Time           `json:"serverTime"`
+	PollAfterSeconds      int                 `json:"pollAfterSeconds"`
+	Configuration         *AgentConfiguration `json:"configuration,omitempty"`
+	Job                   *Job                `json:"job,omitempty"`
+	BackupProgressEnabled bool                `json:"backupProgressEnabled,omitempty"`
 }
 
 // AgentConfiguration is a complete desired-state snapshot, not a patch.
@@ -109,6 +111,24 @@ type JobResult struct {
 	FinishedAt      time.Time      `json:"finishedAt"`
 	Output          map[string]any `json:"output,omitempty"`
 	Error           *Failure       `json:"error,omitempty"`
+}
+
+// BackupProgress is a bounded, aggregate-only heartbeat for one leased backup
+// attempt. It must never contain paths, file names, command output, or secrets.
+type BackupProgress struct {
+	ProtocolVersion string    `json:"protocolVersion"`
+	ID              string    `json:"id"`
+	JobID           string    `json:"jobId"`
+	AttemptToken    string    `json:"attemptToken"`
+	AgentID         string    `json:"agentId"`
+	Sequence        uint64    `json:"sequence"`
+	ObservedAt      time.Time `json:"observedAt"`
+	Phase           string    `json:"phase"`
+	FilesDone       uint64    `json:"filesDone,omitempty"`
+	FilesTotal      uint64    `json:"filesTotal,omitempty"`
+	BytesDone       uint64    `json:"bytesDone,omitempty"`
+	BytesTotal      uint64    `json:"bytesTotal,omitempty"`
+	PercentDone     float64   `json:"percentDone,omitempty"`
 }
 
 type JobStatus string

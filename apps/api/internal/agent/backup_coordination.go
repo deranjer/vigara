@@ -15,6 +15,7 @@ import (
 )
 
 const backupLease = 2 * time.Hour
+const backupExecutionLimit = 7 * 24 * time.Hour
 
 // leaseBackupJob atomically claims one due job. Exact destination strings share
 // a server-side mutex; Restic's own lock remains the final guard for aliases.

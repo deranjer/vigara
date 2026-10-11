@@ -19,14 +19,30 @@ import (
 func TestResticJobUsesLocalProfileAndPersistsSafeSnapshotReport(t *testing.T) {
 	executable := buildResticTestHelper(t)
 	secret := "restic-test-password-never-report"
+	progressReceived := false
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/agent/poll" {
+			var poll protocol.AgentRequest
+			if err := json.NewDecoder(r.Body).Decode(&poll); err != nil || !poll.SupportsBackupProgress {
+				http.Error(w, "missing progress support advertisement", 400)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(protocol.AgentResponse{
-				ProtocolVersion: protocol.CurrentVersion, PollAfterSeconds: 30,
+				ProtocolVersion: protocol.CurrentVersion, PollAfterSeconds: 30, BackupProgressEnabled: true,
 				Configuration: &protocol.AgentConfiguration{Version: "cfg1", Modules: []protocol.ModuleConfiguration{{ModuleID: resticModuleID, ModuleVersion: resticModuleVersion, Enabled: true}}},
-				Job:           &protocol.Job{ID: "job-1", ModuleID: resticModuleID, ModuleVersion: resticModuleVersion, Kind: "backup", TimeoutSeconds: 30, Deadline: time.Now().Add(time.Minute), Settings: map[string]any{"profileId": "home"}, Permissions: []protocol.Permission{{Name: resticCapability, Scope: "profile:home"}}},
+				Job:           &protocol.Job{ID: "job-1", AttemptToken: "attempt-1", ModuleID: resticModuleID, ModuleVersion: resticModuleVersion, Kind: "backup", TimeoutSeconds: 30, Deadline: time.Now().Add(time.Minute), Settings: map[string]any{"profileId": "home"}, Permissions: []protocol.Permission{{Name: resticCapability, Scope: "profile:home"}}},
 			})
+			return
+		}
+		if r.URL.Path == "/api/agent/backups/progress" {
+			var got protocol.BackupProgress
+			if err := json.NewDecoder(r.Body).Decode(&got); err != nil || got.JobID != "job-1" || got.AttemptToken != "attempt-1" || got.Sequence != 1 || got.Phase != "starting" {
+				http.Error(w, "bad progress", 400)
+				return
+			}
+			progressReceived = true
+			w.WriteHeader(http.StatusAccepted)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
@@ -44,6 +60,9 @@ func TestResticJobUsesLocalProfileAndPersistsSafeSnapshotReport(t *testing.T) {
 	client.HTTP.Transport = server.Client().Transport
 	if _, err := client.Cycle(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+	if !progressReceived {
+		t.Fatal("agent did not send lease-bound initial backup progress")
 	}
 	if len(client.State.Pending) != 1 {
 		t.Fatalf("pending report count = %d, want 1", len(client.State.Pending))
@@ -141,6 +160,12 @@ func TestResticDispatchMapsPartialInterruptedCanceledAndVersionMismatch(t *testi
 			}
 			if result.Output["resticStatus"] != test.wantRunner {
 				t.Fatalf("runner status = %#v, want %q", result.Output["resticStatus"], test.wantRunner)
+			}
+			if test.wantRunner == restic.Partial {
+				ids, ok := result.Output["snapshotIds"].([]string)
+				if !ok || len(ids) != 1 || ids[0] != "abc123" {
+					t.Fatalf("partial snapshot ID not retained: %#v", result.Output["snapshotIds"])
+				}
 			}
 		})
 	}
