@@ -15,6 +15,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/deranjer/vigara/apps/agent/internal/backupprep"
 	agentruntime "github.com/deranjer/vigara/apps/agent/internal/runtime"
 	"github.com/deranjer/vigara/internal/restic"
 )
@@ -158,7 +159,10 @@ func fullID(value string) bool {
 }
 
 func validProfile(p agentruntime.ResticProfile) bool {
-	if !validLocalRepository(p.Repository) || len(p.SourcePaths) == 0 || len(p.SourcePaths) > 256 || len(p.Environment) > 64 {
+	if !validLocalRepository(p.Repository) || len(p.SourcePaths) > 256 || len(p.SourcePaths) == 0 && (p.PostgreSQL == nil || !p.PostgreSQL.Enabled) || len(p.Environment) > 64 {
+		return false
+	}
+	if p.PostgreSQL != nil && p.PostgreSQL.Enabled && backupprep.ValidatePostgreSQLConfig(backupprep.PostgreSQLConfig{Environment: p.PostgreSQL.Environment}) != nil {
 		return false
 	}
 	for _, path := range p.SourcePaths {

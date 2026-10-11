@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/deranjer/vigara/apps/agent/internal/backupprep"
 	"github.com/deranjer/vigara/internal/modules"
 	"github.com/deranjer/vigara/internal/restic"
 )
@@ -66,7 +67,45 @@ func (m resticBackupModule) ExecuteWithProgress(ctx context.Context, job modules
 		}
 		return modules.Result{Output: map[string]any{"resticStatus": status, "resticVersion": version, "errorCode": code}}, nil
 	}
-	backup := runner.BackupWithProgress(ctx, profile.Repository, profile.SourcePaths, onProgress)
+	sources := append([]string(nil), profile.SourcePaths...)
+	var prepared *backupprep.Prepared
+	if profile.PostgreSQL != nil && profile.PostgreSQL.Enabled {
+		p := profile.PostgreSQL
+		if onProgress != nil {
+			if err := onProgress(restic.Progress{Phase: "preparing"}); err != nil {
+				return modules.Result{}, errors.New("progress_unavailable")
+			}
+		}
+		prepared, err = backupprep.PostgreSQL(ctx, backupprep.PostgreSQLConfig{Environment: p.Environment, PGDumpExecutable: p.PGDumpExecutable, PGRestoreExecutable: p.PGRestoreExecutable, StagingDirectory: p.StagingDirectory})
+		if err != nil {
+			status, code := restic.Failed, "preparation_failed"
+			var prepErr *backupprep.PreparationError
+			if errors.As(err, &prepErr) {
+				code = prepErr.Code
+			}
+			if errors.Is(ctx.Err(), context.Canceled) {
+				status, code = restic.Canceled, "canceled"
+			} else if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				status, code = restic.Interrupted, "deadline_exceeded"
+			}
+			return modules.Result{Output: map[string]any{"resticStatus": status, "resticVersion": version, "snapshotIds": []string{}, "errorCode": code}}, nil
+		}
+		sources = append(sources, prepared.Path)
+		if onProgress != nil {
+			if err := onProgress(restic.Progress{Phase: "prepared"}); err != nil {
+				if cleanupErr := prepared.Cleanup(); cleanupErr != nil {
+					return modules.Result{}, errors.New("preparation_cleanup_failed")
+				}
+				return modules.Result{}, errors.New("progress_unavailable")
+			}
+		}
+	}
+	backup := runner.BackupWithProgress(ctx, profile.Repository, sources, onProgress)
+	if prepared != nil {
+		if err := prepared.Cleanup(); err != nil {
+			backup.Status, backup.ErrorCode = restic.Failed, "preparation_cleanup_failed"
+		}
+	}
 	if backup.ResticVersion == "" {
 		backup.ResticVersion = version
 	}
@@ -94,8 +133,16 @@ func validProfileID(value string) bool {
 }
 
 func validResticProfile(profile ResticProfile) bool {
-	if !validLocalRepository(profile.Repository) || len(profile.SourcePaths) == 0 || len(profile.SourcePaths) > 256 {
+	if !validLocalRepository(profile.Repository) || len(profile.SourcePaths) > 256 || len(profile.SourcePaths) == 0 && (profile.PostgreSQL == nil || !profile.PostgreSQL.Enabled) {
 		return false
+	}
+	if profile.PostgreSQL != nil && profile.PostgreSQL.Enabled {
+		if len(profile.PostgreSQL.Environment) > 16 || len(profile.PostgreSQL.PGDumpExecutable) > 4096 || len(profile.PostgreSQL.PGRestoreExecutable) > 4096 || len(profile.PostgreSQL.StagingDirectory) > 4096 {
+			return false
+		}
+		if backupprep.ValidatePostgreSQLConfig(backupprep.PostgreSQLConfig{Environment: profile.PostgreSQL.Environment}) != nil {
+			return false
+		}
 	}
 	for _, path := range profile.SourcePaths {
 		if strings.TrimSpace(path) == "" || len(path) > 4096 || strings.ContainsRune(path, '\x00') {

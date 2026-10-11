@@ -18,11 +18,22 @@ const MaxResticProfiles = 32
 // ResticProfile is installed by a trusted local operator in the private agent
 // state file. Job settings can select its ID but cannot supply these values.
 type ResticProfile struct {
-	Enabled     bool              `json:"enabled"`
-	Repository  string            `json:"repository"`
-	SourcePaths []string          `json:"sourcePaths"`
-	Environment map[string]string `json:"environment,omitempty"`
-	Executable  string            `json:"executable,omitempty"`
+	Enabled     bool               `json:"enabled"`
+	Repository  string             `json:"repository"`
+	SourcePaths []string           `json:"sourcePaths"`
+	Environment map[string]string  `json:"environment,omitempty"`
+	Executable  string             `json:"executable,omitempty"`
+	PostgreSQL  *PostgreSQLProfile `json:"postgresql,omitempty"`
+}
+
+// PostgreSQLProfile contains operator-owned libpq settings for producing a
+// validated logical archive before Restic runs. Secrets belong in PGPASSFILE.
+type PostgreSQLProfile struct {
+	Enabled             bool              `json:"enabled"`
+	Environment         map[string]string `json:"environment,omitempty"`
+	PGDumpExecutable    string            `json:"pgDumpExecutable,omitempty"`
+	PGRestoreExecutable string            `json:"pgRestoreExecutable,omitempty"`
+	StagingDirectory    string            `json:"stagingDirectory,omitempty"`
 }
 
 type State struct {
