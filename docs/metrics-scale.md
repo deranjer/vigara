@@ -8,11 +8,12 @@ load:
 
 - `audit` observes a database supplied explicitly by the operator. It reports
   PostgreSQL version, estimated live row counts, relation/table/index bytes,
-  the raw observation window, and bounded read plans for device listing, recent
-  raw samples, rollups, and retention candidates. The transaction is read-only,
-  has a statement timeout, and runs `EXPLAIN (ANALYZE, BUFFERS)` only on SELECTs.
-  PostgreSQL's row estimates may be stale. Timeout or missing-table results are
-  reported as unavailable, not as zero.
+  a bounded observed-volume report, the raw observation window, and bounded
+  read plans for device listing, recent raw samples, rollups, and retention
+  candidates. The transaction is read-only, has a statement timeout, and runs
+  `EXPLAIN (ANALYZE, BUFFERS)` only on SELECTs. PostgreSQL's row estimates may
+  be stale. Timeout or missing-table results are reported as unavailable, not
+  as zero.
 - `synthetic` runs the existing Go telemetry `Store.Ingest` and `Store.Retain`
   methods in random, newly created schemas. Its default matrix is 12, 36, and 60
   devices; 30-second samples; raw retention at 25, 48, and 168 hours; and
@@ -44,6 +45,13 @@ go run ./apps/api/cmd/vigira-metrics-bench -mode audit
 go run ./apps/api/cmd/vigira-metrics-bench -mode synthetic -confirm-synthetic
 ```
 
+For deployment evidence, point `VIGIRA_METRICS_BENCH_DSN` at the intended
+installation and run `-mode audit` with an account that can read the telemetry
+tables. Preserve the JSON report with the collection time and workload context;
+repeat during representative normal and peak periods when making a capacity
+decision. Do not use fixture or synthetic output as a substitute for those
+observations.
+
 Synthetic mode accepts only loopback PostgreSQL hosts and database names with
 a `test`, `dev`, or `bench` token (for example, `vigira_test`). Names marked
 `prod`, `live`, or `public` are refused. It also requires
@@ -67,6 +75,31 @@ read query median and p95, and text plans with shared-buffer hit/read counts.
 `history_points_returned` counts rows from the executed 30-day history query;
 each scenario must return at least three points and retain both raw rows and
 multiple rollup buckets.
+
+Audit JSON's `observed_volume` section reports exact raw `snapshot_rows`,
+`metric_datapoints` from each stored snapshot's `metrics` array, and
+`distinct_reporting_agents` for the recent hour and recent 24 hours. It also
+includes 24 consecutive one-hour buckets. Every window uses the same
+`anchor_utc` and UTC
+half-open bounds `[start_utc,end_utc)`, so a sample at a start belongs to that
+window and one at its end belongs to the next (or is excluded at the anchor).
+`min_observed_at` and `max_observed_at` describe observed rows within that
+window. `available`, `empty`, and `unavailable` distinguish measured counts,
+successfully measured zero rows, and a query that could not be measured.
+
+These are counts of raw rows still retained by PostgreSQL. Retention can make a
+24-hour window incomplete, and ingest gaps, delayed agent reports, or host clock
+skew can also affect the observed history. The audit therefore reports counts
+and observed timestamp bounds instead of dividing by a requested duration and
+presenting that as an ingestion rate or sampling cadence. The window results
+describe only the explicitly selected database; a local fixture or synthetic
+workload is not evidence of deployment load.
+
+The PostgreSQL boundary, empty-data, missing-table, and statement-timeout
+regression runs when `VIGIRA_METRICS_BENCH_TEST_DSN` points to a local
+`test`/`dev`/`bench` database. It creates uniquely named temporary schemas and
+drops them during cleanup. For example, set this variable to the disposable
+`vigira_test` database before running the command-package Go tests.
 Synthetic `first_post_ingest_read` is the first observed read after inserts;
 the server and operating-system caches are not cleared, so it is not a true
 storage-cold measurement. Warm results are seven repeated reads. Retention
