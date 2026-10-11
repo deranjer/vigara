@@ -39,9 +39,12 @@ object CompanionSchedule {
 }
 
 class TelemetryWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
+    internal var telemetryRequest: (String, String, String, ByteArray, String) -> Int = ::request
+    internal var prefsFactory: (Context) -> CompanionPrefs = ::CompanionPrefs
+
     override suspend fun doWork(): Result {
         return try {
-            val prefs = CompanionPrefs(applicationContext)
+            val prefs = prefsFactory(applicationContext)
             val enrollment = prefs.enrollmentSnapshot()
             if (enrollment.credential.isEmpty() || enrollment.agentId.isEmpty() || enrollment.generation.isEmpty()) return Result.failure()
             val body = enrollment.pendingTelemetryBody.ifBlank {
@@ -55,7 +58,7 @@ class TelemetryWorker(context: Context, params: WorkerParameters) : CoroutineWor
                 JSONObject().put("protocolVersion", "v1").put("agentId", enrollment.agentId).put("snapshots", JSONArray().put(snapshot)).toString().also { if (!prefs.storeTelemetry(enrollment.generation, it)) return Result.success() }
             }
             if (prefs.generation != enrollment.generation) return Result.success()
-            val code = request(enrollment.server, "/api/agent/telemetry", enrollment.credential, body.toByteArray(), "application/json")
+            val code = telemetryRequest(enrollment.server, "/api/agent/telemetry", enrollment.credential, body.toByteArray(), "application/json")
             if (code in 200..299) { prefs.clearTelemetry(enrollment.generation, body); Result.success() }
             else if (code == 429 || code >= 500) Result.retry() else Result.failure()
         } catch (_: IOException) { Result.retry() } catch (_: Exception) { Result.failure() }

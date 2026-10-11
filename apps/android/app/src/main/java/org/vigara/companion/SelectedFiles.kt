@@ -22,19 +22,38 @@ class SelectedFiles(context: Context) : SQLiteOpenHelper(context, "selected-file
         if (oldVersion < 2) db.execSQL("ALTER TABLE selected_files ADD COLUMN generation TEXT NOT NULL DEFAULT ''")
     }
 
-    fun add(resolver: ContentResolver, uri: Uri, grantFlags: Int, generation: String): Boolean {
+    fun add(resolver: ContentResolver, uri: Uri, grantFlags: Int, generation: String): Boolean = add(
+        uri = uri,
+        grantFlags = grantFlags,
+        generation = generation,
+        takePermission = resolver::takePersistableUriPermission,
+        releasePermission = resolver::releasePersistableUriPermission,
+        metadata = { metadata(resolver, it) },
+    )
+
+    internal fun add(
+        uri: Uri,
+        grantFlags: Int,
+        generation: String,
+        takePermission: (Uri, Int) -> Unit,
+        releasePermission: (Uri, Int) -> Unit,
+        metadata: (Uri) -> Pair<String, Long>?,
+    ): Boolean {
         val readFlag = grantFlags and android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
         if (readFlag == 0) return false
-        try { resolver.takePersistableUriPermission(uri, readFlag) } catch (_: SecurityException) { return false }
-        val (name, size) = metadata(resolver, uri) ?: run {
-            try { resolver.releasePersistableUriPermission(uri, readFlag) } catch (_: SecurityException) { }
+        try { takePermission(uri, readFlag) } catch (_: SecurityException) { return false }
+        val (name, size) = metadata(uri) ?: run {
+            try { releasePermission(uri, readFlag) } catch (_: SecurityException) { }
             return false
         }
         if (!supportedSize(size)) {
-            try { resolver.releasePersistableUriPermission(uri, readFlag) } catch (_: SecurityException) { }
+            try { releasePermission(uri, readFlag) } catch (_: SecurityException) { }
             return false
         }
-        val safeName = safeDisplayName(name) ?: return false
+        val safeName = safeDisplayName(name) ?: run {
+            try { releasePermission(uri, readFlag) } catch (_: SecurityException) { }
+            return false
+        }
         val values = android.content.ContentValues().apply {
             put("id", UUID.randomUUID().toString()); put("uri", uri.toString()); put("name", safeName); put("size", size); put("state", "Ready"); put("generation", generation)
         }
