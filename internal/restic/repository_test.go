@@ -12,7 +12,7 @@ func TestListBrowseAndCheckAreBoundedAndUseFullSnapshotID(t *testing.T) {
 		[]byte("restic 0.19.1\n"),
 		[]byte(`[{"id":"` + strings.Repeat("a", 64) + `","time":"2026-10-10T12:00:00Z","paths":["/data"],"hostname":"host"}]`),
 		[]byte("restic 0.19.1\n"),
-		[]byte("{\"struct_type\":\"node\",\"name\":\"file.txt\",\"path\":\"/data/file.txt\",\"size\":3}\n"),
+		[]byte("{\"struct_type\":\"node\",\"type\":\"file\",\"name\":\"file.txt\",\"path\":\"/data/file.txt\",\"size\":3}\n"),
 		[]byte("restic 0.19.1\n"),
 		[]byte("{\"message_type\":\"summary\",\"num_errors\":0}\n"),
 	}}
@@ -22,7 +22,7 @@ func TestListBrowseAndCheckAreBoundedAndUseFullSnapshotID(t *testing.T) {
 		t.Fatalf("snapshots=%#v err=%v", snapshots, err)
 	}
 	entries, err := r.BrowseSnapshot(context.Background(), "/repo", strings.Repeat("a", 64))
-	if err != nil || len(entries) != 1 || entries[0].Name != "file.txt" {
+	if err != nil || len(entries) != 1 || entries[0].Name != "file.txt" || entries[0].Type != "file" {
 		t.Fatalf("entries=%#v err=%v", entries, err)
 	}
 	if err := r.CheckRepository(context.Background(), "/repo"); err != nil {

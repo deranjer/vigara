@@ -241,10 +241,11 @@ func parseEntries(data []byte) ([]SnapshotEntry, error) {
 			continue
 		}
 		var raw struct {
-			Type string `json:"struct_type"`
-			Name string `json:"name"`
-			Path string `json:"path"`
-			Size uint64 `json:"size"`
+			Type     string `json:"type"`
+			Name     string `json:"name"`
+			Path     string `json:"path"`
+			Size     uint64 `json:"size"`
+			NodeType string `json:"struct_type"`
 		}
 		if err := json.Unmarshal(line, &raw); err != nil {
 			return nil, err
@@ -255,7 +256,11 @@ func parseEntries(data []byte) ([]SnapshotEntry, error) {
 		if len(raw.Name) > 4096 || len(raw.Path) > 4096 || len(result) >= 100000 {
 			return nil, errors.New("entry limit")
 		}
-		result = append(result, SnapshotEntry{Name: raw.Name, Type: raw.Type, Path: raw.Path, Size: raw.Size})
+		kind := raw.Type
+		if kind == "" {
+			kind = raw.NodeType
+		}
+		result = append(result, SnapshotEntry{Name: raw.Name, Type: kind, Path: raw.Path, Size: raw.Size})
 	}
 	return result, nil
 }

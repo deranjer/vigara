@@ -19,3 +19,17 @@ Restore requires an existing, empty destination directory. The command rejects a
 `retention-plan` runs `forget --dry-run --json --keep-last N` and returns Restic's bounded JSON plan. It does not forget snapshots or prune repository data. Destructive retention apply and prune remain outside this operator command until a separate maintenance authority and review flow is designed. No routine backup automatically changes retention or performs maintenance.
 
 The tool supports local and network-drive repositories from the profile. It is pinned to Restic `0.19.1`, as is the agent runner. The JSON command behavior follows [Restic's scripting documentation](https://restic.readthedocs.io/en/stable/075_scripting.html). This is file-level recovery; it does not provide bare-metal recovery, remote web restore, or arbitrary server-directed restore paths.
+
+## Run the disposable recovery drill
+
+The unit tests use a fake process; this opt-in drill exercises the managed runner with real Restic `0.19.1`. From the repository root, build the pinned test image and run the one focused test:
+
+```powershell
+$repo = (Resolve-Path '.').Path
+docker build -f internal/restic/testdata/Dockerfile.integration -t vigira-restic-drill .
+if ($LASTEXITCODE -ne 0) { throw 'Could not build the Restic drill image' }
+docker run --rm --mount "type=bind,source=$repo,target=/src,readonly" --workdir /src -e VIGIRA_RESTIC_DRILL=1 vigira-restic-drill go test ./internal/restic -run '^TestResticRecoveryDrill$' -count=1 -v
+if ($LASTEXITCODE -ne 0) { throw 'Restic recovery drill failed' }
+```
+
+The drill initializes a new encrypted repository, creates two snapshots from a disposable fixture, lists and browses the first snapshot, checks the repository, restores that explicit snapshot to a new empty directory, and compares the restored file contents. It then requests a keep-last-one retention plan and confirms that both snapshots remain. The repository, restore, and fixture are created under the test's temporary directory and removed when it exits. The test never invokes retention apply, prune, or any operation against an operator profile. Docker and access to the pinned image are required; to run it outside Docker, install Restic `0.19.1` and set `VIGIRA_RESTIC_DRILL=1` when running the same focused Go test.
