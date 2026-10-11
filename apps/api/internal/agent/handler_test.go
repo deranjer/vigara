@@ -53,7 +53,7 @@ func agentTestService(t *testing.T) (*pgxpool.Pool, *auth.Service) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	for _, name := range []string{"000001_initial_schema.up.sql", "000002_local_auth.up.sql", "000003_agent_enrollment.up.sql", "000004_inventory.up.sql"} {
+	for _, name := range []string{"000001_initial_schema.up.sql", "000002_local_auth.up.sql", "000003_agent_enrollment.up.sql", "000004_inventory.up.sql", "000009_backup_policies.up.sql", "000010_backup_coordination.up.sql"} {
 		migration, err := os.ReadFile("../../migrations/" + name)
 		if err != nil {
 			t.Fatal(err)
@@ -182,6 +182,115 @@ func TestEnrollmentScopeSingleUsePollAndRevocation(t *testing.T) {
 	if response := poll([]string{"module.cpu"}); response.Code != http.StatusUnauthorized {
 		t.Fatalf("revoked identity poll returned %d", response.Code)
 	}
+}
+
+func TestBackupLeaseRedeliveryAndIdempotentResult(t *testing.T) {
+	pool, sessions := agentTestService(t)
+	ctx := context.Background()
+	device, err := createTestBackupAgent(ctx, t, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobID, err := createTestBackupJob(ctx, pool, device.agentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	NewHandler(pool, sessions).Register(mux)
+	poll := func() protocol.AgentResponse {
+		body, _ := json.Marshal(protocol.AgentRequest{ProtocolVersion: protocol.CurrentVersion, AgentID: device.agentID, AgentVersion: "test", Platform: "linux", Architecture: "amd64", Capabilities: []string{"restic.backup"}})
+		r := httptest.NewRequest(http.MethodPost, "/api/agent/poll", bytes.NewReader(body))
+		r.Header.Set("Authorization", "Bearer "+device.credential)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("poll status %d: %s", w.Code, w.Body.String())
+		}
+		var response protocol.AgentResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+	first := poll()
+	second := poll()
+	if first.Job == nil || second.Job == nil || first.Job.ID != jobID || second.Job.ID != jobID || first.Job.AttemptToken == "" || first.Job.AttemptToken != second.Job.AttemptToken {
+		t.Fatalf("active lease was not redelivered consistently: first=%+v second=%+v", first.Job, second.Job)
+	}
+	now := time.Now().UTC()
+	result := protocol.JobResult{ProtocolVersion: protocol.CurrentVersion, ID: "stable-result", JobID: jobID, AttemptToken: first.Job.AttemptToken, AgentID: device.agentID, ModuleID: "restic.backup", ModuleVersion: "1.0.0", Status: protocol.JobSucceeded, StartedAt: now, FinishedAt: now}
+	postResult := func() int {
+		body, _ := json.Marshal(ReportBatch{Results: []protocol.JobResult{result}})
+		r := httptest.NewRequest(http.MethodPost, "/api/agent/reports", bytes.NewReader(body))
+		r.Header.Set("Authorization", "Bearer "+device.credential)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, r)
+		return w.Code
+	}
+	if status := postResult(); status != http.StatusAccepted {
+		t.Fatalf("result status %d", status)
+	}
+	if status := postResult(); status != http.StatusAccepted {
+		t.Fatalf("idempotent result retry status %d", status)
+	}
+	var status string
+	if err = pool.QueryRow(ctx, `SELECT status FROM backup_jobs WHERE id=$1`, jobID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "completed" {
+		t.Fatalf("job status after result=%s", status)
+	}
+	var uncertainJob string
+	if err = pool.QueryRow(ctx, `INSERT INTO backup_jobs(policy_id,agent_id,profile_id,policy_revision,policy_snapshot,scheduled_for,status) SELECT policy_id,agent_id,profile_id,1,'{"excluded_paths":[]}',now()+interval '1 minute','pending' FROM backup_jobs WHERE id=$1 RETURNING id::text`, jobID).Scan(&uncertainJob); err != nil {
+		t.Fatal(err)
+	}
+	issued := poll()
+	if issued.Job == nil || issued.Job.ID != uncertainJob {
+		t.Fatalf("next job was not leased: %+v", issued.Job)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE backup_job_attempts SET leased_at=now()-interval '2 seconds',lease_expires_at=now()-interval '1 second' WHERE job_id=$1`, uncertainJob); err != nil {
+		t.Fatal(err)
+	}
+	reconciled := poll()
+	if reconciled.Job != nil {
+		t.Fatalf("expired attempt was blindly replayed: %+v", reconciled.Job)
+	}
+	var unknownStatus string
+	if err = pool.QueryRow(ctx, `SELECT status FROM backup_jobs WHERE id=$1`, uncertainJob).Scan(&unknownStatus); err != nil {
+		t.Fatal(err)
+	}
+	if unknownStatus != "unknown" {
+		t.Fatalf("expired attempt status=%s", unknownStatus)
+	}
+}
+
+type testBackupAgent struct{ agentID, credential string }
+
+func createTestBackupAgent(ctx context.Context, t *testing.T, pool *pgxpool.Pool) (testBackupAgent, error) {
+	t.Helper()
+	var device string
+	if err := pool.QueryRow(ctx, `INSERT INTO devices(display_name,last_seen_at) VALUES('backup-coordinator-test',now()) RETURNING id::text`).Scan(&device); err != nil {
+		return testBackupAgent{}, err
+	}
+	credential := "backup-coordinator-credential"
+	digest := hash(credential)
+	var agentID string
+	err := pool.QueryRow(ctx, `INSERT INTO agent_identities(device_id,credential_hash,protocol_version,platform,architecture,agent_version,capabilities,allowed_capabilities) VALUES($1,$2,'v1','linux','amd64','test','["restic.backup"]','{restic.backup}') RETURNING id::text`, device, digest).Scan(&agentID)
+	return testBackupAgent{agentID, credential}, err
+}
+func createTestBackupJob(ctx context.Context, pool *pgxpool.Pool, agentID string) (string, error) {
+	var device string
+	if err := pool.QueryRow(ctx, `SELECT device_id::text FROM agent_identities WHERE id=$1`, agentID).Scan(&device); err != nil {
+		return "", err
+	}
+	var policy string
+	err := pool.QueryRow(ctx, `INSERT INTO backup_policies(device_id,agent_id,profile_id,name,destination,included_paths,excluded_paths,retention,schedule,missed_run_policy,disconnected_device_policy,enabled,next_run_at) VALUES($1,$2,'home','test','/tmp/restic-test','["/data"]','[]','{}','{}','run_once','wait',true,now()) RETURNING id::text`, device, agentID).Scan(&policy)
+	if err != nil {
+		return "", err
+	}
+	var jobID string
+	err = pool.QueryRow(ctx, `INSERT INTO backup_jobs(policy_id,agent_id,profile_id,policy_revision,policy_snapshot,scheduled_for,status) VALUES($1,$2,'home',1,'{"excluded_paths":[]}',now(),'pending') RETURNING id::text`, policy, agentID).Scan(&jobID)
+	return jobID, err
 }
 
 func TestInventoryReconciliationConcurrencyAndConflict(t *testing.T) {
