@@ -5,14 +5,25 @@ import "time"
 // TelemetrySnapshot is a point-in-time host report. Its ID is generated once
 // and retained in the agent's bounded offline queue until the server accepts it.
 type TelemetrySnapshot struct {
-	ProtocolVersion string            `json:"protocolVersion"`
-	ID              string            `json:"id"`
-	AgentID         string            `json:"agentId"`
-	ObservedAt      time.Time         `json:"observedAt"`
-	Host            HostSummary       `json:"host"`
-	Metrics         []TelemetryMetric `json:"metrics"`
-	Capabilities    []string          `json:"capabilities"`
-	Errors          []CollectionError `json:"errors,omitempty"`
+	ProtocolVersion  string            `json:"protocolVersion"`
+	ID               string            `json:"id"`
+	AgentID          string            `json:"agentId"`
+	ObservedAt       time.Time         `json:"observedAt"`
+	Host             HostSummary       `json:"host"`
+	Metrics          []TelemetryMetric `json:"metrics"`
+	DockerContainers []DockerContainer `json:"dockerContainers,omitempty"`
+	Capabilities     []string          `json:"capabilities"`
+	Errors           []CollectionError `json:"errors,omitempty"`
+}
+
+// DockerContainer is bounded inventory metadata from an explicitly enabled
+// read-only Docker collector. Environment variables and container config are
+// deliberately excluded.
+type DockerContainer struct {
+	ID    string `json:"id"`
+	Name  string `json:"name,omitempty"`
+	Image string `json:"image,omitempty"`
+	State string `json:"state"`
 }
 
 type TelemetrySnapshotBatch struct {
