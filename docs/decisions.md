@@ -13,7 +13,7 @@ Status: **initial decisions recorded**. These are the user-confirmed choices and
 | 5 | Recovery scope | Focus on file backup and file restore for now. Do not plan bare-metal recovery in the current scope. | Decided |
 | 6 | Recovery objectives and retention | Make retention a backup-policy setting. No fixed RPO/RTO target is set yet; avoid promising one until a workload needs it. | Retention policy decided; RPO/RTO deferred |
 | 7 | Proxmox Backup Server (PBS) | Skip Proxmox backup integration entirely for now. Research and discuss it later before adding scope. | Deferred |
-| 8 | Notifications and sleeping devices | Use configurable grace periods and maintenance windows so sleeping devices do not constantly alert. Select one notification destination for the first release; the specific channel can be chosen during implementation. | Adopted default |
+| 8 | Notifications and sleeping devices | Use configurable grace periods and maintenance windows so sleeping devices do not constantly alert. Use Gotify as the first notification destination and support Discord alongside it; enable either or both explicitly in server configuration. | Adopted default |
 | 9 | User authentication and OIDC | Use local login; do not add OIDC now. On first visit, show a one-time setup page for the first user. After setup completes, never show that setup page again. Keep agent identity separate from user login. | Decided |
 | 10 | Credential isolation and maintenance authority | Keep secrets out of logs, scope credentials to the minimum required, and separate destructive repository maintenance from routine backup execution where the backend permits it. | Adopted default |
 
@@ -28,6 +28,6 @@ Status: **initial decisions recorded**. These are the user-confirmed choices and
 
 - Confirm concrete CPU architectures for release builds.
 - Identify Synology and TP-Link models/firmware before making model-specific support claims.
-- Choose a first notification channel during implementation.
+- Gotify and Discord selected on 2026-10-11; configure destination credentials locally when enabling delivery.
 - Set workload-specific RPO/RTO targets if needed.
 - Research Proxmox/PBS integration before reopening that scope.
