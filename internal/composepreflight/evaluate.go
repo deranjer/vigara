@@ -327,7 +327,7 @@ func checkHostFile(r *Report, a AssetRequirement, projectDir string, observation
 		return
 	}
 	for _, o := range observations {
-		if filepath.Clean(o.Path) != requested {
+		if cleanTargetPath(o.Path) != requested {
 			continue
 		}
 		if !o.Exists {

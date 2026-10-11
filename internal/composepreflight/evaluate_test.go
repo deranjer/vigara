@@ -217,6 +217,18 @@ func TestConfigurationAssetsStaySeparateAndPersistentDataNeedsBackup(t *testing.
 	}
 }
 
+func TestLinuxHostFilePathIsComparedUsingTargetPathRules(t *testing.T) {
+	now := time.Now().UTC()
+	h := verifiedHost(now)
+	const hostPath = "/srv/media/config/nginx.conf"
+	h.Paths = []ObservedPath{{Path: hostPath, ResolvedPath: hostPath, Exists: true, SymlinkSafe: true}}
+	m := RequirementModel{ProjectName: "media", ProjectDirectory: "/srv/media", ConfigurationAssets: []AssetRequirement{{Path: hostPath, Class: AssetHostFile, Required: true}}}
+	r := EvaluateObserved(m, h, now)
+	if !has(r, "HOST_FILE_AVAILABLE", StatusSatisfied) {
+		t.Fatalf("Linux target path was not recognized: %#v", r)
+	}
+}
+
 func TestPersistentVolumeWithoutPolicyBlocks(t *testing.T) {
 	now := time.Now().UTC()
 	h := verifiedHost(now)
