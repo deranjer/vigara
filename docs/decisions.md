@@ -16,6 +16,11 @@ Status: **initial decisions recorded**. These are the user-confirmed choices and
 | 8 | Notifications and sleeping devices | Use configurable grace periods and maintenance windows so sleeping devices do not constantly alert. Use Gotify as the first notification destination and support Discord alongside it; enable either or both explicitly in server configuration. | Adopted default |
 | 9 | User authentication and OIDC | Use local login; do not add OIDC now. On first visit, show a one-time setup page for the first user. After setup completes, never show that setup page again. Keep agent identity separate from user login. | Decided |
 | 10 | Credential isolation and maintenance authority | Keep secrets out of logs, scope credentials to the minimum required, and separate destructive repository maintenance from routine backup execution where the backend permits it. | Adopted default |
+| 11 | Compose stack contract | Keep standard Compose files portable; store Vigara stack/profile/assignment metadata in versioned sidecar YAML and validate it with JSON Schema. Use stable explicit Compose project names. | Contract v1 recorded in `docs/compose-management.md`; implementation pending |
+| 12 | Git and runtime authority | Git owns saved definitions, encrypted config, and assignments; the database owns drafts, enrollment binding, jobs, runtime observations, and history. Save pushes a revision; deploy selects a pushed revision and never saves implicitly. | Contract v1 recorded; implementation pending |
+| 13 | Stateful ownership and replacement | Exclusive/stateful assignments have one active owner, transferred only through a fenced and epoch-incrementing transition. Logical profiles persist across replacement hardware; agent enrollment identity does not. | Contract v1 recorded; implementation pending |
+| 14 | Compose settings and imports | Use explicit interpolation inputs and preserve imported root-shared `.env` dependencies per stack; service `env_file` and `environment` retain Compose semantics. Encrypt imported dotenv contents in full initially. | Contract v1 recorded; validate against actual Compose during adoption |
+| 15 | SOPS/age trust | Central editor, per-agent target, and offline operator recovery recipients are separate. Private keys stay out of Git; provisioning, ACL, escrow, restore tests, rotation, and revocation are operator prerequisites. | Contract v1 recorded; live key workflow pending |
 
 ## First-run setup requirements
 
@@ -31,3 +36,4 @@ Status: **initial decisions recorded**. These are the user-confirmed choices and
 - Gotify and Discord selected on 2026-10-11; configure destination credentials locally when enabling delivery.
 - Set workload-specific RPO/RTO targets if needed.
 - Research Proxmox/PBS integration before reopening that scope.
+- Confirm profile and assignment contracts against the second server inventory before broad adoption; no second-host layout is inferred in examples.

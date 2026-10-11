@@ -1,0 +1,13 @@
+apiVersion: vigara.io/v1
+kind: OwnershipTransfer
+assignmentId: immich-home-north
+profileId: home-north
+previousAgentId: previous-enrolled-agent
+newAgentId: replacement-enrolled-agent
+previousEpoch: 1
+newEpoch: 2
+oldOwnerFenced: true
+fencingEvidence: Previous host power and network isolation verified by operator before replacement activation.
+actorId: example-operator
+completedAt: "2026-10-11T11:00:00Z"
+gitCommit: 0123456789abcdef0123456789abcdef01234567

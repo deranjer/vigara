@@ -1,0 +1,10 @@
+apiVersion: vigara.io/v1
+kind: DeploymentAssignment
+assignmentId: hello-web-home-south
+stackId: hello-web
+profileId: home-south
+environment: production
+ownership:
+  mode: exclusive
+  ownershipEpoch: 1
+enabled: true

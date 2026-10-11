@@ -1,0 +1,8 @@
+apiVersion: vigara.io/v1
+kind: RuntimeBinding
+profileId: home-north
+agentId: replacement-enrolled-agent
+ownershipEpoch: 2
+status: active
+boundAt: "2026-10-11T11:00:00Z"
+lastHeartbeatAt: "2026-10-11T11:05:00Z"

@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vigara.io/schemas/compose-management/stack-v1.json",
+  "title": "Vigara Compose stack v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "stackId", "displayName", "projectName", "compose", "configurationRevisionPolicy"],
+  "properties": {
+    "apiVersion": {"const": "vigara.io/v1"},
+    "kind": {"const": "Stack"},
+    "stackId": {"$ref": "#/$defs/id"},
+    "displayName": {"type": "string", "minLength": 1, "maxLength": 120},
+    "projectName": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$", "maxLength": 63},
+    "compose": {"type": "object", "additionalProperties": false, "required": ["files", "projectDirectory", "interpolationFiles"], "properties": {
+      "files": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/path"}},
+      "projectDirectory": {"const": "."},
+      "interpolationFiles": {"type": "array", "items": {"$ref": "#/$defs/input"}},
+      "controlEnvironmentAllowlist": {"type": "array", "items": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"}, "uniqueItems": true}
+    }},
+    "secretRecipientRefs": {"type": "array", "minItems": 3, "items": {"type": "object", "additionalProperties": false, "required": ["class", "keyRef"], "properties": {
+      "class": {"enum": ["central-editor", "target-agent", "operator-recovery"]},
+      "keyRef": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._:-]{1,127}$"}
+    }}},
+    "configurationRevisionPolicy": {"const": "sha256-canonical-manifest-and-referenced-files-v1"},
+    "notes": {"type": "string", "maxLength": 2000}
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "compose": {
+            "properties": {
+              "interpolationFiles": {
+                "contains": {
+                  "properties": {"sensitivity": {"const": "encrypted"}},
+                  "required": ["sensitivity"]
+                }
+              }
+            }
+          }
+        },
+        "required": ["compose"]
+      },
+      "then": {"required": ["secretRecipientRefs"]}
+    }
+  ],
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$", "maxLength": 63},
+    "path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$"},
+    "input": {"type": "object", "additionalProperties": false, "required": ["path", "purpose", "sensitivity"], "properties": {
+      "path": {"$ref": "#/$defs/path"},
+      "purpose": {"enum": ["stack", "deployment", "shared"]},
+      "sensitivity": {"enum": ["encrypted", "plaintext"]},
+      "preserveOnImport": {"type": "boolean"}
+    }}
+  }
+}

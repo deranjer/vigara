@@ -1,0 +1,16 @@
+apiVersion: vigara.io/v1
+kind: ServerProfile
+profileId: home-south
+displayName: Synthetic home server profile south
+requirements:
+  networks:
+    - name: web
+      external: true
+      purpose: Reverse proxy attachment
+  mounts:
+    - hostPath: /srv/data
+      required: true
+      purpose: Application data root
+      backupPolicyId: home-data
+  startupDependencies: []
+notes: Synthetic replacement profile example only; no second-server inventory is implied.

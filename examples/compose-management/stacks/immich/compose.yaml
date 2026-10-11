@@ -1,0 +1,18 @@
+services:
+  server:
+    image: ghcr.io/example/immich-server:release
+    env_file:
+      - ./config/server.env
+    environment:
+      DB_HOSTNAME: ${DB_HOSTNAME:?required}
+    depends_on:
+      - database
+      - redis
+  machine-learning:
+    image: ghcr.io/example/immich-machine-learning:release
+  redis:
+    image: redis:7-alpine
+  database:
+    image: tensorchord/pgvecto-rs:pg14-v0.2.0
+    env_file:
+      - ./config/database.env

@@ -1,0 +1,10 @@
+apiVersion: vigara.io/v1
+kind: DeploymentAssignment
+assignmentId: immich-home-north
+stackId: immich
+profileId: home-north
+environment: production
+ownership:
+  mode: exclusive
+  ownershipEpoch: 2
+enabled: true
