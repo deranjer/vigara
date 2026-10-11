@@ -139,10 +139,11 @@ func endpoint(host string) (string, string, error) {
 }
 
 type container struct {
-	ID    string   `json:"Id"`
-	Names []string `json:"Names"`
-	Image string   `json:"Image"`
-	State string   `json:"State"`
+	ID     string            `json:"Id"`
+	Names  []string          `json:"Names"`
+	Image  string            `json:"Image"`
+	State  string            `json:"State"`
+	Labels map[string]string `json:"Labels"`
 }
 type cpuStat struct {
 	Total  *uint64  `json:"total_usage"`
@@ -284,6 +285,10 @@ func (c *Collector) Collect(ctx context.Context) Result {
 }
 
 func (c *Collector) get(ctx context.Context, path string, dst any) error {
+	return c.getLimit(ctx, path, dst, maxResponseBytes)
+}
+
+func (c *Collector) getLimit(ctx context.Context, path string, dst any, maxBytes int64) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/"+apiVersion+path, nil)
 	if err != nil {
 		return errors.New("could not build Docker API request")
@@ -297,12 +302,12 @@ func (c *Collector) get(ctx context.Context, path string, dst any) error {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
 		return fmt.Errorf("Docker API returned HTTP %d", resp.StatusCode)
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
 	if err != nil {
 		return errors.New("could not read Docker API response")
 	}
-	if len(data) > maxResponseBytes {
-		return errors.New("Docker API response exceeds 1 MiB")
+	if int64(len(data)) > maxBytes {
+		return errors.New("Docker API response exceeds configured limit")
 	}
 	if json.Unmarshal(data, dst) != nil {
 		return errors.New("Docker API returned invalid JSON")
