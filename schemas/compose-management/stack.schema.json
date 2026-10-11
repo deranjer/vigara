@@ -51,7 +51,8 @@
       "path": {"$ref": "#/$defs/path"},
       "purpose": {"enum": ["stack", "deployment", "shared"]},
       "sensitivity": {"enum": ["encrypted", "plaintext"]},
+      "format": {"enum": ["sops-dotenv", "sops-binary"]},
       "preserveOnImport": {"type": "boolean"}
-    }}
+    }, "allOf": [{"if": {"required": ["format"]}, "then": {"properties": {"sensitivity": {"const": "encrypted"}}}}]}
   }
 }
