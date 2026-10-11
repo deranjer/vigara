@@ -12,14 +12,26 @@ import (
 
 const MaxQueuedReports = 500
 const MaxQueuedTelemetry = 100
+const MaxResticProfiles = 32
+
+// ResticProfile is installed by a trusted local operator in the private agent
+// state file. Job settings can select its ID but cannot supply these values.
+type ResticProfile struct {
+	Enabled     bool              `json:"enabled"`
+	Repository  string            `json:"repository"`
+	SourcePaths []string          `json:"sourcePaths"`
+	Environment map[string]string `json:"environment,omitempty"`
+	Executable  string            `json:"executable,omitempty"`
+}
 
 type State struct {
-	ServerURL     string                       `json:"serverUrl"`
-	AgentID       string                       `json:"agentId"`
-	Credential    string                       `json:"credential"`
-	Configuration *protocol.AgentConfiguration `json:"configuration,omitempty"`
-	Pending       []protocol.JobResult         `json:"pending,omitempty"`
-	Telemetry     []protocol.TelemetrySnapshot `json:"telemetryPending,omitempty"`
+	ServerURL      string                       `json:"serverUrl"`
+	AgentID        string                       `json:"agentId"`
+	Credential     string                       `json:"credential"`
+	Configuration  *protocol.AgentConfiguration `json:"configuration,omitempty"`
+	ResticProfiles map[string]ResticProfile     `json:"resticProfiles,omitempty"`
+	Pending        []protocol.JobResult         `json:"pending,omitempty"`
+	Telemetry      []protocol.TelemetrySnapshot `json:"telemetryPending,omitempty"`
 }
 
 func Load(path string) (State, error) {
@@ -40,6 +52,9 @@ func Load(path string) (State, error) {
 	if len(state.Telemetry) > MaxQueuedTelemetry {
 		return State{}, fmt.Errorf("agent state contains more than %d queued telemetry snapshots", MaxQueuedTelemetry)
 	}
+	if len(state.ResticProfiles) > MaxResticProfiles {
+		return State{}, fmt.Errorf("agent state contains more than %d restic profiles", MaxResticProfiles)
+	}
 	return state, nil
 }
 
@@ -51,6 +66,9 @@ func Save(path string, state State) error {
 	}
 	if len(state.Telemetry) > MaxQueuedTelemetry {
 		return fmt.Errorf("telemetry queue is full (%d)", MaxQueuedTelemetry)
+	}
+	if len(state.ResticProfiles) > MaxResticProfiles {
+		return fmt.Errorf("agent state contains more than %d restic profiles", MaxResticProfiles)
 	}
 	directory := filepath.Dir(path)
 	_, statErr := os.Stat(directory)
