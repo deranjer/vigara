@@ -1,0 +1,5 @@
+# Compose management examples
+
+These examples are synthetic schema fixtures, not observed host inventory. `hello-web` shows a one-service stack with stateless assignments on two profiles, shared stack-level secret recipients unioned across the active agents, and separate assignment-level secret files for each replica. `immich` shows multiple Compose services and an explicit preserved shared interpolation input. `home-north` and `home-south` demonstrate two independent logical profiles. The stateful Immich assignment is exclusive and cannot be cloned across them. The transfer audit demonstrates replacement fencing; `runtime/runtime-binding.yaml` shows the database-only active profile-to-agent binding after that transfer. The release fixture records a commit, configuration revision, image digest, agent, and observed service state. Placeholder digests and IDs are synthetic; no encrypted files or key material are included.
+
+Run `python scripts/validate_compose_contracts.py` from the repository root to validate all schemas and Vigara YAML manifests, including intentional rejection cases. The validator requires Python 3.10+, PyYAML 6.x, and jsonschema 4.x.

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vigara.io/schemas/compose-management/assignment-v1.json",
+  "title": "Vigara deployment assignment v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["apiVersion", "kind", "assignmentId", "stackId", "profileId", "environment", "ownership", "enabled"],
+  "properties": {
+    "apiVersion": {"const": "vigara.io/v1"}, "kind": {"const": "DeploymentAssignment"},
+    "assignmentId": {"$ref": "#/$defs/id"}, "stackId": {"$ref": "#/$defs/id"}, "profileId": {"$ref": "#/$defs/id"},
+    "environment": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,62}$"},
+    "ownership": {"type": "object", "additionalProperties": false, "required": ["mode", "ownershipEpoch"], "properties": {"mode": {"enum": ["exclusive", "stateless"]}, "ownershipEpoch": {"type": "integer", "minimum": 1}}},
+    "replicaKey": {"type": "string", "minLength": 1, "maxLength": 120},
+    "projectNameOverride": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$", "maxLength": 63},
+    "interpolationFiles": {"type": "array", "items": {"$ref": "#/$defs/input"}},
+    "secretRecipientRefs": {"type": "array", "minItems": 3, "items": {"type": "object", "additionalProperties": false, "required": ["class", "keyRef"], "properties": {"class": {"enum": ["central-editor", "target-agent", "operator-recovery"]}, "keyRef": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._:-]{1,127}$"}}}},
+    "enabled": {"type": "boolean"}
+  },
+  "allOf": [
+    {"if": {"properties": {"ownership": {"properties": {"mode": {"const": "stateless"}}, "required": ["mode"]}}, "required": ["ownership"]}, "then": {"required": ["replicaKey"]}},
+    {"if": {"properties": {"ownership": {"properties": {"mode": {"const": "exclusive"}}, "required": ["mode"]}}, "required": ["ownership"]}, "then": {"not": {"required": ["replicaKey"]}}},
+    {"if": {"properties": {"interpolationFiles": {"contains": {"properties": {"sensitivity": {"const": "encrypted"}}, "required": ["sensitivity"]}}}, "required": ["interpolationFiles"]}, "then": {"required": ["secretRecipientRefs"]}}
+  ],
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$", "maxLength": 63},
+    "path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$"},
+    "input": {"type": "object", "additionalProperties": false, "required": ["path", "purpose", "sensitivity"], "properties": {"path": {"$ref": "#/$defs/path"}, "purpose": {"enum": ["stack", "deployment", "shared"]}, "sensitivity": {"enum": ["encrypted", "plaintext"]}, "preserveOnImport": {"type": "boolean"}}}
+  }
+}

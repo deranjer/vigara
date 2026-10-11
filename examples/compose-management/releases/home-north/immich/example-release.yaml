@@ -1,0 +1,23 @@
+apiVersion: vigara.io/v1
+kind: Release
+releaseId: 9042b269b16038da76d75b323d6b2b8fbe65734d11544db67f4e3c89182893ec
+assignmentId: immich-home-north
+profileId: home-north
+ownershipEpoch: 1
+stackId: immich
+projectName: immich
+gitCommit: 0123456789abcdef0123456789abcdef01234567
+configurationRevision: sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+agentId: example-agent-id
+jobId: example-job-id
+startedAt: "2026-10-11T10:00:00Z"
+finishedAt: "2026-10-11T10:02:00Z"
+outcome: succeeded
+images:
+  - service: server
+    reference: ghcr.io/example/immich-server:release
+    digest: sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+services:
+  - service: server
+    observedState: running
+    health: healthy

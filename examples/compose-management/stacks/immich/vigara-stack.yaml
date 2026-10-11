@@ -1,0 +1,26 @@
+apiVersion: vigara.io/v1
+kind: Stack
+stackId: immich
+displayName: Immich
+projectName: immich
+compose:
+  files:
+    - compose.yaml
+  projectDirectory: .
+  interpolationFiles:
+    - path: secrets/stack.env.sops
+      purpose: stack
+      sensitivity: encrypted
+    - path: secrets/root-shared.env.sops
+      purpose: shared
+      sensitivity: encrypted
+      preserveOnImport: true
+configurationRevisionPolicy: sha256-git-tree-and-placement-inputs-v1
+secretRecipientRefs:
+  - class: central-editor
+    keyRef: editor-main
+  - class: target-agent
+    keyRef: enrolled-agent-identity
+  - class: operator-recovery
+    keyRef: offline-recovery-a
+notes: Four-service illustrative application. root-shared.env is a per-stack encrypted import of a discovered shared input; this example does not claim a second host has this layout.

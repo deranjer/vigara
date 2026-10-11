@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vigara.io/schemas/compose-management/release-v1.json",
+  "title": "Vigara observed release v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["apiVersion", "kind", "releaseId", "assignmentId", "profileId", "ownershipEpoch", "stackId", "projectName", "gitCommit", "configurationRevision", "agentId", "jobId", "startedAt", "finishedAt", "outcome", "images", "services"],
+  "properties": {
+    "apiVersion": {"const": "vigara.io/v1"}, "kind": {"const": "Release"},
+    "releaseId": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "assignmentId": {"$ref": "#/$defs/id"}, "profileId": {"$ref": "#/$defs/id"}, "ownershipEpoch": {"type": "integer", "minimum": 1}, "stackId": {"$ref": "#/$defs/id"},
+    "projectName": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$", "maxLength": 63}, "gitCommit": {"type": "string", "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$"}, "configurationRevision": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "agentId": {"type": "string", "minLength": 1, "maxLength": 128}, "jobId": {"type": "string", "minLength": 1, "maxLength": 128},
+    "startedAt": {"type": "string", "format": "date-time"}, "finishedAt": {"type": "string", "format": "date-time"}, "outcome": {"enum": ["succeeded", "failed", "partial", "cancelled", "timed_out"]}, "errorCode": {"type": "string", "maxLength": 128},
+    "images": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["service", "reference", "digest"], "properties": {"service": {"type": "string", "minLength": 1, "maxLength": 63}, "reference": {"type": "string", "minLength": 1, "maxLength": 512}, "digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}}}},
+    "services": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["service", "observedState"], "properties": {"service": {"type": "string", "minLength": 1, "maxLength": 63}, "observedState": {"enum": ["running", "stopped", "starting", "failed", "unknown"]}, "containerId": {"type": "string", "maxLength": 128}, "health": {"type": "string", "maxLength": 64}}}}
+  },
+  "$defs": {"id": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$", "maxLength": 63}}
+}
