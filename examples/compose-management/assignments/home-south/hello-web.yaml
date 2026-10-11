@@ -5,6 +5,19 @@ stackId: hello-web
 profileId: home-south
 environment: production
 ownership:
-  mode: exclusive
+  mode: stateless
   ownershipEpoch: 1
+replicaKey: home-south
+projectNameOverride: hello-web-south
+interpolationFiles:
+  - path: secrets/assignments/hello-web-home-south.env.sops
+    purpose: deployment
+    sensitivity: encrypted
+secretRecipientRefs:
+  - class: central-editor
+    keyRef: editor-main
+  - class: target-agent
+    keyRef: home-south-agent
+  - class: operator-recovery
+    keyRef: offline-recovery-a
 enabled: true

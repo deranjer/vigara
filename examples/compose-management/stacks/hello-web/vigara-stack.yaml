@@ -11,12 +11,13 @@ compose:
     - path: secrets/runtime.env.sops
       purpose: stack
       sensitivity: encrypted
-configurationRevisionPolicy: sha256-canonical-manifest-and-referenced-files-v1
+      preserveOnImport: false
 secretRecipientRefs:
   - class: central-editor
     keyRef: editor-main
   - class: target-agent
-    keyRef: enrolled-agent-identity
+    keyRef: hello-web-active-targets
   - class: operator-recovery
     keyRef: offline-recovery-a
+configurationRevisionPolicy: sha256-git-tree-and-placement-inputs-v1
 notes: Single-app illustrative stack. The referenced SOPS file is intentionally not included; no key or secret is part of this example.

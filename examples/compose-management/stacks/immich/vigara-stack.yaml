@@ -15,7 +15,7 @@ compose:
       purpose: shared
       sensitivity: encrypted
       preserveOnImport: true
-configurationRevisionPolicy: sha256-canonical-manifest-and-referenced-files-v1
+configurationRevisionPolicy: sha256-git-tree-and-placement-inputs-v1
 secretRecipientRefs:
   - class: central-editor
     keyRef: editor-main
