@@ -78,13 +78,16 @@ func TestBackupClassifiesPartialFailureAndInterruption(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fake := &fakeProcess{outputs: [][]byte{[]byte("restic 0.19.1\n"), []byte("{\"message_type\":\"summary\",\"snapshot_id\":\"snap-id\"}\n")}, errors: []error{nil, tt.runErr}}
+			fake := &fakeProcess{outputs: [][]byte{[]byte("restic 0.19.1\n"), []byte("{\"message_type\":\"summary\",\"snapshot_id\":\"abc123\"}\n")}, errors: []error{nil, tt.runErr}}
 			got := testRunner(fake).Backup(tt.context, "/private/repository", []string{"/data"})
 			if got.Status != tt.want || got.ErrorCode != tt.code {
 				t.Fatalf("result = %#v", got)
 			}
-			if tt.want == Partial && !reflect.DeepEqual(got.SnapshotIDs, []string{"snap-id"}) {
+			if tt.want == Partial && !reflect.DeepEqual(got.SnapshotIDs, []string{"abc123"}) {
 				t.Fatalf("partial snapshot not retained: %#v", got)
+			}
+			if tt.want == Interrupted && !reflect.DeepEqual(got.SnapshotIDs, []string{"abc123"}) {
+				t.Fatalf("interrupted snapshot not retained: %#v", got.SnapshotIDs)
 			}
 			if strings.Contains(strings.Join([]string{got.ErrorCode, string(got.Status)}, " "), "secret") {
 				t.Fatal("unsafe error surfaced")
@@ -132,12 +135,15 @@ func TestValidateRepositoryReadsConfigAndDoesNotLeakCommandError(t *testing.T) {
 }
 
 func TestParseBackupPartialFromJSONErrors(t *testing.T) {
-	summary, partial, err := parseBackup([]byte("{\"message_type\":\"error\"}\n{\"message_type\":\"summary\",\"snapshot_id\":\"s1\"}\n"))
-	if err != nil || !partial || summary == nil || summary.SnapshotID != "s1" {
+	summary, partial, err := parseBackup([]byte("{\"message_type\":\"error\"}\n{\"message_type\":\"summary\",\"snapshot_id\":\"abc123\"}\n"))
+	if err != nil || !partial || summary == nil || summary.SnapshotID != "abc123" {
 		t.Fatalf("got (%#v, %v, %v)", summary, partial, err)
 	}
 	if _, _, err := parseBackup([]byte("not-json\n")); err == nil {
 		t.Fatal("expected malformed JSON to fail")
+	}
+	if _, _, err := parseBackup([]byte("{\"message_type\":\"summary\",\"snapshot_id\":\"not-a-hex-id\"}\n")); err == nil {
+		t.Fatal("expected malformed snapshot ID to fail")
 	}
 }
 
@@ -159,7 +165,7 @@ func TestRealSubprocessInvocation(t *testing.T) {
 	runner := New(Config{Executable: os.Args[0], Environment: map[string]string{"RESTIC_TEST_HELPER": "1", "RESTIC_PASSWORD": "secret"}})
 	runner.process = testBinaryProcess{}
 	got := runner.Backup(context.Background(), "/repo", []string{"/source"})
-	if got.Status != Succeeded || !reflect.DeepEqual(got.SnapshotIDs, []string{"subprocess-snapshot"}) {
+	if got.Status != Succeeded || !reflect.DeepEqual(got.SnapshotIDs, []string{"abc123"}) {
 		t.Fatalf("subprocess result = %#v", got)
 	}
 }
@@ -185,7 +191,7 @@ func TestResticHelper(t *testing.T) {
 	if strings.Contains(args, "version") {
 		_, _ = os.Stdout.WriteString("restic 0.19.1\n")
 	} else {
-		_, _ = os.Stdout.WriteString("{\"message_type\":\"summary\",\"snapshot_id\":\"subprocess-snapshot\"}\n")
+		_, _ = os.Stdout.WriteString("{\"message_type\":\"summary\",\"snapshot_id\":\"abc123\"}\n")
 	}
 	os.Exit(0)
 }
