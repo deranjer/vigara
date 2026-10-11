@@ -54,6 +54,7 @@ type scenario struct {
 	SnapshotsPerDevice               int    `json:"snapshots_per_device"`
 	MetricSeries                     int64  `json:"metric_series"`
 	RawRowsAfterRetention            int64  `json:"raw_rows_after_retention"`
+	HistoryPointsReturned            int64  `json:"history_points_returned"`
 	RollupRows                       int64  `json:"rollup_rows"`
 	TelemetryRelationBytes           int64  `json:"telemetry_relation_bytes"`
 	RawRowsBeforeRetention           int64  `json:"raw_rows_before_retention"`
@@ -322,6 +323,8 @@ func synthetic(ctx context.Context, dsn string, timeout time.Duration, deviceCSV
 		"Every case uses a random new schema and the current telemetry Store.Ingest and Store.Retain methods.",
 		"Cleanup drops only that schema after its ownership token is verified; no existing table is truncated or dropped.",
 		"Short datasets measure path cost and row/index growth, not a complete 48h raw or 90d rollup population.",
+		"Each agent gets three additional expired anchor snapshots at distinct hourly offsets; they ensure the current-time history query reads multiple rollup buckets alongside recent raw samples.",
+		"history_points_returned counts rows from the executed 30-day history query and every scenario requires at least three returned points.",
 		"Projection fields apply short-run bytes-per-snapshot and hourly-series counts linearly to the configured horizons; labels, PostgreSQL settings, and workload mix can change the result substantially.",
 		"First read follows ingest and is not guaranteed storage-cold; warm figures repeat the same bounded query.",
 		"Each snapshot has 11 metrics: host CPU/memory/uptime, two filesystems, one disk, and one network interface, with per-device labels.",
@@ -424,7 +427,8 @@ func runCase(ctx context.Context, admin *pgxpool.Pool, dsn string, timeout time.
 		return scenario{}, errors.New("scenario exceeds 600 snapshots per device")
 	}
 	step := interval
-	start := time.Now().UTC().Add(-rawAge).Add(-2 * time.Minute)
+	fixtureNow := time.Now().UTC()
+	start := fixtureNow.Add(-rawAge).Add(-2 * time.Minute)
 	store := telemetry.NewPostgresStore(p)
 	ingest := make([]time.Duration, 0)
 	for ai, id := range ids {
@@ -452,7 +456,19 @@ func runCase(ctx context.Context, admin *pgxpool.Pool, dsn string, timeout time.
 	if err = p.QueryRow(ctx, `SELECT pg_total_relation_size('agent_telemetry'::regclass)::bigint`).Scan(&rawBytesBefore); err != nil {
 		return scenario{}, err
 	}
-	retainNow := start.Add(time.Duration(steps) * step).Add(rawAge).Add(time.Minute)
+	// Add three older hourly points and keep the generated recent samples. These
+	// bounded anchors make the same query exercise both storage paths across
+	// multiple buckets without implying a fully populated retention horizon.
+	for ai, id := range ids {
+		for n, age := range []time.Duration{rawAge + 2*time.Hour + 20*time.Minute, rawAge + time.Hour + 20*time.Minute, rawAge + 20*time.Minute} {
+			observed := fixtureNow.Add(-age)
+			anchor := snapshot(id, ai, steps+1000+n, observed)
+			if err = store.Ingest(ctx, id, []protocol.TelemetrySnapshot{anchor}, observed.Add(5*time.Second)); err != nil {
+				return scenario{}, fmt.Errorf("synthetic history anchor ingest: %w", err)
+			}
+		}
+	}
+	retainNow := fixtureNow
 	began := time.Now()
 	if err = store.Retain(ctx, telemetry.RetentionConfig{RawAge: rawAge, RollupAge: rollupAge}, retainNow); err != nil {
 		return scenario{}, fmt.Errorf("synthetic retention: %w", err)
@@ -467,6 +483,16 @@ func runCase(ctx context.Context, admin *pgxpool.Pool, dsn string, timeout time.
 		if err = p.QueryRow(ctx, s.sql).Scan(s.dest); err != nil {
 			return scenario{}, err
 		}
+	}
+	var eligibleRaw, retainedBuckets int64
+	if err = p.QueryRow(ctx, `SELECT count(*) FROM agent_telemetry WHERE observed_at >= $1 AND observed_at <= $2`, fixtureNow.Add(-rawAge), fixtureNow).Scan(&eligibleRaw); err != nil {
+		return scenario{}, err
+	}
+	if err = p.QueryRow(ctx, `SELECT count(DISTINCT r.bucket_start) FROM telemetry_metric_rollups r JOIN agent_identities a ON a.id=r.agent_id WHERE a.device_id=(SELECT device_id FROM agent_identities WHERE id=$1) AND r.metric_name='cpu_used_percent'`, ids[0]).Scan(&retainedBuckets); err != nil {
+		return scenario{}, err
+	}
+	if eligibleRaw == 0 || retainedBuckets < 2 {
+		return scenario{}, fmt.Errorf("retention fixture incomplete: raw rows=%d, rollup buckets=%d", eligibleRaw, retainedBuckets)
 	}
 	var deviceID string
 	if err = p.QueryRow(ctx, `SELECT device_id::text FROM agent_identities WHERE id=$1`, ids[0]).Scan(&deviceID); err != nil {
@@ -494,6 +520,22 @@ SELECT at,name,unit,labels,value,min,max,samples FROM binned ORDER BY name,label
 		}
 		warm[i] = time.Since(began)
 	}
+	historyRows, queryErr := p.Query(ctx, readSQL, readArgs...)
+	if queryErr != nil {
+		return scenario{}, fmt.Errorf("execute history query: %w", queryErr)
+	}
+	var historyPoints int64
+	for historyRows.Next() {
+		historyPoints++
+	}
+	if err = historyRows.Err(); err != nil {
+		historyRows.Close()
+		return scenario{}, err
+	}
+	historyRows.Close()
+	if historyPoints < 3 {
+		return scenario{}, fmt.Errorf("history query returned %d points after retention, want at least 3", historyPoints)
+	}
 	plans := []plan{}
 	for _, q := range []struct {
 		name, sql string
@@ -511,7 +553,7 @@ SELECT at,name,unit,labels,value,min,max,samples FROM binned ORDER BY name,label
 		projectedRawBytes = projectedSnapshots * rawBytesBefore / rawRowsBefore
 	}
 	projectedRollups := series * int64(rollupAge/time.Hour)
-	return scenario{Devices: devices, SamplingInterval: interval.String(), RawRetention: fmt.Sprintf("%dh", int(rawAge/time.Hour)), RollupRetention: durationLabel(rollupAge), SnapshotsPerDevice: steps, MetricSeries: series, RawRowsBeforeRetention: rawRowsBefore, RawBytesBeforeRetention: rawBytesBefore, ProjectedRawSnapshotsAtRetention: projectedSnapshots, ProjectedRawBytesAtRetention: projectedRawBytes, ProjectedHourlyRollupRows: projectedRollups, RawRowsAfterRetention: rawRows, RollupRows: rollups, TelemetryRelationBytes: bytesUsed, IngestBatchMedian: percentile(ingest, .5).String(), IngestBatchP95: percentile(ingest, .95).String(), RetentionElapsed: retentionTime.String(), FirstPostIngestRead: firstRead.String(), WarmReadMedian: percentile(warm, .5).String(), WarmReadP95: percentile(warm, .95).String(), Plans: plans}, nil
+	return scenario{Devices: devices, HistoryPointsReturned: historyPoints, SamplingInterval: interval.String(), RawRetention: fmt.Sprintf("%dh", int(rawAge/time.Hour)), RollupRetention: durationLabel(rollupAge), SnapshotsPerDevice: steps, MetricSeries: series, RawRowsBeforeRetention: rawRowsBefore, RawBytesBeforeRetention: rawBytesBefore, ProjectedRawSnapshotsAtRetention: projectedSnapshots, ProjectedRawBytesAtRetention: projectedRawBytes, ProjectedHourlyRollupRows: projectedRollups, RawRowsAfterRetention: rawRows, RollupRows: rollups, TelemetryRelationBytes: bytesUsed, IngestBatchMedian: percentile(ingest, .5).String(), IngestBatchP95: percentile(ingest, .95).String(), RetentionElapsed: retentionTime.String(), FirstPostIngestRead: firstRead.String(), WarmReadMedian: percentile(warm, .5).String(), WarmReadP95: percentile(warm, .95).String(), Plans: plans}, nil
 }
 
 func fixture(ctx context.Context, p *pgxpool.Pool) error {

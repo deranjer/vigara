@@ -13,6 +13,8 @@ import (
 
 	"github.com/deranjer/vigara/apps/api/internal/auth"
 	"github.com/deranjer/vigara/apps/api/internal/db"
+	"github.com/deranjer/vigara/apps/api/internal/telemetry"
+	"github.com/deranjer/vigara/internal/protocol"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -181,6 +183,61 @@ func TestInventoryAndHistoryAreAuthenticatedBoundedAndPreserveGaps(t *testing.T)
 		if point.At.After(time.Now().Add(time.Second)) {
 			t.Fatalf("future point returned: %s", point.At)
 		}
+	}
+}
+
+func TestHistoryAfterRetentionCombinesRecentRawAndMultipleRollupBuckets(t *testing.T) {
+	pool := inventoryTestPool(t)
+	ctx := context.Background()
+	service := auth.NewService(pool, db.New(pool))
+	session, err := service.CreateFirstUser(ctx, "retention-admin", "Retention Admin", "correct horse battery", "correct horse battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deviceID, agentID string
+	if err = pool.QueryRow(ctx, `INSERT INTO devices(display_name) VALUES('retention history') RETURNING id::text`).Scan(&deviceID); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `INSERT INTO agent_identities(device_id,credential_hash,protocol_version,platform,architecture,agent_version) VALUES($1,decode(md5($2),'hex'),'v1','linux','amd64','test') RETURNING id::text`, deviceID, "retention-agent").Scan(&agentID); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	snapshots := []protocol.TelemetrySnapshot{}
+	for i, seen := range []time.Time{now.Add(-26*time.Hour - 20*time.Minute), now.Add(-25*time.Hour - 20*time.Minute), now.Add(-24*time.Hour - 20*time.Minute), now.Add(-5 * time.Minute), now.Add(-time.Minute)} {
+		snapshots = append(snapshots, protocol.TelemetrySnapshot{ID: fmt.Sprintf("retained-history-%d", i), AgentID: agentID, ObservedAt: seen, Metrics: []protocol.TelemetryMetric{{Name: "cpu_used_percent", Value: float64(i + 10), Unit: "%", Labels: map[string]string{"core": "all"}}}})
+	}
+	store := telemetry.NewPostgresStore(pool)
+	if err = store.Ingest(ctx, agentID, snapshots, now); err != nil {
+		t.Fatalf("ingest history fixture: %v", err)
+	}
+	if err = store.Retain(ctx, telemetry.RetentionConfig{RawAge: 25 * time.Hour, RollupAge: 90 * 24 * time.Hour}, now); err != nil {
+		t.Fatalf("retain history fixture: %v", err)
+	}
+	var rawRows, rollupBuckets int
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM agent_telemetry WHERE agent_id=$1`, agentID).Scan(&rawRows); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT count(DISTINCT bucket_start) FROM telemetry_metric_rollups WHERE agent_id=$1 AND metric_name='cpu_used_percent'`, agentID).Scan(&rollupBuckets); err != nil {
+		t.Fatal(err)
+	}
+	if rawRows != 3 || rollupBuckets != 2 {
+		t.Fatalf("retention fixture state raw=%d rollup buckets=%d, want 3 and 2", rawRows, rollupBuckets)
+	}
+	mux := http.NewServeMux()
+	NewHandler(pool, service).Register(mux)
+	r := httptest.NewRequest(http.MethodGet, "/api/inventory/devices/"+deviceID+"/history?range=30d&metric=cpu_used_percent", nil)
+	r.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: session.Token})
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("history status=%d body=%s", w.Code, w.Body)
+	}
+	var history History
+	if err = json.Unmarshal(w.Body.Bytes(), &history); err != nil {
+		t.Fatal(err)
+	}
+	if len(history.Series) != 1 || len(history.Series[0].Points) < 3 {
+		t.Fatalf("history should expose two retained buckets and recent raw points, got %+v", history.Series)
 	}
 }
 

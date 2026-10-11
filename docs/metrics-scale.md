@@ -27,6 +27,12 @@ labels differ. This models ordinary host collection without using the maximum
 PostgreSQL JSONB intake, deduplication, latest-snapshot, series registry,
 rollup, and retention paths.
 
+Each device also receives three expired snapshots at distinct hourly offsets
+and keeps the generated snapshots that fall inside the raw window. This makes
+the executed current-time history query combine multiple hourly rollup buckets
+with recent raw samples. The anchors are a small query fixture, not a populated
+retention horizon; the reported projections still use the generated short run.
+
 ## Running it
 
 Use an explicit DSN in the environment so credentials do not appear in command
@@ -58,6 +64,9 @@ one-hour sampling intervals, or statement timeouts longer than 30 seconds.
 JSON output includes server version/database identity, row and byte counts,
 metric series cardinality, ingest batch median and p95, retention elapsed time,
 read query median and p95, and text plans with shared-buffer hit/read counts.
+`history_points_returned` counts rows from the executed 30-day history query;
+each scenario must return at least three points and retain both raw rows and
+multiple rollup buckets.
 Synthetic `first_post_ingest_read` is the first observed read after inserts;
 the server and operating-system caches are not cleared, so it is not a true
 storage-cold measurement. Warm results are seven repeated reads. Retention
@@ -79,16 +88,18 @@ The checked-in [JSON report](metrics-scale-results.json) was generated on
 contains the full plans, buffer counts, and all 18 combinations in the default
 matrix. The 48h raw / 90d rollup cases reported:
 
-| Devices | Synthetic snapshots | Raw rows before retention | Raw relation bytes before retention | 48h raw byte projection | 90d hourly rollup row projection | Ingest batch median / p95 | Retention elapsed |
-|---:|---:|---:|---:|---:|---:|---:|---:|
-| 12 | 240 | 240 | 540,672 | 155,713,536 | 285,120 | 5.78 / 7.81 ms | 22.15 ms |
-| 36 | 720 | 720 | 1,441,792 | 415,236,096 | 855,360 | 8.34 / 13.24 ms | 93.33 ms |
-| 60 | 1,200 | 1,200 | 2,326,528 | 670,040,064 | 1,425,600 | 4.95 / 6.19 ms | 96.65 ms |
+| Devices | Synthetic snapshots | Raw rows before retention | Raw rows after retention | Rollup rows | History points returned | Raw relation bytes before retention | 48h raw byte projection | 90d hourly rollup row projection | Ingest batch median / p95 | Retention elapsed |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 12 | 240 | 240 | 192 | 528 | 5 | 540,672 | 155,713,536 | 285,120 | 9.45 / 16.97 ms | 29.39 ms |
+| 36 | 720 | 720 | 576 | 1,584 | 5 | 1,441,792 | 415,236,096 | 855,360 | 7.49 / 10.21 ms | 68.67 ms |
+| 60 | 1,200 | 1,200 | 960 | 2,640 | 5 | 2,326,528 | 670,040,064 | 1,425,600 | 4.15 / 5.50 ms | 84.38 ms |
 
-All three cases rolled their raw rows into hourly aggregates. For the 60-device
-case, the first post-ingest history read took 2.58 ms; seven repeated reads had
-a 0.52 ms median and 1.51 ms p95. The table bytes are from only 10 simulated
-minutes. The 48h raw estimate multiplies the measured raw-table bytes per row
+All three cases retained raw rows and several hourly rollup buckets, and the
+actual history query returned five points in each case. For the 60-device case,
+the first post-ingest history read took 1.51 ms; seven repeated reads had a
+0.94 ms median and 1.29 ms p95. The measured generated workload covers only 10
+simulated minutes, plus the three query fixture anchors per device. The 48h
+raw estimate multiplies the measured raw-table bytes per snapshot
 by expected 30-second samples over 48 hours. The rollup estimate multiplies
 observed series cardinality by hourly buckets over 90 days. These linear
 estimates have wide uncertainty because actual metric labels, JSON payloads,
