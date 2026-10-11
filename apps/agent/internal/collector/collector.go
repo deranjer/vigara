@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	dockercollector "github.com/deranjer/vigara/apps/agent/internal/collector/docker"
+	"github.com/deranjer/vigara/apps/agent/internal/collector/synology"
 	"github.com/deranjer/vigara/apps/agent/internal/networkcheck"
 	"github.com/deranjer/vigara/internal/protocol"
 	"github.com/shirou/gopsutil/v4/cpu"
@@ -45,6 +46,8 @@ type Collector struct {
 	networkCheckResults []networkcheck.Result
 	docker              *dockercollector.Collector
 	dockerConfigError   error
+	synology            *synology.Collector
+	synologyConfigError error
 }
 
 func New() *Collector {
@@ -52,6 +55,16 @@ func New() *Collector {
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("VIGIRA_DOCKER_ENABLED")), "true") {
 		c.docker, c.dockerConfigError = dockercollector.New(dockercollector.Config{Enabled: true, Host: strings.TrimSpace(os.Getenv("VIGIRA_DOCKER_HOST"))})
 	}
+	if strings.TrimSpace(os.Getenv("VIGIRA_SYNOLOGY_SNMP_TARGET")) != "" {
+		c.synology, c.synologyConfigError = synology.New(synology.Config{Enabled: true, Target: os.Getenv("VIGIRA_SYNOLOGY_SNMP_TARGET"), Community: os.Getenv("VIGIRA_SYNOLOGY_SNMP_COMMUNITY")})
+	}
+	return c
+}
+
+// NewWithSynologyConfig makes the remote NAS monitoring opt-in boundary explicit.
+func NewWithSynologyConfig(target, community string, timeout time.Duration) *Collector {
+	c := &Collector{}
+	c.synology, c.synologyConfigError = synology.New(synology.Config{Enabled: true, Target: target, Community: community, Timeout: timeout})
 	return c
 }
 
@@ -193,6 +206,7 @@ func (c *Collector) Collect(ctx context.Context) protocol.TelemetrySnapshot {
 		c.networkChecksAt = time.Time{}
 	}
 	c.collectDocker(&snapshot, capabilities, fail, ctx)
+	c.collectSynology(&snapshot, capabilities, fail, ctx)
 	for capability := range capabilities {
 		snapshot.Capabilities = append(snapshot.Capabilities, capability)
 	}
@@ -202,6 +216,34 @@ func (c *Collector) Collect(ctx context.Context) protocol.TelemetrySnapshot {
 		snapshot.Errors = snapshot.Errors[:128]
 	}
 	return snapshot
+}
+
+func (c *Collector) collectSynology(snapshot *protocol.TelemetrySnapshot, capabilities map[string]bool, fail func(string, error), ctx context.Context) {
+	if c.synologyConfigError != nil {
+		fail("synology_monitoring", c.synologyConfigError)
+		return
+	}
+	if c.synology == nil {
+		return
+	}
+	result, err := c.synology.Collect(ctx)
+	if err != nil {
+		fail("synology_monitoring", err)
+		return
+	}
+	for _, metric := range result.Metrics {
+		if len(snapshot.Metrics) >= 512 {
+			fail("synology_monitoring", errors.New("snapshot metric limit reached; Synology metrics omitted"))
+			break
+		}
+		snapshot.Metrics = append(snapshot.Metrics, protocol.TelemetryMetric{Name: metric.Name, Value: metric.Value, Unit: metric.Unit, Labels: metric.Labels})
+	}
+	for _, capability := range result.Capabilities {
+		capabilities[capability] = true
+	}
+	for _, message := range result.Errors {
+		fail("synology_disk_monitoring", errors.New(message))
+	}
 }
 
 func (c *Collector) collectDocker(snapshot *protocol.TelemetrySnapshot, capabilities map[string]bool, fail func(string, error), ctx context.Context) {

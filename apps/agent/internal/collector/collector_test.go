@@ -3,6 +3,7 @@ package collector
 import (
 	"context"
 	"fmt"
+	"github.com/deranjer/vigara/apps/agent/internal/collector/synology"
 	"github.com/deranjer/vigara/internal/protocol"
 	"math"
 	"net/http"
@@ -77,5 +78,66 @@ func TestCollectReturnsBoundedFiniteMeasurements(t *testing.T) {
 				t.Fatalf("invalid collection label: %q=%q", key, value)
 			}
 		}
+	}
+}
+
+type synologyFixture struct{}
+
+func (synologyFixture) Get(context.Context, []string) (map[string]any, error) {
+	return map[string]any{synology.SystemStatusOID: 1, synology.TemperatureOID: 43}, nil
+}
+func (synologyFixture) Walk(context.Context, string) (map[string]any, error) {
+	return map[string]any{}, nil
+}
+
+type failingSynologyFixture struct{ err error }
+
+func (f failingSynologyFixture) Get(context.Context, []string) (map[string]any, error) {
+	return nil, f.err
+}
+func (f failingSynologyFixture) Walk(context.Context, string) (map[string]any, error) {
+	return nil, f.err
+}
+
+func TestCollectIncludesRemoteSynologyMetricsWithoutRelabelingHost(t *testing.T) {
+	c := &Collector{synology: synology.NewWithClient("nas.example", synologyFixture{})}
+	snapshot := protocol.TelemetrySnapshot{Metrics: []protocol.TelemetryMetric{{Name: "cpu_used_percent", Value: 12, Unit: "%"}}}
+	capabilities := map[string]bool{"host_info": true}
+	c.collectSynology(&snapshot, capabilities, func(capability string, err error) {
+		t.Fatalf("Synology collection failed: %s: %v", capability, err)
+	}, context.Background())
+	foundNAS, foundHost := false, false
+	for _, metric := range snapshot.Metrics {
+		if metric.Name == "synology_temperature_celsius" && metric.Labels["nas_target"] == "nas.example" {
+			foundNAS = true
+		}
+		if metric.Name == "cpu_used_percent" && metric.Labels["nas_target"] == "" {
+			foundHost = true
+		}
+	}
+	if !foundNAS || !foundHost {
+		t.Fatalf("missing remote NAS or unlabeled local host measurements: %+v", snapshot.Metrics)
+	}
+	if !capabilities["synology_system_monitoring"] {
+		t.Fatalf("NAS capability absent from snapshot: %v", capabilities)
+	}
+}
+
+func TestCollectSynologyFailurePreservesHostMetricsAndRedactsError(t *testing.T) {
+	const secret = "snmp-community-never-log-this"
+	c := &Collector{synology: synology.NewWithClient("nas.example", failingSynologyFixture{err: fmt.Errorf("community %s timed out", secret)})}
+	snapshot := protocol.TelemetrySnapshot{Metrics: []protocol.TelemetryMetric{{Name: "cpu_used_percent", Value: 12, Unit: "%"}}, Errors: []protocol.CollectionError{}}
+	errorsSeen := []protocol.CollectionError{}
+	c.collectSynology(&snapshot, map[string]bool{}, func(capability string, err error) {
+		errorsSeen = append(errorsSeen, protocol.CollectionError{Capability: capability, Message: err.Error()})
+	}, context.Background())
+	if len(snapshot.Metrics) != 1 || snapshot.Metrics[0].Name != "cpu_used_percent" {
+		t.Fatalf("NAS error removed or fabricated host metrics: %+v", snapshot.Metrics)
+	}
+	if len(errorsSeen) != 1 || errorsSeen[0].Capability != "synology_monitoring" {
+		t.Fatalf("NAS failure was not reported: %+v", errorsSeen)
+	}
+	if strings.Contains(errorsSeen[0].Message, secret) {
+		t.Fatal("SNMP community leaked into collection errors")
 	}
 }
