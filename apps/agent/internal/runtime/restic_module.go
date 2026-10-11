@@ -72,7 +72,7 @@ func (m resticBackupModule) ExecuteWithProgress(ctx context.Context, job modules
 	if profile.PostgreSQL != nil && profile.PostgreSQL.Enabled {
 		p := profile.PostgreSQL
 		if onProgress != nil {
-			if err := onProgress(restic.Progress{Phase: "preparing"}); err != nil {
+			if err := onProgress(restic.Progress{Phase: "validating"}); err != nil {
 				return modules.Result{}, errors.New("progress_unavailable")
 			}
 		}
@@ -92,7 +92,7 @@ func (m resticBackupModule) ExecuteWithProgress(ctx context.Context, job modules
 		}
 		sources = append(sources, prepared.Path)
 		if onProgress != nil {
-			if err := onProgress(restic.Progress{Phase: "prepared"}); err != nil {
+			if err := onProgress(restic.Progress{Phase: "backup"}); err != nil {
 				if cleanupErr := prepared.Cleanup(); cleanupErr != nil {
 					return modules.Result{}, errors.New("preparation_cleanup_failed")
 				}

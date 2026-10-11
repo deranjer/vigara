@@ -567,3 +567,47 @@ func TestDiscoveryMountedThroughChiRouter(t *testing.T) {
 		t.Fatalf("external provenance was not retained or caller controlled: sources=%d identifiers=%d addresses=%d forged=%d", sources, identifierSources, addresses, forged)
 	}
 }
+
+func TestBackupProgressAcceptsPreparationCompatiblePhases(t *testing.T) {
+	pool, sessions := agentTestService(t)
+	ctx := context.Background()
+	device, err := createTestBackupAgent(ctx, t, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = createTestBackupJob(ctx, pool, device.agentID); err != nil {
+		t.Fatal(err)
+	}
+	job, err := leaseBackupJob(ctx, pool, device.agentID)
+	if err != nil || job == nil {
+		t.Fatalf("lease=%+v err=%v", job, err)
+	}
+	mux := http.NewServeMux()
+	NewHandler(pool, sessions).Register(mux)
+	for index, phase := range []string{"starting", "validating", "backup"} {
+		progress := protocol.BackupProgress{ProtocolVersion: protocol.CurrentVersion, ID: phase, JobID: job.ID, AttemptToken: job.AttemptToken, AgentID: device.agentID, Sequence: uint64(index + 1), ObservedAt: time.Now().UTC(), Phase: phase}
+		body, err := json.Marshal(progress)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := httptest.NewRequest(http.MethodPost, "/api/agent/backups/progress", bytes.NewReader(body))
+		request.Header.Set("Authorization", "Bearer "+device.credential)
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, request)
+		if response.Code != http.StatusAccepted {
+			t.Fatalf("phase %s status=%d body=%s", phase, response.Code, response.Body.String())
+		}
+		// Advance the stored receipt time instead of sleeping through rate limits.
+		if _, err = pool.Exec(ctx, `UPDATE backup_job_attempts SET progress_at=now()-interval '6 seconds' WHERE job_id=$1`, job.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var stored protocol.BackupProgress
+	var payload []byte
+	if err = pool.QueryRow(ctx, `SELECT progress_payload FROM backup_job_attempts WHERE job_id=$1`, job.ID).Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if err = json.Unmarshal(payload, &stored); err != nil || stored.Phase != "backup" || stored.Sequence != 3 {
+		t.Fatalf("stored progress=%+v err=%v", stored, err)
+	}
+}
