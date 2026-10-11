@@ -13,6 +13,9 @@ type Config struct {
 	SecureSessionCookie          bool
 	TelemetryRawRetentionHours   int
 	TelemetryRollupRetentionDays int
+	AndroidBackupRoot            string
+	AndroidBackupMaxFileBytes    int64
+	AndroidBackupMaxTotalBytes   int64
 }
 
 func Load() (Config, error) {
@@ -21,6 +24,9 @@ func Load() (Config, error) {
 		DatabaseURL:                  envOr("VIGIRA_DATABASE_URL", "postgres://vigira:vigira@localhost:5432/vigira?sslmode=disable"),
 		TelemetryRawRetentionHours:   48,
 		TelemetryRollupRetentionDays: 90,
+		AndroidBackupRoot:            os.Getenv("VIGIRA_ANDROID_BACKUP_ROOT"),
+		AndroidBackupMaxFileBytes:    512 << 20,
+		AndroidBackupMaxTotalBytes:   100 << 30,
 	}
 	secure, err := strconv.ParseBool(envOr("VIGIRA_COOKIE_SECURE", "false"))
 	if err != nil {
@@ -31,6 +37,12 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if err := parseBoundedInt("VIGIRA_TELEMETRY_ROLLUP_RETENTION_DAYS", &cfg.TelemetryRollupRetentionDays, (cfg.TelemetryRawRetentionHours+23)/24, 365); err != nil {
+		return Config{}, err
+	}
+	if err := parseBoundedInt64("VIGIRA_ANDROID_BACKUP_MAX_FILE_BYTES", &cfg.AndroidBackupMaxFileBytes, 1<<20, 2<<30); err != nil {
+		return Config{}, err
+	}
+	if err := parseBoundedInt64("VIGIRA_ANDROID_BACKUP_MAX_TOTAL_BYTES", &cfg.AndroidBackupMaxTotalBytes, cfg.AndroidBackupMaxFileBytes, 1<<50); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
@@ -49,6 +61,19 @@ func parseBoundedInt(key string, value *int, minimum, maximum int) error {
 		return nil
 	}
 	parsed, err := strconv.Atoi(raw)
+	if err != nil || parsed < minimum || parsed > maximum {
+		return fmt.Errorf("%s must be an integer between %d and %d", key, minimum, maximum)
+	}
+	*value = parsed
+	return nil
+}
+
+func parseBoundedInt64(key string, value *int64, minimum, maximum int64) error {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return nil
+	}
+	parsed, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || parsed < minimum || parsed > maximum {
 		return fmt.Errorf("%s must be an integer between %d and %d", key, minimum, maximum)
 	}
