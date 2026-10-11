@@ -55,6 +55,28 @@ not contain credentials or other secret values. A failed, timed-out, or
 panicking module is isolated to that invocation; the agent remains alive and
 continues polling and running unrelated modules.
 
+An agent advertises optional progress support with
+`AgentRequest.supportsBackupProgress`; the server opts the poll response in with
+`AgentResponse.backupProgressEnabled`. Leased Restic backup agents may then
+submit the optional `BackupProgress` heartbeat to
+`/api/agent/backups/progress` using their existing agent bearer credential. It
+is bound to the job and attempt token, carries a monotonically
+increasing sequence, and contains only a phase and bounded aggregate file/byte
+counters. Paths, file names, stderr, and credentials are forbidden. The server
+accepts a heartbeat only while the matching lease is active; a heartbeat cannot
+revive an expired or unknown attempt. Repeating the same sequence and payload
+is idempotent; changing a payload at the same sequence is rejected. Agents
+throttle progress updates and stop the child process if they cannot confirm
+lease heartbeats. Older v1 agents may omit the capability and progress; the
+server keeps the existing bounded execution deadline and reports the attempt
+as stale because it cannot confirm recent activity. New agents also remain
+compatible with an older server that omits the opt-in response field.
+
+Restic's business outcome is recorded inside the result output because v1 job
+statuses remain unchanged. In particular, `status: failed` with
+`output.backupOutcome: "partial"` may include a usable `snapshotIds` value and
+must be shown as a partial backup requiring attention, not discarded.
+
 ## Telemetry
 
 Agents submit module `TelemetryBatch` values and host `TelemetrySnapshotBatch`

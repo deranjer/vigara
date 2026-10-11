@@ -32,6 +32,10 @@ func (m resticBackupModule) Descriptor() modules.Descriptor {
 }
 
 func (m resticBackupModule) Execute(ctx context.Context, job modules.JobContext) (modules.Result, error) {
+	return m.ExecuteWithProgress(ctx, job, nil)
+}
+
+func (m resticBackupModule) ExecuteWithProgress(ctx context.Context, job modules.JobContext, onProgress func(restic.Progress) error) (modules.Result, error) {
 	if len(job.Configuration) != 1 {
 		return modules.Result{}, errors.New("invalid_profile")
 	}
@@ -46,6 +50,11 @@ func (m resticBackupModule) Execute(ctx context.Context, job modules.JobContext)
 	if !hasGrant(job.Permissions, resticCapability, "profile:"+profileID) {
 		return modules.Result{}, errors.New("permission_denied")
 	}
+	if onProgress != nil {
+		if err := onProgress(restic.Progress{Phase: "validating"}); err != nil {
+			return modules.Result{}, errors.New("progress_unavailable")
+		}
+	}
 	runner := restic.New(restic.Config{Executable: profile.Executable, Environment: profile.Environment})
 	version, err := runner.ValidateRepositoryVersion(ctx, profile.Repository)
 	if err != nil {
@@ -57,7 +66,7 @@ func (m resticBackupModule) Execute(ctx context.Context, job modules.JobContext)
 		}
 		return modules.Result{Output: map[string]any{"resticStatus": status, "resticVersion": version, "errorCode": code}}, nil
 	}
-	backup := runner.Backup(ctx, profile.Repository, profile.SourcePaths)
+	backup := runner.BackupWithProgress(ctx, profile.Repository, profile.SourcePaths, onProgress)
 	if backup.ResticVersion == "" {
 		backup.ResticVersion = version
 	}

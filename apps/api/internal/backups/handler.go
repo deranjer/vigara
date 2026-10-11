@@ -13,6 +13,7 @@ import (
 	_ "time/tzdata"
 
 	"github.com/deranjer/vigara/apps/api/internal/auth"
+	"github.com/deranjer/vigara/internal/protocol"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -32,6 +33,7 @@ func (h *Handler) Register(m *http.ServeMux) {
 	m.HandleFunc("PUT /api/backups/policies/{id}", h.update)
 	m.HandleFunc("DELETE /api/backups/policies/{id}", h.retire)
 	m.HandleFunc("GET /api/backups/policies/{id}/jobs", h.jobs)
+	m.HandleFunc("GET /api/backups/policies/{id}/history", h.history)
 	m.HandleFunc("GET /api/backups/policies/{id}/profile-template", h.template)
 }
 
@@ -81,16 +83,54 @@ type PolicyInput struct {
 	Enabled                  bool      `json:"enabled"`
 }
 type Job struct {
-	ID             string          `json:"id"`
-	Revision       int32           `json:"revision"`
-	PolicySnapshot json.RawMessage `json:"policySnapshot"`
-	PolicyID       string          `json:"policyId"`
-	AgentID        string          `json:"agentId"`
-	ProfileID      string          `json:"profileId"`
-	ScheduledFor   time.Time       `json:"scheduledFor"`
-	Status         string          `json:"status"`
-	AttemptCount   int             `json:"attemptCount"`
-	CreatedAt      time.Time       `json:"createdAt"`
+	ID              string          `json:"id"`
+	Revision        int32           `json:"revision"`
+	PolicySnapshot  json.RawMessage `json:"policySnapshot"`
+	PolicyID        string          `json:"policyId"`
+	AgentID         string          `json:"agentId"`
+	ProfileID       string          `json:"profileId"`
+	ScheduledFor    time.Time       `json:"scheduledFor"`
+	Status          string          `json:"status"`
+	AttemptCount    int             `json:"attemptCount"`
+	CreatedAt       time.Time       `json:"createdAt"`
+	ExecutionStatus string          `json:"executionStatus"`
+	Outcome         string          `json:"outcome,omitempty"`
+	SnapshotIDs     []string        `json:"snapshotIds,omitempty"`
+	ErrorCode       string          `json:"errorCode,omitempty"`
+	ErrorMessage    string          `json:"errorMessage,omitempty"`
+	Progress        *Progress       `json:"progress,omitempty"`
+	StartedAt       *time.Time      `json:"startedAt,omitempty"`
+	FinishedAt      *time.Time      `json:"finishedAt,omitempty"`
+}
+
+type Progress struct {
+	ObservedAt  time.Time `json:"observedAt"`
+	Phase       string    `json:"phase"`
+	FilesDone   uint64    `json:"filesDone,omitempty"`
+	FilesTotal  uint64    `json:"filesTotal,omitempty"`
+	BytesDone   uint64    `json:"bytesDone,omitempty"`
+	BytesTotal  uint64    `json:"bytesTotal,omitempty"`
+	PercentDone float64   `json:"percentDone,omitempty"`
+}
+
+type HistoryEntry struct {
+	ID              string     `json:"id"`
+	PolicyID        string     `json:"policyId"`
+	AgentID         string     `json:"agentId"`
+	ProfileID       string     `json:"profileId"`
+	Revision        int32      `json:"revision"`
+	ScheduledFor    time.Time  `json:"scheduledFor"`
+	Status          string     `json:"status"`
+	AttemptCount    int        `json:"attemptCount"`
+	CreatedAt       time.Time  `json:"createdAt"`
+	ExecutionStatus string     `json:"executionStatus"`
+	Outcome         string     `json:"outcome,omitempty"`
+	SnapshotIDs     []string   `json:"snapshotIds,omitempty"`
+	ErrorCode       string     `json:"errorCode,omitempty"`
+	ErrorMessage    string     `json:"errorMessage,omitempty"`
+	Progress        *Progress  `json:"progress,omitempty"`
+	StartedAt       *time.Time `json:"startedAt,omitempty"`
+	FinishedAt      *time.Time `json:"finishedAt,omitempty"`
 }
 
 func (h *Handler) user(w http.ResponseWriter, r *http.Request) bool {
@@ -421,6 +461,12 @@ func (h *Handler) retire(w http.ResponseWriter, r *http.Request) {
 	}
 }
 func (h *Handler) jobs(w http.ResponseWriter, r *http.Request) {
+	h.listJobs(w, r, false)
+}
+func (h *Handler) history(w http.ResponseWriter, r *http.Request) {
+	h.listJobs(w, r, true)
+}
+func (h *Handler) listJobs(w http.ResponseWriter, r *http.Request, historyOnly bool) {
 	if !h.user(w, r) {
 		return
 	}
@@ -433,30 +479,124 @@ func (h *Handler) jobs(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "limit must be 1..100 and offset non-negative", 400)
 		return
 	}
-	rows, e := h.pool.Query(r.Context(), `SELECT id::text,policy_id::text,agent_id::text,profile_id,policy_revision,policy_snapshot,scheduled_for,status,attempt_count,created_at FROM backup_jobs WHERE policy_id=$1 ORDER BY scheduled_for DESC,id DESC LIMIT $2 OFFSET $3`, r.PathValue("id"), limit+1, offset)
+	rows, e := h.pool.Query(r.Context(), `SELECT j.id::text,j.policy_id::text,j.agent_id::text,j.profile_id,j.policy_revision,j.policy_snapshot,j.scheduled_for,j.status,j.attempt_count,j.created_at,a.result_payload,a.progress_payload,a.progress_at,a.leased_at,a.lease_expires_at FROM backup_jobs j LEFT JOIN LATERAL (SELECT result_payload,progress_payload,progress_at,leased_at,lease_expires_at FROM backup_job_attempts WHERE job_id=j.id ORDER BY attempt_number DESC LIMIT 1) a ON true WHERE j.policy_id=$1 ORDER BY j.scheduled_for DESC,j.id DESC LIMIT $2 OFFSET $3`, r.PathValue("id"), limit+1, offset)
 	if e != nil {
 		http.Error(w, "could not read jobs", 500)
 		return
 	}
 	defer rows.Close()
-	out := []Job{}
+	jobs := []Job{}
+	entries := []HistoryEntry{}
 	for rows.Next() {
 		var j Job
-		if rows.Scan(&j.ID, &j.PolicyID, &j.AgentID, &j.ProfileID, &j.Revision, &j.PolicySnapshot, &j.ScheduledFor, &j.Status, &j.AttemptCount, &j.CreatedAt) != nil {
+		var resultPayload, progressPayload []byte
+		var progressAt, leasedAt, leaseExpiresAt *time.Time
+		if rows.Scan(&j.ID, &j.PolicyID, &j.AgentID, &j.ProfileID, &j.Revision, &j.PolicySnapshot, &j.ScheduledFor, &j.Status, &j.AttemptCount, &j.CreatedAt, &resultPayload, &progressPayload, &progressAt, &leasedAt, &leaseExpiresAt) != nil {
 			http.Error(w, "could not read jobs", 500)
 			return
 		}
-		out = append(out, j)
+		j.ExecutionStatus = historyStatus(j.Status, progressAt, leaseExpiresAt, time.Now().UTC())
+		if leasedAt != nil {
+			j.StartedAt = leasedAt
+		}
+		if len(progressPayload) > 0 {
+			var raw protocol.BackupProgress
+			if json.Unmarshal(progressPayload, &raw) == nil {
+				j.Progress = &Progress{ObservedAt: raw.ObservedAt, Phase: raw.Phase, FilesDone: raw.FilesDone, FilesTotal: raw.FilesTotal, BytesDone: raw.BytesDone, BytesTotal: raw.BytesTotal, PercentDone: raw.PercentDone}
+			}
+		}
+		if len(resultPayload) > 0 {
+			populateJobResult(&j, resultPayload)
+		}
+		jobs = append(jobs, j)
+		entries = append(entries, HistoryEntry{ID: j.ID, PolicyID: j.PolicyID, AgentID: j.AgentID, ProfileID: j.ProfileID, Revision: j.Revision, ScheduledFor: j.ScheduledFor, Status: j.Status, AttemptCount: j.AttemptCount, CreatedAt: j.CreatedAt, ExecutionStatus: j.ExecutionStatus, Outcome: j.Outcome, SnapshotIDs: j.SnapshotIDs, ErrorCode: j.ErrorCode, ErrorMessage: j.ErrorMessage, Progress: j.Progress, StartedAt: j.StartedAt, FinishedAt: j.FinishedAt})
 	}
 	if rows.Err() != nil {
 		http.Error(w, "could not read jobs", 500)
 		return
 	}
-	pageHeaders(w, limit, offset, len(out))
-	if len(out) > limit {
-		out = out[:limit]
+	count := len(jobs)
+	pageHeaders(w, limit, offset, count)
+	if count > limit {
+		jobs = jobs[:limit]
+		entries = entries[:limit]
 	}
-	write(w, out)
+	if historyOnly {
+		write(w, entries)
+	} else {
+		write(w, jobs)
+	}
+}
+
+func historyStatus(jobStatus string, progressAt, leaseExpiresAt *time.Time, now time.Time) string {
+	switch jobStatus {
+	case "unknown":
+		return "unknown"
+	case "completed":
+		return "completed"
+	case "skipped":
+		return "skipped"
+	case "pending", "waiting":
+		return jobStatus
+	case "leased":
+		if leaseExpiresAt != nil && leaseExpiresAt.After(now) && progressAt != nil && now.Sub(*progressAt) >= 0 && now.Sub(*progressAt) <= 60*time.Second {
+			return "running"
+		}
+		return "stale"
+	default:
+		return "unknown"
+	}
+}
+
+func populateJobResult(j *Job, payload []byte) {
+	var result struct {
+		Status string `json:"status"`
+		Output struct {
+			ResticStatus  string    `json:"resticStatus"`
+			BackupOutcome string    `json:"backupOutcome"`
+			SnapshotIDs   []string  `json:"snapshotIds"`
+			LastProgress  *Progress `json:"lastProgress"`
+		} `json:"output"`
+		Error *struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+		FinishedAt time.Time `json:"finishedAt"`
+	}
+	if json.Unmarshal(payload, &result) != nil {
+		return
+	}
+	j.Outcome = result.Output.BackupOutcome
+	if j.Outcome == "" {
+		j.Outcome = result.Output.ResticStatus
+	}
+	j.SnapshotIDs = result.Output.SnapshotIDs
+	if result.Output.LastProgress != nil && (j.Progress == nil || result.Output.LastProgress.ObservedAt.After(j.Progress.ObservedAt)) {
+		j.Progress = result.Output.LastProgress
+	}
+	if result.Error != nil {
+		j.ErrorCode = result.Error.Code
+		j.ErrorMessage = result.Error.Message
+	}
+	if !result.FinishedAt.IsZero() {
+		j.FinishedAt = &result.FinishedAt
+	}
+	if j.Status == "completed" {
+		if j.Outcome != "" {
+			j.ExecutionStatus = j.Outcome
+		} else {
+			switch result.Status {
+			case "succeeded":
+				j.ExecutionStatus = "succeeded"
+			case "timed_out":
+				j.ExecutionStatus = "timed_out"
+			case "cancelled":
+				j.ExecutionStatus = "canceled"
+			default:
+				j.ExecutionStatus = "failed"
+			}
+		}
+	}
 }
 func (h *Handler) repositories(w http.ResponseWriter, r *http.Request) {
 	if !h.user(w, r) {

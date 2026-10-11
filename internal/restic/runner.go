@@ -3,12 +3,14 @@
 package restic
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"regexp"
@@ -39,6 +41,16 @@ type Result struct {
 	ErrorCode     string   `json:"errorCode,omitempty"`
 }
 
+// Progress contains only aggregate values from restic's JSON status messages.
+type Progress struct {
+	Phase       string
+	FilesDone   uint64
+	FilesTotal  uint64
+	BytesDone   uint64
+	BytesTotal  uint64
+	PercentDone float64
+}
+
 type Config struct {
 	Executable string
 	// Environment contains restic/backend credentials. Values are passed only
@@ -49,6 +61,10 @@ type Config struct {
 
 type process interface {
 	run(context.Context, string, []string, []string) ([]byte, []byte, error)
+}
+
+type progressProcess interface {
+	runProgress(context.Context, string, []string, []string, func(Progress) error) ([]byte, error)
 }
 
 type execProcess struct{}
@@ -87,6 +103,79 @@ func (execProcess) run(ctx context.Context, executable string, args, env []strin
 		return stdout.Bytes(), nil, errOutputLimit
 	}
 	return stdout.Bytes(), nil, err
+}
+
+func (execProcess) runProgress(ctx context.Context, executable string, args, env []string, onProgress func(Progress) error) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, executable, args...)
+	cmd.Env = env
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	cmd.Stderr = io.Discard
+	if err = cmd.Start(); err != nil {
+		return nil, err
+	}
+	var output boundedBuffer
+	reader := bufio.NewReaderSize(stdout, 64<<10)
+	var readErr error
+	for {
+		line := make([]byte, 0, 64<<10)
+		var lineErr error
+		for {
+			fragment, fragmentErr := reader.ReadSlice('\n')
+			if len(line)+len(fragment) > 1<<20 {
+				readErr = errOutputLimit
+				_ = cmd.Process.Kill()
+				break
+			}
+			line = append(line, fragment...)
+			lineErr = fragmentErr
+			if fragmentErr == bufio.ErrBufferFull {
+				continue
+			}
+			break
+		}
+		if readErr != nil {
+			break
+		}
+		if len(line) > 0 {
+			if _, writeErr := output.Write(line); writeErr != nil {
+				readErr = writeErr
+				_ = cmd.Process.Kill()
+				break
+			}
+			if output.exceeded {
+				readErr = errOutputLimit
+				_ = cmd.Process.Kill()
+				break
+			}
+			var message backupMessage
+			if json.Unmarshal(bytes.TrimSpace(line), &message) == nil && message.MessageType == "status" && onProgress != nil {
+				if progress, ok := message.progress(); ok {
+					if callbackErr := onProgress(progress); callbackErr != nil {
+						readErr = callbackErr
+						_ = cmd.Process.Kill()
+						break
+					}
+				}
+			}
+		}
+		if lineErr != nil {
+			if !errors.Is(lineErr, io.EOF) {
+				readErr = lineErr
+			}
+			break
+		}
+	}
+	waitErr := cmd.Wait()
+	if output.exceeded {
+		return output.Bytes(), errOutputLimit
+	}
+	if readErr != nil {
+		return output.Bytes(), readErr
+	}
+	return output.Bytes(), waitErr
 }
 
 type Runner struct {
@@ -138,6 +227,12 @@ func (r *Runner) ValidateRepositoryVersion(ctx context.Context, repository strin
 // Backup runs one backup. Paths, repository, and credentials are never emitted
 // in returned errors. Output is parsed from restic's documented JSON-lines API.
 func (r *Runner) Backup(ctx context.Context, repository string, paths []string) Result {
+	return r.BackupWithProgress(ctx, repository, paths, nil)
+}
+
+// BackupWithProgress streams bounded aggregate progress when supported by the
+// process runner. The callback error terminates the child process.
+func (r *Runner) BackupWithProgress(ctx context.Context, repository string, paths []string, onProgress func(Progress) error) Result {
 	result := Result{Status: Failed}
 	version, err := r.version(ctx)
 	result.ResticVersion = version
@@ -154,8 +249,18 @@ func (r *Runner) Backup(ctx context.Context, repository string, paths []string) 
 	}
 	args := []string{"--repo", repository, "--json", "--quiet", "backup", "--"}
 	args = append(args, paths...)
-	stdout, _, runErr := r.invoke(ctx, args)
-	summary, jsonPartial, parseErr := parseBackup(stdout)
+	var stdout []byte
+	var runErr error
+	var summary *backupSummary
+	var jsonPartial bool
+	var parseErr error
+	if stream, ok := r.process.(progressProcess); ok {
+		stdout, runErr = stream.runProgress(ctx, r.executable, args, environment(r.environment), onProgress)
+		summary, jsonPartial, parseErr = parseBackup(stdout)
+	} else {
+		stdout, _, runErr = r.invoke(ctx, args)
+		summary, jsonPartial, parseErr = parseBackupWithProgress(stdout, onProgress)
+	}
 	if runErr != nil {
 		result.Status, result.ErrorCode = classifyRestic(ctx, runErr)
 		if parseErr == nil && summary != nil && summary.SnapshotID != "" {
@@ -178,6 +283,7 @@ func (r *Runner) Backup(ctx context.Context, repository string, paths []string) 
 	}
 	if jsonPartial {
 		result.Status = Partial
+		result.ErrorCode = "partial_backup"
 	} else {
 		result.Status = Succeeded
 	}
@@ -319,16 +425,34 @@ func errorCode(err error) string {
 }
 
 type backupMessage struct {
-	MessageType string `json:"message_type"`
-	SnapshotID  string `json:"snapshot_id"`
-	ErrorCount  uint64 `json:"error_count"`
+	MessageType string  `json:"message_type"`
+	SnapshotID  string  `json:"snapshot_id"`
+	ErrorCount  uint64  `json:"error_count"`
+	FilesDone   uint64  `json:"files_done"`
+	TotalFiles  uint64  `json:"total_files"`
+	BytesDone   uint64  `json:"bytes_done"`
+	TotalBytes  uint64  `json:"total_bytes"`
+	PercentDone float64 `json:"percent_done"`
 }
+
+func (m backupMessage) progress() (Progress, bool) {
+	if !finite(m.PercentDone) || m.PercentDone < 0 || m.PercentDone > 100 || m.FilesDone > 1_000_000_000_000 || m.TotalFiles > 1_000_000_000_000 || m.BytesDone > 1<<60 || m.TotalBytes > 1<<60 || m.TotalFiles > 0 && m.FilesDone > m.TotalFiles || m.TotalBytes > 0 && m.BytesDone > m.TotalBytes {
+		return Progress{}, false
+	}
+	return Progress{Phase: "backup", FilesDone: m.FilesDone, FilesTotal: m.TotalFiles, BytesDone: m.BytesDone, BytesTotal: m.TotalBytes, PercentDone: m.PercentDone}, true
+}
+
+func finite(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
 
 type backupSummary struct {
 	SnapshotID string `json:"snapshot_id"`
 }
 
 func parseBackup(data []byte) (*backupSummary, bool, error) {
+	return parseBackupWithProgress(data, nil)
+}
+
+func parseBackupWithProgress(data []byte, onProgress func(Progress) error) (*backupSummary, bool, error) {
 	var summary *backupSummary
 	partial := false
 	for _, line := range bytes.Split(data, []byte("\n")) {
@@ -342,6 +466,13 @@ func parseBackup(data []byte) (*backupSummary, bool, error) {
 		}
 		switch message.MessageType {
 		case "status":
+			if onProgress != nil {
+				if progress, ok := message.progress(); ok {
+					if err := onProgress(progress); err != nil {
+						return nil, false, err
+					}
+				}
+			}
 			if message.ErrorCount > 0 {
 				partial = true
 			}

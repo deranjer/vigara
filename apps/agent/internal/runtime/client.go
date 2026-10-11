@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/deranjer/vigara/apps/agent/internal/collector"
@@ -108,7 +109,7 @@ func (c *Client) Cycle(ctx context.Context) (time.Duration, error) {
 		}
 	}
 	telemetryErr := c.flushTelemetry(ctx)
-	request := protocol.AgentRequest{ProtocolVersion: protocol.CurrentVersion, AgentID: c.State.AgentID, AgentVersion: AgentVersion, Platform: runtime.GOOS, Architecture: runtime.GOARCH, Capabilities: c.capabilities()}
+	request := protocol.AgentRequest{ProtocolVersion: protocol.CurrentVersion, AgentID: c.State.AgentID, AgentVersion: AgentVersion, Platform: runtime.GOOS, Architecture: runtime.GOARCH, Capabilities: c.capabilities(), SupportsBackupProgress: true}
 	if c.State.Configuration != nil {
 		request.KnownConfigVersion = c.State.Configuration.Version
 	}
@@ -140,7 +141,18 @@ func (c *Client) Cycle(ctx context.Context) (time.Duration, error) {
 				return 0, err
 			}
 		}
-		result := c.executeJob(ctx, *response.Job, resultID)
+		workCtx, workCancel := context.WithCancel(ctx)
+		var progress func(restic.Progress) error
+		stopProgress := func() error { return nil }
+		if response.BackupProgressEnabled {
+			progress, stopProgress = c.progressReporter(workCtx, workCancel, *response.Job)
+		}
+		result := c.executeJob(workCtx, *response.Job, resultID, progress)
+		if progressErr := stopProgress(); progressErr != nil {
+			result.Status = protocol.JobFailed
+			result.Error = &protocol.Failure{Code: "progress_unavailable", Message: "Backup progress could not be confirmed; the backup process was stopped", Retryable: false}
+		}
+		workCancel()
 		result.AttemptToken = response.Job.AttemptToken
 		if err := c.State.Enqueue(result); err != nil {
 			return 0, err
@@ -169,7 +181,10 @@ func recoverInterruptedBackup(state *State) error {
 		return nil
 	}
 	j := state.ActiveJob
-	unknown := protocol.JobResult{ProtocolVersion: protocol.CurrentVersion, ID: j.ResultID, JobID: j.Job.ID, AttemptToken: j.Job.AttemptToken, AgentID: state.AgentID, ModuleID: j.Job.ModuleID, ModuleVersion: j.Job.ModuleVersion, Status: protocol.JobFailed, StartedAt: j.StartedAt, FinishedAt: time.Now().UTC(), Error: &protocol.Failure{Code: "unknown_outcome", Message: "The agent restarted while this backup was running; its outcome is unknown and it was not replayed", Retryable: false}}
+	unknown := protocol.JobResult{ProtocolVersion: protocol.CurrentVersion, ID: j.ResultID, JobID: j.Job.ID, AttemptToken: j.Job.AttemptToken, AgentID: state.AgentID, ModuleID: j.Job.ModuleID, ModuleVersion: j.Job.ModuleVersion, Status: protocol.JobFailed, StartedAt: j.StartedAt, FinishedAt: time.Now().UTC(), Output: map[string]any{"resticStatus": restic.Interrupted, "backupOutcome": "unknown", "errorCode": "unknown_outcome"}, Error: &protocol.Failure{Code: "unknown_outcome", Message: "The agent restarted while this backup was running; its outcome is unknown and it was not replayed", Retryable: false}}
+	if j.LastProgress != nil {
+		unknown.Output["lastProgress"] = safeProgressData(*j.LastProgress)
+	}
 	if err := state.Enqueue(unknown); err != nil {
 		return err
 	}
@@ -184,7 +199,11 @@ func (c *Client) capabilities() []string {
 	return []string{}
 }
 
-func (c *Client) executeJob(parent context.Context, job protocol.Job, resultID string) (result protocol.JobResult) {
+func (c *Client) executeJob(parent context.Context, job protocol.Job, resultID string, progressCallbacks ...func(restic.Progress) error) (result protocol.JobResult) {
+	var onProgress func(restic.Progress) error
+	if len(progressCallbacks) > 0 {
+		onProgress = progressCallbacks[0]
+	}
 	started := time.Now().UTC()
 	result = protocol.JobResult{ProtocolVersion: protocol.CurrentVersion, ID: resultID, JobID: job.ID, AgentID: c.State.AgentID, ModuleID: job.ModuleID, ModuleVersion: job.ModuleVersion, Status: protocol.JobFailed, StartedAt: started}
 	defer func() {
@@ -226,7 +245,7 @@ func (c *Client) executeJob(parent context.Context, job protocol.Job, resultID s
 		grants = append(grants, modules.PermissionGrant{Name: grant.Name, Scope: grant.Scope})
 	}
 	module := resticBackupModule{profiles: c.State.ResticProfiles}
-	outcome, err := module.Execute(ctx, modules.JobContext{JobID: job.ID, Configuration: configuration, Permissions: grants, StartedAt: started})
+	outcome, err := module.ExecuteWithProgress(ctx, modules.JobContext{JobID: job.ID, Configuration: configuration, Permissions: grants, StartedAt: started}, onProgress)
 	if err != nil {
 		code := err.Error()
 		if !validProfileID(code) {
@@ -237,6 +256,7 @@ func (c *Client) executeJob(parent context.Context, job protocol.Job, resultID s
 	}
 	result.Output = outcome.Output
 	status, _ := outcome.Output["resticStatus"].(restic.Status)
+	result.Output["backupOutcome"] = status
 	if ctx.Err() == context.DeadlineExceeded {
 		result.Status = protocol.JobTimedOut
 		result.Error = &protocol.Failure{Code: "deadline_exceeded", Message: "The backup job exceeded its deadline", Retryable: true}
@@ -257,8 +277,127 @@ func (c *Client) executeJob(parent context.Context, job protocol.Job, resultID s
 	if code == "" {
 		code = string(status)
 	}
-	result.Error = &protocol.Failure{Code: code, Message: "The backup job did not complete successfully", Retryable: status == restic.Interrupted}
+	message := "The backup did not complete successfully"
+	if status == restic.Partial {
+		message = "The backup saved a snapshot, but some files could not be read"
+	}
+	if status == restic.Interrupted {
+		message = "The backup was interrupted; its snapshot outcome may be incomplete"
+	}
+	result.Error = &protocol.Failure{Code: code, Message: message, Retryable: false}
 	return result
+}
+
+func safeProgressData(p protocol.BackupProgress) map[string]any {
+	return map[string]any{"sequence": p.Sequence, "observedAt": p.ObservedAt, "phase": p.Phase, "filesDone": p.FilesDone, "filesTotal": p.FilesTotal, "bytesDone": p.BytesDone, "bytesTotal": p.BytesTotal, "percentDone": p.PercentDone}
+}
+
+func (c *Client) progressReporter(ctx context.Context, cancel context.CancelFunc, job protocol.Job) (func(restic.Progress) error, func() error) {
+	var mu sync.Mutex
+	lastSent := time.Time{}
+	lastSentPhase := ""
+	lastValue := restic.Progress{Phase: "starting"}
+	var progressErr error
+	send := func(value restic.Progress, force bool) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if c.State.ActiveJob == nil || c.State.ActiveJob.Job.ID != job.ID {
+			progressErr = errors.New("backup journal unavailable")
+			cancel()
+			return progressErr
+		}
+		now := time.Now().UTC()
+		if value.Phase != "" {
+			lastValue = value
+		}
+		phaseChanged := value.Phase != "" && value.Phase != lastSentPhase
+		if !force && !lastSent.IsZero() && now.Sub(lastSent) < 15*time.Second && !(phaseChanged && now.Sub(lastSent) >= 8*time.Second) {
+			return nil
+		}
+		j := c.State.ActiveJob
+		j.ProgressSequence++
+		id, err := randomID()
+		if err != nil {
+			progressErr = errors.New("could not create progress identity")
+			cancel()
+			return progressErr
+		}
+		phase := lastValue.Phase
+		if phase == "" {
+			phase = "backup"
+		}
+		progress := protocol.BackupProgress{ProtocolVersion: protocol.CurrentVersion, ID: id, JobID: job.ID, AttemptToken: job.AttemptToken, AgentID: c.State.AgentID, Sequence: j.ProgressSequence, ObservedAt: now, Phase: phase, FilesDone: lastValue.FilesDone, FilesTotal: lastValue.FilesTotal, BytesDone: lastValue.BytesDone, BytesTotal: lastValue.BytesTotal, PercentDone: lastValue.PercentDone}
+		j.LastProgress = &progress
+		if err = Save(c.StatePath, c.State); err != nil {
+			progressErr = errors.New("could not persist backup progress")
+			cancel()
+			return progressErr
+		}
+		// A rejected or unreachable heartbeat stops the child process so the server
+		// cannot consider this attempt stale while it continues writing snapshots.
+		for attempt := 0; attempt < 3; attempt++ {
+			reportCtx, reportCancel := context.WithTimeout(ctx, 10*time.Second)
+			err = c.post(reportCtx, c.State.ServerURL, "/api/agent/backups/progress", c.State.Credential, progress, nil)
+			reportCancel()
+			if err == nil {
+				break
+			}
+			if attempt < 2 {
+				timer := time.NewTimer(time.Duration(attempt+1) * 250 * time.Millisecond)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					attempt = 2
+				case <-timer.C:
+				}
+			}
+		}
+		if err != nil {
+			progressErr = errors.New("backup progress was not accepted")
+			cancel()
+			return progressErr
+		}
+		lastSent = now
+		lastSentPhase = phase
+		return nil
+	}
+	if err := send(lastValue, true); err != nil {
+		progressErr = err
+		cancel()
+	}
+	stop := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		ticker := time.NewTicker(20 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := send(restic.Progress{}, true); err != nil {
+					mu.Lock()
+					if progressErr == nil {
+						progressErr = err
+					}
+					mu.Unlock()
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	callback := func(value restic.Progress) error {
+		if value.Phase == "" {
+			value.Phase = "backup"
+		}
+		return send(value, false)
+	}
+	finish := func() error { close(stop); <-stopped; mu.Lock(); defer mu.Unlock(); return progressErr }
+	return callback, finish
 }
 
 func moduleEnabled(configuration *protocol.AgentConfiguration, moduleID, version string) bool {
