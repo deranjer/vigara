@@ -120,6 +120,8 @@ class CompanionLifecycleTest {
             metadata = { "before.txt" to 12L },
         ))
         val selectedId = files.all().single().id
+        files.uploaded(selectedId, firstGeneration, "old-acknowledged-hash")
+        assertEquals("old-acknowledged-hash", files.pending(firstGeneration).single().lastHash)
         files.pendingVersion(selectedId, firstGeneration, "old-hash", "old-backup-id")
         files.state(selectedId, firstGeneration, "Uploading selected file")
 
@@ -143,7 +145,8 @@ class CompanionLifecycleTest {
             metadata = { "newly-selected.txt" to 9L },
         ))
 
-        // Simulate an upload response and status callback from the old worker.
+        // Simulate a late version reservation, upload response, and status callback from the old worker.
+        files.pendingVersion(selectedId, firstGeneration, "stale-hash", "stale-backup-id")
         files.uploaded(selectedId, firstGeneration, "old-hash")
         files.state(selectedId, firstGeneration, "Stale failure from old enrollment")
 
