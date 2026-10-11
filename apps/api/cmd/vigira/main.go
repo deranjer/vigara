@@ -23,6 +23,8 @@ import (
 	"github.com/deranjer/vigara/apps/api/internal/database"
 	"github.com/deranjer/vigara/apps/api/internal/db"
 	"github.com/deranjer/vigara/apps/api/internal/inventoryview"
+	"github.com/deranjer/vigara/apps/api/internal/notifications"
+	"github.com/deranjer/vigara/apps/api/internal/notifytransport"
 	"github.com/deranjer/vigara/apps/api/internal/telemetry"
 	"github.com/go-chi/chi/v5"
 )
@@ -40,6 +42,12 @@ func main() {
 		logger.Error("invalid server configuration", "error", err)
 		os.Exit(1)
 	}
+	transportTargets, err := notifytransport.FromEnv()
+	if err != nil {
+		logger.Error("invalid notification configuration", "error", err)
+		os.Exit(1)
+	}
+	destinations := buildNotificationDestinations(transportTargets)
 	connectCtx, cancelConnect := context.WithTimeout(context.Background(), 10*time.Second)
 	database, err := database.Open(connectCtx, cfg.DatabaseURL)
 	cancelConnect()
@@ -56,6 +64,13 @@ func main() {
 	cancelReady()
 	if err != nil {
 		logger.Error("database schema is not ready; apply migrations with `task db:migrate`", "error", err)
+		os.Exit(1)
+	}
+	notificationCtx, cancelNotifications := context.WithTimeout(context.Background(), 5*time.Second)
+	err = notifications.Initialize(notificationCtx, database.Pool, destinations)
+	cancelNotifications()
+	if err != nil {
+		logger.Error("notification delivery is not ready; apply database migrations", "error", "notification_initialization_failed")
 		os.Exit(1)
 	}
 	alertsMux := http.NewServeMux()
@@ -115,6 +130,7 @@ func main() {
 			logger.Error("server shutdown failed", "error", err)
 		}
 	}()
+	go notifications.Run(ctx, database.Pool, destinations, logger)
 	go alerts.Run(ctx, database.Pool, logger)
 	go backups.RunScheduler(ctx, database.Pool, logger)
 	logger.Info("starting Vigira API", "addr", cfg.Address)
