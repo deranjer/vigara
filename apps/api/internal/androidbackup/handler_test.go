@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -147,6 +148,74 @@ func TestUploadValidationAndDisabledStorage(t *testing.T) {
 	response := uploadRequest(mux, "unused", "646a70cf-761c-4458-a335-387f2d7587d4", "57a393bb-0d9c-49b1-bb92-43e4a883eec4", "x.bin", []byte("x"))
 	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("disabled storage status = %d, want 503", response.Code)
+	}
+}
+
+func TestRecoveryListCursorIsStableAndAgentScoped(t *testing.T) {
+	pool := testPool(t)
+	const agentID = "ff62b883-d00d-4117-814f-50591fe5a76e"
+	seedAndroidAgent(t, pool, agentID, "synthetic-pagination-agent", true)
+	created := time.Date(2025, 2, 3, 4, 5, 6, 0, time.UTC)
+	if _, err := pool.Exec(context.Background(), `INSERT INTO android_file_backups(object_id,agent_id,backup_id,file_id,display_name,content_sha256,byte_size,status,created_at,committed_at) SELECT ('00000000-0000-4000-8000-'||lpad(to_hex(n),12,'0'))::uuid,$1,('10000000-0000-4000-8000-'||lpad(to_hex(n),12,'0'))::uuid,('20000000-0000-4000-8000-'||lpad(to_hex(n),12,'0'))::uuid,'file.bin',decode(repeat('ab',32),'hex'),1,'committed',$2,$2 FROM generate_series(1,503) n`, agentID, created); err != nil {
+		t.Fatal(err)
+	}
+	operatorAuth := auth.NewService(pool, db.New(pool))
+	session, err := operatorAuth.CreateFirstUser(context.Background(), "operator", "Pagination Test", "synthetic-test-password", "synthetic-test-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(pool, operatorAuth, t.TempDir(), 1024, 1024)
+	mux := http.NewServeMux()
+	h.Register(http.NewServeMux(), mux)
+	cursor := ""
+	seen := make([]string, 0, 503)
+	pageSizes := []int{}
+	for page := 0; page < 3; page++ {
+		path := "/api/backups/android/files?agentId=" + agentID + "&limit=500"
+		if cursor != "" {
+			path += "&cursor=" + cursor
+		}
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: session.Token})
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("page %d status=%d body=%s", page, response.Code, response.Body.String())
+		}
+		var body struct {
+			Files      []File `json:"files"`
+			HasMore    bool   `json:"hasMore"`
+			NextCursor string `json:"nextCursor"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		for _, file := range body.Files {
+			if file.AgentID != agentID {
+				t.Fatalf("page included another agent: %+v", file)
+			}
+			seen = append(seen, file.ObjectID)
+		}
+		pageSizes = append(pageSizes, len(body.Files))
+		if !body.HasMore {
+			if body.NextCursor != "" {
+				t.Fatalf("terminal page has cursor %q", body.NextCursor)
+			}
+			break
+		}
+		if body.NextCursor == "" {
+			t.Fatal("non-terminal page has no cursor")
+		}
+		cursor = body.NextCursor
+	}
+	if len(seen) != 503 || len(pageSizes) != 2 || pageSizes[0] != 500 || pageSizes[1] != 3 {
+		t.Fatalf("pagination produced %d files on pages %v, want 503 on [500 3]", len(seen), pageSizes)
+	}
+	for i := 0; i < 503; i++ {
+		want := fmt.Sprintf("00000000-0000-4000-8000-%012x", 503-i)
+		if seen[i] != want {
+			t.Fatalf("stable same-timestamp order[%d]=%s want %s", i, seen[i], want)
+		}
 	}
 }
 

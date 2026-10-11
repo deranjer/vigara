@@ -34,7 +34,7 @@ object CompanionSchedule {
 
     fun backupNow(context: Context) {
         val constraints = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).setRequiresBatteryNotLow(true).build()
-        WorkManager.getInstance(context).enqueue(OneTimeWorkRequestBuilder<BackupWorker>().setConstraints(constraints).addTag("vigara-backup").build())
+        WorkManager.getInstance(context).enqueueUniqueWork("vigara-android-selected-file-backup-now", androidx.work.ExistingWorkPolicy.KEEP, OneTimeWorkRequestBuilder<BackupWorker>().setConstraints(constraints).addTag("vigara-backup").build())
     }
 }
 
@@ -42,20 +42,21 @@ class TelemetryWorker(context: Context, params: WorkerParameters) : CoroutineWor
     override suspend fun doWork(): Result {
         return try {
             val prefs = CompanionPrefs(applicationContext)
-            val credential = prefs.credential
-            if (credential.isEmpty() || prefs.agentId.isEmpty()) return Result.failure()
-            val body = prefs.pendingTelemetryBody.ifBlank {
+            val enrollment = prefs.enrollmentSnapshot()
+            if (enrollment.credential.isEmpty() || enrollment.agentId.isEmpty() || enrollment.generation.isEmpty()) return Result.failure()
+            val body = enrollment.pendingTelemetryBody.ifBlank {
                 val uptime = SystemClock.elapsedRealtime() / 1000
                 val snapshot = JSONObject().apply {
-                    put("protocolVersion", "v1"); put("id", UUID.randomUUID().toString()); put("agentId", prefs.agentId); put("observedAt", Instant.now().toString())
+                    put("protocolVersion", "v1"); put("id", UUID.randomUUID().toString()); put("agentId", enrollment.agentId); put("observedAt", Instant.now().toString())
                     put("host", JSONObject().apply { put("os", "android"); put("osVersion", Build.VERSION.RELEASE.take(256)); put("architecture", Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown"); put("agentVersion", "0.1.0"); put("uptimeSeconds", uptime) })
                     put("metrics", JSONArray().put(JSONObject().put("name", "uptime_seconds").put("value", uptime.toDouble()).put("unit", "s")))
                     put("capabilities", JSONArray().put("system.uptime"))
                 }
-                JSONObject().put("protocolVersion", "v1").put("agentId", prefs.agentId).put("snapshots", JSONArray().put(snapshot)).toString().also { prefs.pendingTelemetryBody = it }
-            }.toByteArray()
-            val code = request(prefs.server, "/api/agent/telemetry", credential, body, "application/json")
-            if (code in 200..299) { prefs.pendingTelemetryBody = ""; Result.success() }
+                JSONObject().put("protocolVersion", "v1").put("agentId", enrollment.agentId).put("snapshots", JSONArray().put(snapshot)).toString().also { if (!prefs.storeTelemetry(enrollment.generation, it)) return Result.success() }
+            }
+            if (prefs.generation != enrollment.generation) return Result.success()
+            val code = request(enrollment.server, "/api/agent/telemetry", enrollment.credential, body.toByteArray(), "application/json")
+            if (code in 200..299) { prefs.clearTelemetry(enrollment.generation, body); Result.success() }
             else if (code == 429 || code >= 500) Result.retry() else Result.failure()
         } catch (_: IOException) { Result.retry() } catch (_: Exception) { Result.failure() }
     }
@@ -65,60 +66,71 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
     override suspend fun doWork(): Result {
         val prefs = CompanionPrefs(applicationContext)
         val db = SelectedFiles(applicationContext)
-        val credential = prefs.credential
-        if (credential.isEmpty() || prefs.agentId.isEmpty() || !isHttpsServer(prefs.server)) return Result.failure()
+        val enrollment = prefs.enrollmentSnapshot()
+        val generation = enrollment.generation
+        if (enrollment.credential.isEmpty() || enrollment.agentId.isEmpty() || !isHttpsServer(enrollment.server)) return Result.failure()
+        if (generation.isEmpty()) return Result.failure()
         var retry = false
-        for (pending in db.pending()) {
+        for (pending in db.pending(generation)) {
+            if (isStopped || prefs.generation != generation) break
             val id = pending.selected.id
             val uri = Uri.parse(pending.selected.uri)
             try {
-                db.state(id, "Checking selected file")
+                db.state(id, generation, "Checking selected file")
                 val current = db.metadata(applicationContext.contentResolver, uri)
-                if (current == null || current.second != pending.selected.size) {
-                    db.state(id, "File unavailable; select it again")
+                if (current == null) {
+                    db.state(id, generation, "File unavailable; select it again")
                     continue
                 }
-                val hash = digest(uri)
+                if (!SelectedFiles.supportedSize(current.second)) {
+                    db.state(id, generation, "Unsupported file size; select a file between 1 byte and 512 MB")
+                    continue
+                }
+                val selected = SelectedFiles.refreshMetadata(pending.selected, current.first, current.second)
+                if (selected == null) {
+                    db.state(id, generation, "Unsupported file name; select it again")
+                    continue
+                }
+                if (isStopped || prefs.generation != generation) break
+                val hash = digest(uri, selected.size)
                 if (hash == pending.lastHash) {
-                    db.state(id, "Backed up; no changes")
+                    db.state(id, generation, "Backed up; no changes")
                     continue
                 }
-                val backupId = if (pending.pendingHash == hash && pending.pendingBackupId.isNotBlank()) pending.pendingBackupId else UUID.randomUUID().toString().also { db.pendingVersion(id, hash, it) }
-                db.state(id, "Uploading selected file")
-                val code = upload(prefs.server, credential, uri, pending.selected, backupId, hash)
+                val backupId = if (pending.pendingHash == hash && pending.pendingBackupId.isNotBlank()) pending.pendingBackupId else UUID.randomUUID().toString().also { db.pendingVersion(id, generation, hash, it) }
+                if (isStopped || prefs.generation != generation) break
+                db.state(id, generation, "Uploading selected file")
+                val code = upload(enrollment.server, enrollment.credential, uri, selected, backupId, hash, generation, prefs)
                 when {
-                    code == 201 || code == 204 -> db.uploaded(id, hash)
-                    code == 401 || code == 403 -> db.state(id, "Agent credential or upload permission needs attention")
-                    code == 429 || code >= 500 -> { db.state(id, "Waiting for server"); retry = true }
-                    code == 507 -> db.state(id, "Server storage quota is full")
-                    code == 503 -> db.state(id, "Server file backup storage is disabled")
-                    code == 413 -> db.state(id, "File exceeds the server's size limit")
-                    code == 409 -> db.state(id, "File version conflicts with an earlier upload; remove and select it again")
-                    else -> db.state(id, "Server rejected this file ($code)")
+                    code == 201 || code == 204 -> db.uploaded(id, generation, hash)
+                    code == 401 || code == 403 -> db.state(id, generation, "Agent credential or upload permission needs attention")
+                    code == 429 || code >= 500 -> { db.state(id, generation, "Waiting for server"); retry = true }
+                    code == 507 -> db.state(id, generation, "Server storage quota is full")
+                    code == 503 -> db.state(id, generation, "Server file backup storage is disabled")
+                    code == 413 -> db.state(id, generation, "File exceeds the server's size limit")
+                    code == 409 -> db.state(id, generation, "File version conflicts with an earlier upload; remove and select it again")
+                    else -> db.state(id, generation, "Server rejected this file ($code)")
                 }
             } catch (_: SecurityException) {
-                db.state(id, "Access was revoked; select the file again")
+                db.state(id, generation, "Access was revoked; select the file again")
             } catch (_: IOException) {
-                db.state(id, "Waiting for connection")
+                if (prefs.generation != generation) break
+                db.state(id, generation, "Waiting for connection")
                 retry = true
             } catch (_: Exception) {
-                db.state(id, "Could not read this file")
+                db.state(id, generation, "Could not read this file")
             }
         }
         db.close()
         return if (retry) Result.retry() else Result.success()
     }
 
-    private fun digest(uri: Uri): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        applicationContext.contentResolver.openInputStream(uri)?.use { input ->
-            val buffer = ByteArray(64 * 1024)
-            while (true) { val count = input.read(buffer); if (count < 0) break; digest.update(buffer, 0, count) }
-        } ?: throw IOException("Selected file cannot be opened")
-        return digest.digest().joinToString("") { "%02x".format(it) }
+    private fun digest(uri: Uri, expectedSize: Long): String {
+        val input = applicationContext.contentResolver.openInputStream(uri) ?: throw IOException("Selected file cannot be opened")
+        return SelectedFiles.digestSized(input, expectedSize)
     }
 
-    private fun upload(server: String, credential: String, uri: Uri, selected: SelectedFile, backupId: String, hash: String): Int {
+    private fun upload(server: String, credential: String, uri: Uri, selected: SelectedFile, backupId: String, hash: String, generation: String, prefs: CompanionPrefs): Int {
         val url = URL(server.trimEnd('/') + "/api/agent/android/files")
         val connection = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = "PUT"; connectTimeout = 20_000; readTimeout = 60_000; instanceFollowRedirects = false
@@ -135,14 +147,16 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
             input.use { source -> connection.outputStream.use { target ->
                 val buffer = ByteArray(64 * 1024)
                 var total = 0L
+                val streamedHash = MessageDigest.getInstance("SHA-256")
                 while (true) {
-                    if (isStopped) throw IOException("Upload cancelled")
+                    if (isStopped || prefs.generation != generation) throw IOException("Upload cancelled")
                     val count = source.read(buffer); if (count < 0) break
                     total += count
                     if (total > selected.size) throw IOException("Selected file changed during upload")
+                    streamedHash.update(buffer, 0, count)
                     target.write(buffer, 0, count)
                 }
-                if (total != selected.size) throw IOException("Selected file changed during upload")
+                if (total != selected.size || streamedHash.digest().joinToString("") { "%02x".format(it) } != hash) throw IOException("Selected file changed during upload")
             } }
             return connection.responseCode
         } finally { connection.disconnect() }

@@ -39,7 +39,7 @@ class MainActivity : ComponentActivity() {
                 data.clipData?.let { clip -> for (index in 0 until clip.itemCount) selected.add(clip.getItemAt(index).uri) }
                 if (selected.isEmpty()) data.data?.let(selected::add)
                 var count = 0
-                selected.forEach { if (files.add(contentResolver, it, data.flags)) count++ }
+                selected.forEach { if (files.add(contentResolver, it, data.flags, prefs.generation)) count++ }
                 status.text = if (count > 0) "$count selected file${if (count == 1) "" else "s"} added" else "No files were added. Choose files with readable sizes and persistent access."
                 refreshFiles()
             }
@@ -50,6 +50,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         prefs = CompanionPrefs(this)
         files = SelectedFiles(this)
+        files.switchGeneration(prefs.ensureGeneration())
         buildScreen()
         server.setText(prefs.server)
         if (prefs.agentId.isNotBlank()) {
@@ -124,7 +125,10 @@ class MainActivity : ComponentActivity() {
                 runOnUiThread {
                     if (response.first in 200..299) {
                         val result = JSONObject(response.second)
-                        prefs.server = base; prefs.agentId = result.getString("agentId"); prefs.credential = result.getString("credential")
+                        val generation = prefs.setEnrollment(base, result.getString("agentId"), result.getString("credential"))
+                        files.switchGeneration(generation)
+                        androidx.work.WorkManager.getInstance(this).cancelAllWorkByTag("vigara-backup")
+                        androidx.work.WorkManager.getInstance(this).cancelAllWorkByTag("vigara-telemetry")
                         CompanionSchedule.schedule(this)
                         status.text = "Connected • ${prefs.agentId.take(8)}…"
                     } else status.text = "Enrollment was rejected (${response.first}). Check the token scope and expiry."

@@ -295,18 +295,37 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	agentID := strings.ToLower(r.URL.Query().Get("agentId"))
+	if agentID != "" && !validUUID(agentID) {
+		http.Error(w, "invalid agent id", http.StatusBadRequest)
+		return
+	}
+	type listCursor struct {
+		CreatedAt time.Time `json:"createdAt"`
+		ObjectID  string    `json:"objectId"`
+	}
+	var cursor *listCursor
+	if raw := r.URL.Query().Get("cursor"); raw != "" {
+		decoded, err := base64.RawURLEncoding.DecodeString(raw)
+		var value listCursor
+		if err != nil || json.Unmarshal(decoded, &value) != nil || value.CreatedAt.IsZero() || !validUUID(strings.ToLower(value.ObjectID)) {
+			http.Error(w, "invalid cursor", http.StatusBadRequest)
+			return
+		}
+		value.ObjectID = strings.ToLower(value.ObjectID)
+		cursor = &value
+	}
 	query := `SELECT object_id::text,agent_id::text,backup_id::text,file_id::text,display_name,encode(content_sha256,'hex'),byte_size,created_at,committed_at FROM android_file_backups WHERE status='committed'`
 	args := []any{}
 	if agentID != "" {
-		if !validUUID(agentID) {
-			http.Error(w, "invalid agent id", http.StatusBadRequest)
-			return
-		}
 		query += ` AND agent_id=$1`
 		args = append(args, agentID)
 	}
-	query += ` ORDER BY created_at DESC LIMIT $` + fmt.Sprint(len(args)+1)
-	args = append(args, limit)
+	if cursor != nil {
+		query += ` AND (created_at,object_id) < ($` + fmt.Sprint(len(args)+1) + `,$` + fmt.Sprint(len(args)+2) + `)`
+		args = append(args, cursor.CreatedAt, cursor.ObjectID)
+	}
+	query += ` ORDER BY created_at DESC,object_id DESC LIMIT $` + fmt.Sprint(len(args)+1)
+	args = append(args, limit+1)
 	rows, err := h.pool.Query(r.Context(), query, args...)
 	if err != nil {
 		http.Error(w, "could not list Android file backups", http.StatusInternalServerError)
@@ -326,8 +345,18 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not list Android file backups", http.StatusInternalServerError)
 		return
 	}
+	hasMore := len(files) > limit
+	if hasMore {
+		files = files[:limit]
+	}
+	var nextCursor string
+	if hasMore && len(files) > 0 {
+		last := files[len(files)-1]
+		encoded, _ := json.Marshal(listCursor{CreatedAt: last.CreatedAt, ObjectID: last.ObjectID})
+		nextCursor = base64.RawURLEncoding.EncodeToString(encoded)
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"files": files})
+	_ = json.NewEncoder(w).Encode(map[string]any{"files": files, "hasMore": hasMore, "nextCursor": nextCursor})
 }
 
 func (h *Handler) download(w http.ResponseWriter, r *http.Request) {
