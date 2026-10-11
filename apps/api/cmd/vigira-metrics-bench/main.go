@@ -25,15 +25,36 @@ import (
 const dsnEnv = "VIGIRA_METRICS_BENCH_DSN"
 
 type report struct {
-	Mode           string       `json:"mode"`
-	GeneratedAt    time.Time    `json:"generated_at"`
-	Postgres       string       `json:"postgres_version"`
-	Database       string       `json:"database"`
-	Classification string       `json:"classification"`
-	Notes          []string     `json:"notes,omitempty"`
-	Tables         []tableStats `json:"tables,omitempty"`
-	Plans          []plan       `json:"plans,omitempty"`
-	Scenarios      []scenario   `json:"scenarios,omitempty"`
+	Mode           string          `json:"mode"`
+	GeneratedAt    time.Time       `json:"generated_at"`
+	Postgres       string          `json:"postgres_version"`
+	Database       string          `json:"database"`
+	Classification string          `json:"classification"`
+	Notes          []string        `json:"notes,omitempty"`
+	Tables         []tableStats    `json:"tables,omitempty"`
+	ObservedVolume *observedVolume `json:"observed_volume,omitempty"`
+	Plans          []plan          `json:"plans,omitempty"`
+	Scenarios      []scenario      `json:"scenarios,omitempty"`
+}
+type observedVolume struct {
+	Status            string         `json:"status"`
+	Anchor            time.Time      `json:"anchor_utc"`
+	Coverage          string         `json:"coverage"`
+	RecentHour        volumeWindow   `json:"recent_hour"`
+	Recent24Hours     volumeWindow   `json:"recent_24_hours"`
+	HourlyBuckets     []volumeWindow `json:"hourly_buckets"`
+	UnavailableReason string         `json:"unavailable_reason,omitempty"`
+}
+type volumeWindow struct {
+	Status                  string     `json:"status"`
+	Start                   time.Time  `json:"start_utc"`
+	End                     time.Time  `json:"end_utc"`
+	Duration                string     `json:"duration"`
+	SnapshotRows            int64      `json:"snapshot_rows"`
+	MetricDatapoints        int64      `json:"metric_datapoints"`
+	DistinctReportingAgents int64      `json:"distinct_reporting_agents"`
+	MinObservedAt           *time.Time `json:"min_observed_at,omitempty"`
+	MaxObservedAt           *time.Time `json:"max_observed_at,omitempty"`
 }
 type tableStats struct {
 	Name          string `json:"name"`
@@ -182,6 +203,7 @@ func audit(ctx context.Context, dsn string, timeout time.Duration) (report, erro
 		"Row counts are catalog estimates and can be stale; relation sizes are current measurements.",
 		"EXPLAIN ANALYZE used bounded SELECT statements only. No ANALYZE, VACUUM, or maintenance ran.",
 		"Observed data does not establish production load or justify a separate metrics database.",
+		"Observed-volume counts are raw snapshot rows and metric datapoints in bounded UTC windows; retained raw history may be shorter than each window.",
 	}}
 	if err = tx.QueryRow(ctx, "SELECT version(),current_database()").Scan(&r.Postgres, &r.Database); err != nil {
 		return report{}, err
@@ -205,11 +227,12 @@ WHERE n.nspname=current_schema() AND c.relname IN ('agent_telemetry','agent_tele
 		return report{}, err
 	}
 	rows.Close()
+	r.ObservedVolume = observedVolumeReport(ctx, tx, r.GeneratedAt)
 	if _, err = tx.Exec(ctx, "SAVEPOINT raw_range"); err != nil {
 		return report{}, err
 	}
 	var oldest, newest *time.Time
-	err = tx.QueryRow(ctx, `SELECT min(observed_at),max(observed_at) FROM agent_telemetry WHERE observed_at>=now()-interval '168 hours'`).Scan(&oldest, &newest)
+	err = tx.QueryRow(ctx, `SELECT min(observed_at),max(observed_at) FROM agent_telemetry WHERE observed_at >= $1 AND observed_at < $2`, r.GeneratedAt.Add(-168*time.Hour), r.GeneratedAt).Scan(&oldest, &newest)
 	if err != nil {
 		r.Notes = append(r.Notes, "Raw observation range unavailable (timeout or telemetry table absent): "+brief(err))
 		_, _ = tx.Exec(ctx, "ROLLBACK TO SAVEPOINT raw_range")
@@ -236,6 +259,145 @@ WHERE n.nspname=current_schema() AND c.relname IN ('agent_telemetry','agent_tele
 	}
 	return r, nil
 }
+
+// observedVolumeReport measures exact counts in a fixed UTC 24-hour bound.
+// Summary windows and hourly buckets share one anchor and use [start,end).
+// The single SELECT is itself run inside the audit read-only transaction and
+// behind a savepoint so timeout/missing-table failures remain distinguishable
+// from successfully measured empty windows.
+func newObservedVolume(anchor time.Time) *observedVolume {
+	anchor = anchor.UTC()
+	result := &observedVolume{
+		Status:        "unavailable",
+		Anchor:        anchor,
+		Coverage:      "retained raw rows in bounded windows; raw retention, ingest gaps, or delayed reports may make observed history incomplete",
+		HourlyBuckets: make([]volumeWindow, 0, 24),
+		RecentHour:    volumeWindow{Status: "unavailable", Start: anchor.Add(-time.Hour), End: anchor, Duration: time.Hour.String()},
+		Recent24Hours: volumeWindow{Status: "unavailable", Start: anchor.Add(-24 * time.Hour), End: anchor, Duration: (24 * time.Hour).String()},
+	}
+	for start := anchor.Add(-24 * time.Hour); start.Before(anchor); start = start.Add(time.Hour) {
+		result.HourlyBuckets = append(result.HourlyBuckets, volumeWindow{Status: "unavailable", Start: start, End: start.Add(time.Hour), Duration: time.Hour.String()})
+	}
+	return result
+}
+
+func observedVolumeReport(ctx context.Context, tx pgx.Tx, anchor time.Time) *observedVolume {
+	result := newObservedVolume(anchor)
+	if _, err := tx.Exec(ctx, "SAVEPOINT observed_volume"); err != nil {
+		result.UnavailableReason = brief(err)
+		return result
+	}
+	const query = `
+WITH bounds AS (
+    SELECT $1::timestamptz AS anchor
+), recent AS MATERIALIZED (
+    SELECT t.id, t.agent_id, t.observed_at, t.payload
+    FROM agent_telemetry t CROSS JOIN bounds b
+    WHERE t.observed_at >= b.anchor - interval '24 hours'
+      AND t.observed_at < b.anchor
+), summaries AS (
+    SELECT 'recent_hour'::text AS kind, b.anchor - interval '1 hour' AS starts_at, b.anchor AS ends_at,
+           count(r.id)::bigint AS snapshot_rows, count(DISTINCT r.agent_id)::bigint AS reporting_agents,
+           COALESCE(sum(CASE WHEN jsonb_typeof(r.payload->'metrics') = 'array' THEN jsonb_array_length(r.payload->'metrics') ELSE 0 END),0)::bigint AS metric_datapoints,
+           min(r.observed_at) AS min_observed_at, max(r.observed_at) AS max_observed_at
+    FROM bounds b LEFT JOIN recent r ON r.observed_at >= b.anchor - interval '1 hour'
+    GROUP BY b.anchor
+    UNION ALL
+    SELECT 'recent_24_hours', b.anchor - interval '24 hours', b.anchor,
+           count(r.id)::bigint, count(DISTINCT r.agent_id)::bigint,
+           COALESCE(sum(CASE WHEN jsonb_typeof(r.payload->'metrics') = 'array' THEN jsonb_array_length(r.payload->'metrics') ELSE 0 END),0)::bigint,
+           min(r.observed_at), max(r.observed_at)
+    FROM bounds b LEFT JOIN recent r ON true
+    GROUP BY b.anchor
+), bucket_bounds AS (
+    SELECT starts_at, starts_at + interval '1 hour' AS ends_at
+    FROM bounds b
+    CROSS JOIN LATERAL generate_series(b.anchor - interval '24 hours', b.anchor - interval '1 hour', interval '1 hour') AS g(starts_at)
+), buckets AS (
+    SELECT 'hourly_bucket'::text AS kind, w.starts_at, w.ends_at,
+           count(r.id)::bigint AS snapshot_rows, count(DISTINCT r.agent_id)::bigint AS reporting_agents,
+           COALESCE(sum(CASE WHEN jsonb_typeof(r.payload->'metrics') = 'array' THEN jsonb_array_length(r.payload->'metrics') ELSE 0 END),0)::bigint AS metric_datapoints,
+           min(r.observed_at) AS min_observed_at, max(r.observed_at) AS max_observed_at
+    FROM bucket_bounds w LEFT JOIN recent r ON r.observed_at >= w.starts_at AND r.observed_at < w.ends_at
+    GROUP BY w.starts_at, w.ends_at
+)
+SELECT kind, starts_at, ends_at, snapshot_rows, metric_datapoints, reporting_agents, min_observed_at, max_observed_at FROM summaries
+UNION ALL
+SELECT kind, starts_at, ends_at, snapshot_rows, metric_datapoints, reporting_agents, min_observed_at, max_observed_at FROM buckets
+ORDER BY starts_at`
+	rows, err := tx.Query(ctx, query, anchor.UTC())
+	if err != nil {
+		_, _ = tx.Exec(ctx, "ROLLBACK TO SAVEPOINT observed_volume")
+		return unavailableObservedVolume(anchor, err)
+	}
+	defer rows.Close()
+	bucketIndex := 0
+	for rows.Next() {
+		var kind string
+		var w volumeWindow
+		if err := rows.Scan(&kind, &w.Start, &w.End, &w.SnapshotRows, &w.MetricDatapoints, &w.DistinctReportingAgents, &w.MinObservedAt, &w.MaxObservedAt); err != nil {
+			rows.Close()
+			_, _ = tx.Exec(ctx, "ROLLBACK TO SAVEPOINT observed_volume")
+			return unavailableObservedVolume(anchor, err)
+		}
+		w.Start = w.Start.UTC()
+		w.End = w.End.UTC()
+		w.Duration = w.End.Sub(w.Start).String()
+		w.Status = "available"
+		if w.SnapshotRows == 0 {
+			w.Status = "empty"
+		}
+		if w.MinObservedAt != nil {
+			t := w.MinObservedAt.UTC()
+			w.MinObservedAt = &t
+		}
+		if w.MaxObservedAt != nil {
+			t := w.MaxObservedAt.UTC()
+			w.MaxObservedAt = &t
+		}
+		switch kind {
+		case "recent_hour":
+			result.RecentHour = w
+		case "recent_24_hours":
+			result.Recent24Hours = w
+		case "hourly_bucket":
+			if bucketIndex >= len(result.HourlyBuckets) {
+				rows.Close()
+				_, _ = tx.Exec(ctx, "ROLLBACK TO SAVEPOINT observed_volume")
+				return unavailableObservedVolume(anchor, errors.New("query returned more than 24 hourly buckets"))
+			}
+			result.HourlyBuckets[bucketIndex] = w
+			bucketIndex++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		_, _ = tx.Exec(ctx, "ROLLBACK TO SAVEPOINT observed_volume")
+		return unavailableObservedVolume(anchor, err)
+	}
+	if bucketIndex != 24 || result.RecentHour.Status == "unavailable" || result.Recent24Hours.Status == "unavailable" {
+		_, _ = tx.Exec(ctx, "ROLLBACK TO SAVEPOINT observed_volume")
+		return unavailableObservedVolume(anchor, errors.New("query returned incomplete window set"))
+	}
+	for _, bucket := range result.HourlyBuckets {
+		if bucket.Status == "unavailable" {
+			_, _ = tx.Exec(ctx, "ROLLBACK TO SAVEPOINT observed_volume")
+			return unavailableObservedVolume(anchor, errors.New("query returned incomplete hourly bucket set"))
+		}
+	}
+	result.Status = "available"
+	if result.Recent24Hours.Status == "empty" {
+		result.Status = "empty"
+	}
+	return result
+}
+
+func unavailableObservedVolume(anchor time.Time, err error) *observedVolume {
+	result := newObservedVolume(anchor)
+	result.UnavailableReason = brief(err)
+	return result
+}
+
 func brief(err error) string {
 	s := strings.ReplaceAll(err.Error(), "\n", " ")
 	if len(s) > 180 {
