@@ -1,0 +1,5 @@
+FROM restic/restic:0.19.1 AS restic
+
+FROM golang:1.24-alpine
+COPY --from=restic /usr/bin/restic /usr/local/bin/restic
+WORKDIR /src
