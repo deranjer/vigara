@@ -157,6 +157,8 @@ def main():
         must_reject(stack_validator, bad, f"Compose traversal {path}")
         bad = json.loads(json.dumps(stack)); bad["compose"]["interpolationFiles"] = [{"path": path, "purpose": "stack", "sensitivity": "encrypted"}]
         must_reject(stack_validator, bad, f"interpolation traversal {path}")
+    bad = json.loads(json.dumps(stack)); bad["configurationAssets"] = [{"path": "../../etc/passwd", "class": "portable-config", "required": True}]
+    must_reject(stack_validator, bad, "portable configuration asset traversal")
     bad = json.loads(json.dumps(stack)); bad["secretRecipientRefs"] = bad["secretRecipientRefs"][:2]
     must_reject_semantics(bad, "missing secret recovery recipient")
     bad = json.loads(json.dumps(stack)); del bad["secretRecipientRefs"]
