@@ -3,6 +3,7 @@ package collector
 import (
 	"context"
 	"fmt"
+	"github.com/deranjer/vigara/apps/agent/internal/collector/synology"
 	"github.com/deranjer/vigara/internal/protocol"
 	"math"
 	"net/http"
@@ -78,4 +79,64 @@ func TestCollectReturnsBoundedFiniteMeasurements(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestConfiguredSynologyFailureKeepsHostTelemetryAndHidesCommunity(t *testing.T) {
+	const secret = "snmp-community-never-log-this"
+	c := NewWithSynologyConfig("127.0.0.1:9", secret, 30*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	snapshot := c.Collect(ctx)
+	if snapshot.Host.OS == "" || snapshot.Host.Architecture == "" {
+		t.Fatalf("NAS outage suppressed host inventory: %+v", snapshot.Host)
+	}
+	found := false
+	for _, item := range snapshot.Errors {
+		if item.Capability == "synology_monitoring" {
+			found = true
+		}
+		if strings.Contains(item.Message, secret) {
+			t.Fatal("SNMP community leaked into collection errors")
+		}
+	}
+	if !found {
+		t.Fatalf("NAS failure was not reported: %+v", snapshot)
+	}
+}
+
+type synologyFixture struct{}
+
+func (synologyFixture) Get(context.Context, []string) (map[string]any, error) {
+	return map[string]any{synology.SystemStatusOID: 1, synology.TemperatureOID: 43}, nil
+}
+func (synologyFixture) Walk(context.Context, string) (map[string]any, error) {
+	return map[string]any{}, nil
+}
+
+func TestCollectIncludesRemoteSynologyMetricsWithoutRelabelingHost(t *testing.T) {
+	c := &Collector{synology: synology.NewWithClient("nas.example", synologyFixture{})}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	snapshot := c.Collect(ctx)
+	if snapshot.Host.OS == "" || snapshot.Host.Architecture == "" {
+		t.Fatalf("missing local host identity: %+v", snapshot.Host)
+	}
+	foundNAS, foundHost := false, false
+	for _, metric := range snapshot.Metrics {
+		if metric.Name == "synology_temperature_celsius" && metric.Labels["nas_target"] == "nas.example" {
+			foundNAS = true
+		}
+		if metric.Name == "cpu_used_percent" && metric.Labels["nas_target"] == "" {
+			foundHost = true
+		}
+	}
+	if !foundNAS || !foundHost {
+		t.Fatalf("missing remote NAS or unlabeled local host measurements: %+v", snapshot.Metrics)
+	}
+	for _, capability := range snapshot.Capabilities {
+		if capability == "synology_system_monitoring" {
+			return
+		}
+	}
+	t.Fatalf("NAS capability absent from snapshot: %v", snapshot.Capabilities)
 }

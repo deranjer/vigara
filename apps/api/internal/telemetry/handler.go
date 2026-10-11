@@ -133,6 +133,8 @@ var metricUnits = map[string]string{
 	"docker_memory_usage_bytes": "By", "docker_memory_limit_bytes": "By", "docker_memory_used_percent": "%",
 	"docker_cpu_capacity_used_percent": "%", "docker_processes": "1",
 	"docker_network_receive_bytes_per_second": "By/s", "docker_network_transmit_bytes_per_second": "By/s",
+	"synology_system_status": "1", "synology_temperature_celsius": "Cel",
+	"synology_disk_status": "1", "synology_disk_temperature_celsius": "Cel",
 }
 
 var dockerIDPattern = regexp.MustCompile(`^[a-f0-9]{12,128}$`)
@@ -183,6 +185,32 @@ func validate(s protocol.TelemetrySnapshot, agentID string, now time.Time) error
 		if strings.HasSuffix(metric.Name, "percent") && metric.Value > 100 {
 			return errors.New("percentage outside 0..100")
 		}
+		if strings.HasPrefix(metric.Name, "synology_") {
+			if metric.Labels["nas_target"] == "" {
+				return errors.New("Synology metric requires a NAS target label")
+			}
+			for key := range metric.Labels {
+				if key != "nas_target" && key != "disk_index" {
+					return errors.New("invalid Synology metric label")
+				}
+			}
+			if strings.HasPrefix(metric.Name, "synology_disk_") {
+				if metric.Labels["disk_index"] == "" {
+					return errors.New("Synology disk metric requires a disk index")
+				}
+				if len(metric.Labels["disk_index"]) > 16 || !decimalMetricLabel(metric.Labels["disk_index"]) {
+					return errors.New("invalid Synology disk index")
+				}
+			} else if _, ok := metric.Labels["disk_index"]; ok {
+				return errors.New("unexpected Synology disk index")
+			}
+			if (metric.Name == "synology_system_status" && (metric.Value < 1 || metric.Value > 2 || math.Trunc(metric.Value) != metric.Value)) || (metric.Name == "synology_disk_status" && (metric.Value < 1 || metric.Value > 5 || math.Trunc(metric.Value) != metric.Value)) {
+				return errors.New("invalid Synology status value")
+			}
+			if strings.Contains(metric.Name, "temperature") && metric.Value > 150 {
+				return errors.New("invalid Synology temperature")
+			}
+		}
 		if len(metric.Labels) > 8 {
 			return errors.New("too many metric labels")
 		}
@@ -193,4 +221,8 @@ func validate(s protocol.TelemetrySnapshot, agentID string, now time.Time) error
 		}
 	}
 	return nil
+}
+
+func decimalMetricLabel(value string) bool {
+	return value != "" && strings.Trim(value, "0123456789") == ""
 }

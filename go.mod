@@ -5,6 +5,7 @@ go 1.24.0
 require (
 	github.com/danielgtaylor/huma/v2 v2.34.0
 	github.com/go-chi/chi/v5 v5.2.3
+	github.com/gosnmp/gosnmp v1.38.0
 	github.com/jackc/pgx/v5 v5.7.5
 	github.com/shirou/gopsutil/v4 v4.25.6
 )

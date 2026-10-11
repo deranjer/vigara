@@ -64,6 +64,44 @@ func TestValidateAcceptsBoundedDockerInventoryAndUnits(t *testing.T) {
 	}
 }
 
+func TestValidateSynologyMetricsRequireTargetAndSupportedSchema(t *testing.T) {
+	now := time.Now().UTC()
+	s := validSnapshot("agent", "synology", now)
+	s.Metrics = []protocol.TelemetryMetric{
+		{Name: "synology_system_status", Value: 1, Unit: "1", Labels: map[string]string{"nas_target": "nas.example"}},
+		{Name: "synology_temperature_celsius", Value: 42, Unit: "Cel", Labels: map[string]string{"nas_target": "nas.example"}},
+		{Name: "synology_disk_status", Value: 1, Unit: "1", Labels: map[string]string{"nas_target": "nas.example", "disk_index": "1"}},
+		{Name: "synology_disk_temperature_celsius", Value: 34, Unit: "Cel", Labels: map[string]string{"nas_target": "nas.example", "disk_index": "1"}},
+	}
+	if err := validate(s, "agent", now); err != nil {
+		t.Fatalf("valid Synology metrics rejected: %v", err)
+	}
+	s.Metrics[0].Labels = nil
+	if err := validate(s, "agent", now); err == nil {
+		t.Fatal("accepted a Synology metric without its remote target label")
+	}
+	s = validSnapshot("agent", "synology-bad-unit", now)
+	s.Metrics = []protocol.TelemetryMetric{{Name: "synology_temperature_celsius", Value: 42, Unit: "C", Labels: map[string]string{"nas_target": "nas.example"}}}
+	if err := validate(s, "agent", now); err == nil {
+		t.Fatal("accepted unsupported Synology unit")
+	}
+	s = validSnapshot("agent", "synology-bad-status", now)
+	s.Metrics = []protocol.TelemetryMetric{{Name: "synology_system_status", Value: 7, Unit: "1", Labels: map[string]string{"nas_target": "nas.example"}}}
+	if err := validate(s, "agent", now); err == nil {
+		t.Fatal("accepted unsupported Synology status")
+	}
+	s = validSnapshot("agent", "synology-fractional-status", now)
+	s.Metrics = []protocol.TelemetryMetric{{Name: "synology_system_status", Value: 1.5, Unit: "1", Labels: map[string]string{"nas_target": "nas.example"}}}
+	if err := validate(s, "agent", now); err == nil {
+		t.Fatal("accepted fractional Synology status")
+	}
+	s = validSnapshot("agent", "synology-bad-index", now)
+	s.Metrics = []protocol.TelemetryMetric{{Name: "synology_disk_status", Value: 1, Unit: "1", Labels: map[string]string{"nas_target": "nas.example", "disk_index": "+1"}}}
+	if err := validate(s, "agent", now); err == nil {
+		t.Fatal("accepted nondecimal Synology disk index")
+	}
+}
+
 func TestTelemetryIngestIsIdempotentAndRejectsRevokedIdentity(t *testing.T) {
 	pool := telemetryTestPool(t)
 	ctx := context.Background()
