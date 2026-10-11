@@ -2,7 +2,12 @@ package collector
 
 import (
 	"context"
+	"fmt"
+	"github.com/deranjer/vigara/internal/protocol"
 	"math"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -17,6 +22,34 @@ func TestRateRequiresBaselineAndMonotonicCounters(t *testing.T) {
 	got, ok := rate(1_500, 500, 2*time.Second)
 	if !ok || got != 500 {
 		t.Fatalf("rate = %v, %v; want 500 bytes/second", got, ok)
+	}
+}
+
+func TestDockerCollectionIsOptInAndAppearsInSnapshotWhenConfigured(t *testing.T) {
+	t.Setenv("VIGIRA_DOCKER_ENABLED", "")
+	t.Setenv("VIGIRA_DOCKER_HOST", "")
+	disabled := New()
+	disabledSnapshot := &protocol.TelemetrySnapshot{Metrics: []protocol.TelemetryMetric{}}
+	disabled.collectDocker(disabledSnapshot, map[string]bool{}, func(string, error) { t.Fatal("disabled collector emitted a Docker error") }, context.Background())
+	if disabledSnapshot.DockerContainers != nil || len(disabledSnapshot.Metrics) != 0 {
+		t.Fatal("disabled Docker module added inventory or metrics to the snapshot")
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || !strings.Contains(r.URL.Path, "/v1.44/containers/json") {
+			t.Errorf("unexpected fixture request: %s %s", r.Method, r.URL.Path)
+		}
+		_, _ = fmt.Fprint(w, `[{"Id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","Names":["/fixture"],"Image":"fixture:1","State":"exited"}]`)
+	}))
+	defer server.Close()
+	enabledSnapshot := &protocol.TelemetrySnapshot{Metrics: []protocol.TelemetryMetric{}}
+	enabledCapabilities := map[string]bool{}
+	NewWithDockerConfig(true, server.URL, server.Client()).collectDocker(enabledSnapshot, enabledCapabilities, func(capability string, err error) { t.Fatalf("%s collection failed: %v", capability, err) }, context.Background())
+	if len(enabledSnapshot.DockerContainers) != 1 || enabledSnapshot.DockerContainers[0].Name != "fixture" {
+		t.Fatalf("configured Docker inventory missing: %+v", enabledSnapshot.DockerContainers)
+	}
+	if !enabledCapabilities["docker_inventory"] {
+		t.Fatalf("Docker capability missing: %v", enabledCapabilities)
 	}
 }
 
