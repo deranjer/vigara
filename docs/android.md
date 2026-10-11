@@ -18,6 +18,12 @@ Select individual files in the system picker. The app stores the granted content
 
 The app keeps the agent credential encrypted with an AES-GCM key in Android Keystore. Its shared preferences, database, and files are excluded from both cloud backup and device-to-device transfer, because the credential's Keystore key cannot be migrated to another device. Re-enroll after moving the app to a new device or clearing its data.
 
+## Android regression tests
+
+Run the local Android unit suite from `apps/android` with `./gradlew :app:testDebugUnitTest` (or `gradlew.bat` on Windows). The Robolectric tests use API 35 Android behavior and the real app `SharedPreferences`, SQLite helper, and `TelemetryWorker` code. The worker test pauses its request, changes enrollment, then releases the old response to verify it cannot clear the new generation's telemetry. The selected-file tests cover metadata admission, read-only opt-in, database reopen, generation-switch resets, stale worker state writes, and files selected after enrollment. Robolectric supports Android API tests on the local JVM without an emulator; see the [Robolectric setup guide](https://robolectric.org/getting-started/).
+
+The unit tests use a deterministic test AES key to exercise the production AES-GCM encryption/decryption code. They do not exercise Android Keystore key provisioning or migration. Persistable URI grants are injected at the storage boundary, so picker behavior, document-provider grants, backup streaming, device reboot, battery/network constraints, and actual Android Keystore behavior still need a device or emulator check.
+
 ## Operator recovery API
 
 An authenticated local Vigara user can list committed files with `GET /api/backups/android/files` (optional `agentId`, `limit` up to 500, and `cursor`) and download an object with `GET /api/backups/android/files/{objectId}`. A list response contains `files`, `hasMore`, and `nextCursor`; pass a non-empty `nextCursor` back as `cursor` to retrieve the next page. Ordering is newest first with object ID as a stable tie-breaker. The list returns the device, selected display name, byte size, content hash, and opaque object ID. The download response includes `X-Content-SHA256`; verify it after saving. These endpoints require the same secure session cookie as the operator UI. They do not expose server filesystem paths.

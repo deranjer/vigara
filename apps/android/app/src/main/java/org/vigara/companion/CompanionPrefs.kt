@@ -11,7 +11,8 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import java.util.UUID
 
-class CompanionPrefs(context: Context) {
+class CompanionPrefs internal constructor(context: Context, private val keyProvider: () -> SecretKey) {
+    constructor(context: Context) : this(context, { androidKey() })
     private val prefs = context.getSharedPreferences("companion", Context.MODE_PRIVATE)
     val server: String
         get() = prefs.getString("server", "") ?: ""
@@ -71,19 +72,21 @@ class CompanionPrefs(context: Context) {
             } catch (_: Exception) { "" }
         }
 
-    private fun key(): SecretKey {
-        val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        (store.getKey(KEY_ALIAS, null) as? SecretKey)?.let { return it }
-        return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").run {
-            init(KeyGenParameterSpec.Builder(KEY_ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
-                .setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-                .setRandomizedEncryptionRequired(true).build())
-            generateKey()
-        }
-    }
+    private fun key(): SecretKey = keyProvider()
 
     companion object {
         private const val KEY_ALIAS = "vigara-agent-credential-v1"
         private val enrollmentLock = Any()
+
+        private fun androidKey(): SecretKey {
+            val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+            (store.getKey(KEY_ALIAS, null) as? SecretKey)?.let { return it }
+            return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").run {
+                init(KeyGenParameterSpec.Builder(KEY_ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+                    .setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                    .setRandomizedEncryptionRequired(true).build())
+                generateKey()
+            }
+        }
     }
 }
