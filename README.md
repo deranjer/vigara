@@ -31,3 +31,5 @@ Go integration tests run when `VIGIRA_TEST_DATABASE_URL` points to a test Postgr
 - `docs`: operator and architecture notes
 
 The initial deployment uses one Go process, embedded web assets, PostgreSQL, and local account authentication. Windows and Linux agents enroll through one-use capability-scoped tokens, poll over HTTPS, and can be revoked by an administrator. See [docs/agent.md](docs/agent.md) for Linux systemd and Windows service setup.
+
+For standalone recovery of Vigira's database, server configuration, agent credentials, and Restic file snapshots, see the [recovery runbook](docs/recovery.md).
