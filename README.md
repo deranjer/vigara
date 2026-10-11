@@ -35,3 +35,5 @@ The initial deployment uses one Go process, embedded web assets, PostgreSQL, and
 For standalone recovery of Vigira's database, server configuration, agent credentials, and Restic file snapshots, see the [recovery runbook](docs/recovery.md).
 
 For local Restic snapshot browsing, repository checks, alternate-destination restore, and retention planning, see the [snapshot recovery guide](docs/snapshot-recovery.md).
+
+For the native Android companion, its selected-file upload storage, and operator download API, see [Android companion setup](docs/android.md).

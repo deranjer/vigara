@@ -1,0 +1,25 @@
+# Android companion
+
+The native Android companion enrolls through the existing one-use agent token flow, reports a small host telemetry snapshot every six hours, and uploads only files explicitly selected in Android's Storage Access Framework picker. The app does not request broad storage access. It retains each selected document's read grant so WorkManager can reopen it after a reboot; moving or deleting a document, revoking its grant, or removing the app can make it unavailable. Remove a file in the companion to release its local grant; this does not remove copies already committed on the server.
+
+## Enable server storage
+
+Apply migrations through `000012_android_file_backups` before using the companion. Set `VIGIRA_ANDROID_BACKUP_ROOT` to a private local directory or an already mounted local/network drive that the API service can write. The empty default disables uploads. The service stores content below `objects/<agent-id>/<opaque-object-id>.blob` and temporary uploads below `objects/.staging`; it never joins a client path to the configured root. Keep the directory restricted to the service account (on Windows, set an explicit directory ACL) and include it together with PostgreSQL in server recovery. A restore needs both the root contents and the metadata rows.
+
+Uploads use TLS and are stored as plaintext files on the configured server filesystem. This endpoint does not create a Restic snapshot, encrypt files at rest, or apply Restic repository retention. The API's authenticated operator recovery endpoint is the supported download path. Keep the storage volume protected and backed up by the operator's chosen local/network storage and recovery process. Android reports `Backed up` only after the server has verified the size and SHA-256 and committed metadata; that status does not mean the object is Restic-protected.
+
+Defaults are 512 MiB per file, 10 GiB per Android agent, 100 GiB total, 5,000 files per agent, and 100,000 files total. At most four upload streams run at once in one API process; busy servers return 429 with a retry delay. `VIGIRA_ANDROID_BACKUP_MAX_FILE_BYTES` accepts 1 MiB through 2 GiB. `VIGIRA_ANDROID_BACKUP_MAX_TOTAL_BYTES` must be at least the file limit. The server returns 507 when a byte or file quota is reached. There is no automatic retention or deletion endpoint in this release; plan sufficient storage capacity and recovery together with the configured volume.
+
+## Enroll and use
+
+Create an enrollment token with exactly the `android.files.upload` capability and a short lifetime, then enter the returned one-use value in the companion. The app identifies itself as platform `android`; the server requires the upload capability in both the enrollment scope and the agent's reported capabilities. Do not reuse a Windows/Linux token with broader capabilities. The server certificate must chain to a CA installed in Android's system or user certificate store. Cleartext HTTP and redirects are rejected.
+
+Select individual files in the system picker. The app stores the granted content URI and display name in private app storage, hashes the source, and streams it directly over HTTPS. It does not stage whole files in app storage. It skips unchanged content, uses stable IDs across network retries, and shows access-revocation, quota, and server errors per selected file. Manual backup requires a connected network and a non-low battery. Automatic backups are scheduled daily on an unmetered network when battery is not low; Android may delay the work to protect battery and data usage. Telemetry is scheduled about every six hours under the same constraints.
+
+The app keeps the agent credential encrypted with an AES-GCM key in Android Keystore. Its shared preferences, database, and files are excluded from both cloud backup and device-to-device transfer, because the credential's Keystore key cannot be migrated to another device. Re-enroll after moving the app to a new device or clearing its data.
+
+## Operator recovery API
+
+An authenticated local Vigara user can list committed files with `GET /api/backups/android/files` (optional `agentId` and `limit`, up to 500) and download an object with `GET /api/backups/android/files/{objectId}`. The list returns the device, selected display name, byte size, content hash, and opaque object ID. The download response includes `X-Content-SHA256`; verify it after saving. These endpoints require the same secure session cookie as the operator UI. They do not expose server filesystem paths.
+
+The agent upload endpoint is `PUT /api/agent/android/files`. Its bearer credential must belong to an active Android identity with `android.files.upload` in both capability lists. The request uses `X-Vigara-Backup-ID`, `X-Vigara-File-ID`, `X-Vigara-File-Name` (UTF-8 bytes encoded as unpadded base64url), and `X-Vigara-Content-SHA256` headers plus the exact file bytes as the body. Server object names are generated UUIDs. Repeating the same agent, backup ID, file ID, name, size, and hash is idempotent; reusing those IDs for different content returns HTTP 409. In-flight content is not listed or downloadable.

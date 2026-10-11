@@ -16,6 +16,7 @@ import (
 	webassets "github.com/deranjer/vigara/apps/api"
 	"github.com/deranjer/vigara/apps/api/internal/agent"
 	"github.com/deranjer/vigara/apps/api/internal/alerts"
+	"github.com/deranjer/vigara/apps/api/internal/androidbackup"
 	"github.com/deranjer/vigara/apps/api/internal/auth"
 	"github.com/deranjer/vigara/apps/api/internal/backups"
 	"github.com/deranjer/vigara/apps/api/internal/config"
@@ -63,6 +64,8 @@ func main() {
 	backups.NewHandler(database.Pool, authService).Register(backupMux)
 	agentMux := http.NewServeMux()
 	agent.NewHandler(database.Pool, authService).Register(agentMux)
+	androidBackupMux := http.NewServeMux()
+	androidbackup.NewHandler(database.Pool, authService, cfg.AndroidBackupRoot, cfg.AndroidBackupMaxFileBytes, cfg.AndroidBackupMaxTotalBytes).Register(agentMux, androidBackupMux)
 	telemetryMux := http.NewServeMux()
 	telemetryStore := telemetry.NewPostgresStore(database.Pool)
 	telemetry.NewHandler(database.Pool, telemetryStore).Register(telemetryMux)
@@ -83,6 +86,7 @@ func main() {
 	router.Handle("/api/agent/*", agentMux)
 	router.Handle("/api/agent/telemetry", telemetryMux)
 	router.Handle("/api/agent/backups/status", alertsMux)
+	router.Handle("/api/backups/android/*", androidBackupMux)
 	router.Handle("/api/backups/*", backupMux)
 	router.Handle("/api/alerts/*", alertsMux)
 	router.Handle("/api/devices/{deviceID}/availability", alertsMux)

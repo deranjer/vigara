@@ -6,6 +6,9 @@
 /dist/
 /node_modules/
 /apps/web/dist/
+/apps/android/.gradle/
+/apps/android/build/
+/apps/android/app/build/
 **/node_modules/
 **/dist/
 /coverage/
