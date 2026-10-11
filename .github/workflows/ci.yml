@@ -30,6 +30,13 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Install pinned SOPS and age tools for interoperability tests
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/.tools"
+          GOTOOLCHAIN=auto GOBIN="$GITHUB_WORKSPACE/.tools" go install github.com/getsops/sops/v3/cmd/sops@v3.13.3
+          GOBIN="$GITHUB_WORKSPACE/.tools" go install filippo.io/age/cmd/age-keygen@v1.2.1
+          echo "VIGIRA_SOPS_BINARY=$GITHUB_WORKSPACE/.tools/sops" >> "$GITHUB_ENV"
+          echo "VIGIRA_AGE_KEYGEN_BINARY=$GITHUB_WORKSPACE/.tools/age-keygen" >> "$GITHUB_ENV"
       - run: go test ./...
       - run: go build ./apps/api/... ./apps/agent/...
   web:

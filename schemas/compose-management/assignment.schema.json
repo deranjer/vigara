@@ -23,6 +23,6 @@
   "$defs": {
     "id": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$", "maxLength": 63},
     "path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$"},
-    "input": {"type": "object", "additionalProperties": false, "required": ["path", "purpose", "sensitivity"], "properties": {"path": {"$ref": "#/$defs/path"}, "purpose": {"enum": ["stack", "deployment", "shared"]}, "sensitivity": {"enum": ["encrypted", "plaintext"]}, "preserveOnImport": {"type": "boolean"}}}
+    "input": {"type": "object", "additionalProperties": false, "required": ["path", "purpose", "sensitivity"], "properties": {"path": {"$ref": "#/$defs/path"}, "purpose": {"enum": ["stack", "deployment", "shared"]}, "sensitivity": {"enum": ["encrypted", "plaintext"]}, "format": {"enum": ["sops-dotenv", "sops-binary"]}, "preserveOnImport": {"type": "boolean"}}, "allOf": [{"if": {"required": ["format"]}, "then": {"properties": {"sensitivity": {"const": "encrypted"}}}}]}
   }
 }
