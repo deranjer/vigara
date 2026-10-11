@@ -28,6 +28,13 @@ func TestValidateRejectsBadUnitsAndFutureObservationButAllowsOfflineData(t *test
 	if err := validate(tooOld, "agent", now); err != nil {
 		t.Fatalf("stale report should be acknowledged and discarded after validation: %v", err)
 	}
+	snapshot.Metrics = []protocol.TelemetryMetric{
+		{Name: "network_check_success", Value: 1, Unit: "1", Labels: map[string]string{"check_name": "router-health", "check_type": "http"}},
+		{Name: "network_check_latency_milliseconds", Value: 2.5, Unit: "ms", Labels: map[string]string{"check_name": "router-health", "check_type": "http"}},
+	}
+	if err := validate(snapshot, "agent", now); err != nil {
+		t.Fatalf("valid optional network-check telemetry rejected: %v", err)
+	}
 	snapshot.Metrics = []protocol.TelemetryMetric{{Name: "memory_total_bytes", Value: 10, Unit: "percent"}}
 	if err := validate(snapshot, "agent", now); err == nil {
 		t.Fatal("accepted a metric with a mismatched unit")

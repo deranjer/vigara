@@ -129,6 +129,7 @@ var metricUnits = map[string]string{
 	"filesystem_total_bytes": "By", "filesystem_free_bytes": "By",
 	"disk_read_bytes_per_second": "By/s", "disk_write_bytes_per_second": "By/s",
 	"network_receive_bytes_per_second": "By/s", "network_send_bytes_per_second": "By/s",
+	"network_check_success": "1", "network_check_latency_milliseconds": "ms",
 	"docker_memory_usage_bytes": "By", "docker_memory_limit_bytes": "By", "docker_memory_used_percent": "%",
 	"docker_cpu_capacity_used_percent": "%", "docker_processes": "1",
 	"docker_network_receive_bytes_per_second": "By/s", "docker_network_transmit_bytes_per_second": "By/s",

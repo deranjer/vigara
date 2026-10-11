@@ -46,3 +46,31 @@ The worker runs every 15 minutes and performs at most 10 transactions of 500 sna
 At 25 hosts reporting every 30 seconds, the raw window holds about 144,000 snapshots. At an estimated 2–4 KB per JSON snapshot, that is roughly 300–600 MB before PostgreSQL indexes and row overhead. If each host averages 30 metric series, 90 days of hourly rollups add about 1.62 million rows. These are planning estimates; actual payload and label sizes determine disk use.
 
 Migration `000006_telemetry_retention` follows `000005_telemetry`. Alert policy migration `000007_alerts` follows `000006`.
+
+## Optional local network checks
+
+An operator can enable HTTP and TCP health checks by setting
+VIGIRA_NETWORK_CHECKS_CONFIG to a local JSON file. The file is not downloaded
+from the server or included in agent state:
+
+    {
+      "checks": [
+        {"name":"router-health","type":"http","url":"http://192.168.1.1/health"},
+        {"name":"switch-https","type":"tcp","address":"192.168.1.2:443","timeoutMs":1000}
+      ]
+    }
+
+Checks are disabled when the setting is empty. At most 16 uniquely named checks
+are accepted. Targets must use literal private, loopback, or link-local IP
+addresses; hostnames and DNS resolution are not supported. HTTP permits only
+HTTP(S), rejects URL credentials and query strings, disables proxies and
+redirects, and reads at most 1 KiB of response content. Per-check timeouts are
+100–3000 ms (1500 ms default), with a 5-second total batch deadline and a 15-second minimum interval between probes. A successful
+HTTP 2xx response or TCP connection reports network_check_success (1 or 0)
+and network_check_latency_milliseconds (ms). Labels contain only the
+configured check name and protocol. Configuration errors do not include file
+paths or endpoint values.
+
+These checks do not establish support for any specific TP-Link model or
+firmware. Model-specific TP-Link, SNMP, SSH, ICMP, and Prometheus collection
+remain deferred until requirements and supported hardware are identified.

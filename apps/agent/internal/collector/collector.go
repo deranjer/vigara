@@ -8,12 +8,14 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"reflect"
 	"runtime"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	dockercollector "github.com/deranjer/vigara/apps/agent/internal/collector/docker"
+	"github.com/deranjer/vigara/apps/agent/internal/networkcheck"
 	"github.com/deranjer/vigara/internal/protocol"
 	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/shirou/gopsutil/v4/disk"
@@ -22,7 +24,10 @@ import (
 	gopsnet "github.com/shirou/gopsutil/v4/net"
 )
 
-const maxDevices = 64
+const (
+	maxDevices              = 64
+	minNetworkCheckInterval = 15 * time.Second
+)
 
 type counters struct {
 	read, write uint64
@@ -31,12 +36,15 @@ type counters struct {
 // Collector retains only the immediately previous I/O counters, needed to
 // calculate rates without reporting cumulative counters as throughput.
 type Collector struct {
-	previousDisk      map[string]counters
-	previousDiskAt    time.Time
-	previousNet       map[string]counters
-	previousNetworkAt time.Time
-	docker            *dockercollector.Collector
-	dockerConfigError error
+	previousDisk        map[string]counters
+	previousDiskAt      time.Time
+	previousNet         map[string]counters
+	previousNetworkAt   time.Time
+	networkChecksAt     time.Time
+	networkChecks       []networkcheck.Check
+	networkCheckResults []networkcheck.Result
+	docker              *dockercollector.Collector
+	dockerConfigError   error
 }
 
 func New() *Collector {
@@ -159,6 +167,31 @@ func (c *Collector) Collect(ctx context.Context) protocol.TelemetrySnapshot {
 
 	c.collectDiskRates(ctx, snapshot.ObservedAt, add, fail)
 	c.collectNetworkRates(ctx, snapshot.ObservedAt, add, fail)
+	checks, checkErr := networkcheck.Load(os.Getenv("VIGIRA_NETWORK_CHECKS_CONFIG"))
+	if checkErr != nil {
+		fail("network_checks", checkErr)
+	} else if len(checks) > 0 {
+		if !reflect.DeepEqual(c.networkChecks, checks) || c.networkChecksAt.IsZero() || snapshot.ObservedAt.Sub(c.networkChecksAt) >= minNetworkCheckInterval {
+			c.networkCheckResults = networkcheck.Run(ctx, checks)
+			c.networkChecksAt = snapshot.ObservedAt
+			c.networkChecks = append([]networkcheck.Check(nil), checks...)
+		}
+		for _, result := range c.networkCheckResults {
+			labels := map[string]string{"check_name": result.Name, "check_type": result.Type}
+			value := 0.0
+			if result.OK {
+				value = 1
+			}
+			add("network_checks", "network_check_success", value, "1", labels)
+			if result.Latency > 0 {
+				add("network_checks", "network_check_latency_milliseconds", float64(result.Latency)/float64(time.Millisecond), "ms", labels)
+			}
+		}
+	} else {
+		c.networkChecks = nil
+		c.networkCheckResults = nil
+		c.networkChecksAt = time.Time{}
+	}
 	c.collectDocker(&snapshot, capabilities, fail, ctx)
 	for capability := range capabilities {
 		snapshot.Capabilities = append(snapshot.Capabilities, capability)
