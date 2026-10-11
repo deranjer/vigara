@@ -128,6 +128,7 @@ var metricUnits = map[string]string{
 	"filesystem_total_bytes": "By", "filesystem_free_bytes": "By",
 	"disk_read_bytes_per_second": "By/s", "disk_write_bytes_per_second": "By/s",
 	"network_receive_bytes_per_second": "By/s", "network_send_bytes_per_second": "By/s",
+	"network_check_success": "1", "network_check_latency_milliseconds": "ms",
 }
 
 func validate(s protocol.TelemetrySnapshot, agentID string, now time.Time) error {
