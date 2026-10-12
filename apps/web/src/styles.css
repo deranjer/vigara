@@ -33,3 +33,8 @@ body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--mantine
 
 .sidebar-user { min-width: 0; flex: 1; }
 .device-row:focus-visible { outline: 2px solid var(--mantine-color-blue-6); outline-offset: -2px; }
+
+.inventory-card table { min-width: 1000px; }
+.inventory-card th, .inventory-card td { white-space: nowrap; }
+.inventory-card th:first-child { min-width: 210px; }
+.inventory-card .mantine-Badge-root { flex-shrink: 0; }
