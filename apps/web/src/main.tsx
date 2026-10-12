@@ -1,9 +1,13 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { useEffect, useState, type FormEvent } from 'react'
-import { Alert, AppShell, Badge, Button, MantineProvider, PasswordInput, Text, TextInput, Title } from '@mantine/core'
+import { Alert, AppShell, Badge, Burger, Button, Collapse, Group, MantineProvider, NavLink, PasswordInput, ScrollArea, Text, TextInput, Title, ActionIcon, useMantineColorScheme } from '@mantine/core'
+import { useDisclosure, useMediaQuery } from '@mantine/hooks'
+import { IconChevronDown, IconDeviceDesktop, IconHistory, IconMoon, IconSun } from '@tabler/icons-react'
 import { Devices } from './devices'
+import { compareSemver } from './semver'
 import '@mantine/core/styles.css'
+import '@mantine/charts/styles.css'
 import './styles.css'
 
 type User = { id: string; username: string; displayName: string; role: string }
@@ -35,6 +39,13 @@ function App() {
   const [user, setUser] = useState<User | null>(null)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const mobile = useMediaQuery('(max-width: 47.99em)')
+  const [navOpen, nav] = useDisclosure(true)
+  const [devicesOpen, deviceGroup] = useDisclosure(true)
+  const [section, setSection] = useState<'devices' | 'backups'>('devices')
+  const { colorScheme, toggleColorScheme } = useMantineColorScheme()
+
+  useEffect(() => { document.documentElement.dataset.mantineColorScheme = colorScheme }, [colorScheme])
 
   async function loadView() {
     try {
@@ -109,9 +120,10 @@ function App() {
     setView('login')
   }
 
-  return <MantineProvider>
-    <AppShell header={{ height: 64 }} padding="xl">
-      <AppShell.Header className="topbar"><Text fw={700} size="lg">Vigira</Text>{view === 'dashboard' ? <Button variant="subtle" onClick={() => void logout()}>Log out</Button> : <Badge color="gray" variant="light">Private home monitoring</Badge>}</AppShell.Header>
+  return <>
+    <AppShell header={{ height: 64 }} navbar={{ width: 258, breakpoint: 'sm', collapsed: { desktop: view !== 'dashboard' || !navOpen, mobile: view !== 'dashboard' || !navOpen } }} padding="lg">
+      <AppShell.Header className="topbar"><Group><Burger opened={navOpen} onClick={nav.toggle} size="sm" aria-label="Toggle navigation" /><Text fw={700} size="lg">Vigara</Text><Badge color="gray" variant="light">Private home monitoring</Badge></Group><Group><ActionIcon variant="subtle" size="lg" aria-label={colorScheme === 'dark' ? 'Use light theme' : 'Use dark theme'} onClick={() => toggleColorScheme()}>{colorScheme === 'dark' ? <IconSun size={18}/> : <IconMoon size={18}/>}</ActionIcon>{view === 'dashboard' && <Button variant="subtle" onClick={() => void logout()}>Log out</Button>}</Group></AppShell.Header>
+      {view === 'dashboard' && <AppShell.Navbar p="sm" className="sidebar"><ScrollArea><Text size="xs" fw={700} c="dimmed" tt="uppercase" px="sm" py="xs">Workspace</Text><NavLink component="button" aria-expanded={devicesOpen} label="Monitoring" leftSection={<IconDeviceDesktop size={18}/>} rightSection={<IconChevronDown size={14} style={{ transform: devicesOpen ? 'rotate(180deg)' : undefined }}/>} onClick={deviceGroup.toggle} active={section === 'devices'} /><Collapse in={devicesOpen}><NavLink component="button" label="Devices" leftSection={<IconDeviceDesktop size={17}/>} active={section === 'devices'} onClick={() => { setSection('devices'); if (mobile) nav.close() }} /><NavLink component="button" label="Backup history" leftSection={<IconHistory size={17}/>} active={section === 'backups'} onClick={() => { setSection('backups'); if (mobile) nav.close() }} /></Collapse></ScrollArea><div className="sidebar-footer"><Text size="xs" c="dimmed">Vigara server</Text><ReleaseStatus /></div></AppShell.Navbar>}
       <AppShell.Main>
         {view === 'loading' && <section className="welcome"><Text c="dimmed">Loading Vigira…</Text></section>}
         {view === 'error' && <section className="auth-card"><Title order={2}>Vigira is unavailable</Title><Alert color="red" mt="md">{error}</Alert><Button mt="lg" onClick={() => { setView('loading'); setError(''); void loadView() }}>Try again</Button></section>}
@@ -139,10 +151,45 @@ function App() {
             <Button type="submit" loading={busy}>Log in</Button>
           </form>
         </section>}
-        {view === 'dashboard' && <Devices key={user?.id} displayName={user?.displayName ?? 'Administrator'} onLogout={() => void logout()} />}
+        {view === 'dashboard' && <Devices key={user?.id} displayName={user?.displayName ?? 'Administrator'} section={section} />}
       </AppShell.Main>
     </AppShell>
-  </MantineProvider>
+  </>
 }
 
-ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><App /></React.StrictMode>)
+function ReleaseStatus() {
+  const [checkAttempt, setCheckAttempt] = useState(0)
+  const [serverVersion, setServerVersion] = useState('…')
+  const [status, setStatus] = useState('Checking for releases…')
+  useEffect(() => {
+    setStatus('Checking for releases…')
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => controller.abort(), 4500)
+    void fetch('/api/version', { signal: controller.signal }).then(async (serverResponse) => {
+      if (!serverResponse.ok) throw new Error('Server version unavailable')
+      const server = await serverResponse.json() as { version: string; revision?: string }
+      const installed = server.version || 'dev'
+      const displayedVersion = `Version ${installed}${server.revision ? ` · ${server.revision.slice(0, 8)}` : ''}`
+      setServerVersion(displayedVersion)
+      const key = `vigara-release-check-v2:${installed}`
+      const cache = sessionStorage.getItem(key)
+      if (cache && checkAttempt === 0) { try { const value = JSON.parse(cache) as { at: number; status: string }; if (Date.now() - value.at < 5 * 60_000) { setStatus(value.status); return } } catch { /* Ignore malformed local cache. */ } }
+      return fetch('https://api.github.com/repos/deranjer/vigara/releases/latest', { headers: { Accept: 'application/vnd.github+json' }, signal: controller.signal }).then(async (response) => {
+        let next: string
+        if (response.status === 404) next = 'No published release yet'
+        else if (!response.ok) throw new Error('Release check unavailable')
+        else {
+          const release = await response.json() as { tag_name?: string }
+          const latest = release.tag_name ?? ''
+          const comparison = compareSemver(latest, installed)
+          next = comparison === null ? `Latest release ${latest}; comparison unavailable` : comparison > 0 ? `Update available: ${latest}` : `Up to date · latest ${latest}`
+        }
+        setStatus(next); sessionStorage.setItem(key, JSON.stringify({ at: Date.now(), status: next }))
+      })
+    }).catch(() => setStatus('Release check unavailable')).finally(() => window.clearTimeout(timer))
+    return () => { controller.abort(); window.clearTimeout(timer) }
+  }, [checkAttempt])
+  return <><Text size="sm" fw={600}>{serverVersion}</Text><Text size="xs" c="dimmed" mt={4}>{status}</Text><Button variant="subtle" size="compact-xs" mt="xs" disabled={status.startsWith('Checking')} onClick={() => setCheckAttempt((value) => value + 1)}>Check for updates</Button></>
+}
+
+ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><MantineProvider defaultColorScheme="light"><App /></MantineProvider></React.StrictMode>)

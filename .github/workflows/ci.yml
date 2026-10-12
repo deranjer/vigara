@@ -37,7 +37,7 @@ jobs:
           GOBIN="$GITHUB_WORKSPACE/.tools" go install filippo.io/age/cmd/age-keygen@v1.2.1
           echo "VIGIRA_SOPS_BINARY=$GITHUB_WORKSPACE/.tools/sops" >> "$GITHUB_ENV"
           echo "VIGIRA_AGE_KEYGEN_BINARY=$GITHUB_WORKSPACE/.tools/age-keygen" >> "$GITHUB_ENV"
-      - run: go test ./...
+      - run: go test -p 1 ./...
       - run: go build ./apps/api/... ./apps/agent/...
   web:
     runs-on: ubuntu-latest
@@ -56,5 +56,6 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
+      - run: pnpm test
       - run: pnpm typecheck
       - run: pnpm build
