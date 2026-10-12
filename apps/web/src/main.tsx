@@ -46,6 +46,7 @@ function App() {
   const { colorScheme, toggleColorScheme } = useMantineColorScheme()
 
   useEffect(() => { document.documentElement.dataset.mantineColorScheme = colorScheme }, [colorScheme])
+  useEffect(() => { window.scrollTo({ top: 0, left: 0, behavior: 'instant' }) }, [section, selectedDeviceId])
 
   async function loadView() {
     try {
