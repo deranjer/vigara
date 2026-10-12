@@ -205,7 +205,7 @@ export function Devices({ section, selectedId, onSelect }: { section: 'devices' 
 </Group>
 </Group>
     {error && <Alert color="red" mb="md" title="Unable to load information" onClose={() => setError('')} withCloseButton>{error}</Alert>}
-    {!selected && section === 'monitoring' && !loading && <MonitoringOverview devices={allDevices} refresh={refresh} onOpen={(id) => openDevice(id, 'monitoring')} />}
+    {!selected && section === 'monitoring' && !loading && (!error || allDevices.length > 0) && <MonitoringOverview devices={allDevices} refresh={refresh} onOpen={(id) => openDevice(id, 'monitoring')} />}
     {!selected && section === 'backups' ? <BackupHistory refresh={refresh} /> : loading ? <div className="device-empty">
 <Loader size="sm" />
 <Text c="dimmed" mt="sm">Loading devices…</Text>
@@ -312,7 +312,7 @@ export function Devices({ section, selectedId, onSelect }: { section: 'devices' 
 </Table.Tr>)}</Table.Tbody>
 </Table>
 </Table.ScrollContainer>
-</Card>}<Text size="sm" c="dimmed">Compose stack grouping will appear when stack inventory is available from the server.</Text></Tabs.Panel>
+</Card>}<Text size="sm" c="dimmed">Compose stack details are not yet available.</Text></Tabs.Panel>
       </Tabs>
     </Stack> : devices.length === 0 ? <div className="device-empty">
 <Text fw={600}>No devices yet</Text>
