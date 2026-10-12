@@ -1,9 +1,9 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { useEffect, useState, type FormEvent } from 'react'
-import { Alert, AppShell, Badge, Burger, Button, Collapse, Group, MantineProvider, NavLink, PasswordInput, ScrollArea, Text, TextInput, Title, ActionIcon, useMantineColorScheme } from '@mantine/core'
+import { Alert, AppShell, Badge, Burger, Avatar, Button, Group, MantineProvider, NavLink, PasswordInput, ScrollArea, Text, TextInput, Title, ActionIcon, useMantineColorScheme } from '@mantine/core'
 import { useDisclosure, useMediaQuery } from '@mantine/hooks'
-import { IconChevronDown, IconDeviceDesktop, IconHistory, IconMoon, IconSun } from '@tabler/icons-react'
+import { IconChartLine, IconDeviceDesktop, IconHistory, IconLogout, IconMoon, IconSun } from '@tabler/icons-react'
 import { Devices } from './devices'
 import { compareSemver } from './semver'
 import '@mantine/core/styles.css'
@@ -41,8 +41,8 @@ function App() {
   const [busy, setBusy] = useState(false)
   const mobile = useMediaQuery('(max-width: 47.99em)')
   const [navOpen, nav] = useDisclosure(true)
-  const [devicesOpen, deviceGroup] = useDisclosure(true)
-  const [section, setSection] = useState<'devices' | 'backups'>('devices')
+  const [section, setSection] = useState<'devices' | 'monitoring' | 'backups'>('devices')
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null)
   const { colorScheme, toggleColorScheme } = useMantineColorScheme()
 
   useEffect(() => { document.documentElement.dataset.mantineColorScheme = colorScheme }, [colorScheme])
@@ -115,15 +115,44 @@ function App() {
   }
 
   async function logout() {
-    await request('/api/auth/logout', undefined, 'POST')
-    setUser(null)
-    setView('login')
+    setBusy(true)
+    setError('')
+    try {
+      await request('/api/auth/logout', undefined, 'POST')
+      setUser(null)
+      setSelectedDeviceId(null)
+      setSection('devices')
+      setView('login')
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not log out.')
+    } finally { setBusy(false) }
+  }
+
+  function navigate(next: 'devices' | 'monitoring' | 'backups') {
+    setSection(next)
+    setSelectedDeviceId(null)
+    if (mobile) nav.close()
   }
 
   return <>
     <AppShell header={{ height: 64 }} navbar={{ width: 258, breakpoint: 'sm', collapsed: { desktop: view !== 'dashboard' || !navOpen, mobile: view !== 'dashboard' || !navOpen } }} padding="lg">
-      <AppShell.Header className="topbar"><Group><Burger opened={navOpen} onClick={nav.toggle} size="sm" aria-label="Toggle navigation" /><Text fw={700} size="lg">Vigara</Text><Badge color="gray" variant="light">Private home monitoring</Badge></Group><Group><ActionIcon variant="subtle" size="lg" aria-label={colorScheme === 'dark' ? 'Use light theme' : 'Use dark theme'} onClick={() => toggleColorScheme()}>{colorScheme === 'dark' ? <IconSun size={18}/> : <IconMoon size={18}/>}</ActionIcon>{view === 'dashboard' && <Button variant="subtle" onClick={() => void logout()}>Log out</Button>}</Group></AppShell.Header>
-      {view === 'dashboard' && <AppShell.Navbar p="sm" className="sidebar"><ScrollArea><Text size="xs" fw={700} c="dimmed" tt="uppercase" px="sm" py="xs">Workspace</Text><NavLink component="button" aria-expanded={devicesOpen} label="Monitoring" leftSection={<IconDeviceDesktop size={18}/>} rightSection={<IconChevronDown size={14} style={{ transform: devicesOpen ? 'rotate(180deg)' : undefined }}/>} onClick={deviceGroup.toggle} active={section === 'devices'} /><Collapse in={devicesOpen}><NavLink component="button" label="Devices" leftSection={<IconDeviceDesktop size={17}/>} active={section === 'devices'} onClick={() => { setSection('devices'); if (mobile) nav.close() }} /><NavLink component="button" label="Backup history" leftSection={<IconHistory size={17}/>} active={section === 'backups'} onClick={() => { setSection('backups'); if (mobile) nav.close() }} /></Collapse></ScrollArea><div className="sidebar-footer"><Text size="xs" c="dimmed">Vigara server</Text><ReleaseStatus /></div></AppShell.Navbar>}
+      <AppShell.Header className="topbar"><Group><Burger opened={navOpen} onClick={nav.toggle} size="sm" aria-label="Toggle navigation" /><Text fw={700} size="lg">Vigara</Text><Badge color="gray" variant="light">Private home monitoring</Badge></Group><Group><ActionIcon variant="subtle" size="lg" aria-label={colorScheme === 'dark' ? 'Use light theme' : 'Use dark theme'} onClick={() => toggleColorScheme()}>{colorScheme === 'dark' ? <IconSun size={18}/> : <IconMoon size={18}/>}</ActionIcon></Group></AppShell.Header>
+      {view === 'dashboard' && <AppShell.Navbar p="sm" className="sidebar">
+        <ScrollArea>
+          <Text size="xs" fw={700} c="dimmed" tt="uppercase" px="sm" py="xs">Workspace</Text>
+          <NavLink component="button" label="Devices" leftSection={<IconDeviceDesktop size={18}/>} active={section === 'devices'} onClick={() => navigate('devices')} />
+          <NavLink component="button" label="Monitoring" leftSection={<IconChartLine size={18}/>} active={section === 'monitoring'} onClick={() => navigate('monitoring')} />
+          <NavLink component="button" label="Backup history" leftSection={<IconHistory size={18}/>} active={section === 'backups'} onClick={() => navigate('backups')} />
+        </ScrollArea>
+        <div className="sidebar-footer">
+          <Group wrap="nowrap" gap="sm" mb="sm">
+            <Avatar name={user?.displayName || user?.username || 'Administrator'} color="blue" radius="xl" size={36} />
+            <div className="sidebar-user"><Text size="sm" fw={600} truncate>{user?.displayName || user?.username}</Text><Text size="xs" c="dimmed" truncate>{user?.username} · {user?.role}</Text></div>
+          </Group>
+          <Button variant="light" color="red" fullWidth size="sm" mb="md" leftSection={<IconLogout size={16}/>} loading={busy} onClick={() => void logout()}>Log out</Button>
+          <Text size="xs" c="dimmed">Vigara server</Text><ReleaseStatus />
+        </div>
+      </AppShell.Navbar>}
       <AppShell.Main>
         {view === 'loading' && <section className="welcome"><Text c="dimmed">Loading Vigira…</Text></section>}
         {view === 'error' && <section className="auth-card"><Title order={2}>Vigira is unavailable</Title><Alert color="red" mt="md">{error}</Alert><Button mt="lg" onClick={() => { setView('loading'); setError(''); void loadView() }}>Try again</Button></section>}
@@ -151,7 +180,7 @@ function App() {
             <Button type="submit" loading={busy}>Log in</Button>
           </form>
         </section>}
-        {view === 'dashboard' && <Devices key={user?.id} displayName={user?.displayName ?? 'Administrator'} section={section} />}
+        {view === 'dashboard' && <>{error && <Alert color="red" mb="md" withCloseButton onClose={() => setError('')}>{error}</Alert>}<Devices key={user?.id} section={section} selectedId={selectedDeviceId} onSelect={(id) => { setSelectedDeviceId(id); setSection('monitoring') }} /></>}
       </AppShell.Main>
     </AppShell>
   </>

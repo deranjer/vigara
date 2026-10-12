@@ -30,3 +30,6 @@ body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--mantine
 }
 
 .sidebar > .mantine-ScrollArea-root { flex: 1; min-height: 0; }
+
+.sidebar-user { min-width: 0; flex: 1; }
+.device-row:focus-visible { outline: 2px solid var(--mantine-color-blue-6); outline-offset: -2px; }

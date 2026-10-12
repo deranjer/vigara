@@ -1,6 +1,6 @@
 # Web metric explorer
 
-The authenticated web app uses a Mantine AppShell with collapsible navigation, an expandable Monitoring menu, separate Devices and Backup history views, and a persisted light/dark preference.
+The authenticated web app uses a Mantine AppShell with collapsible navigation, separate top-level Devices, Monitoring, and Backup history views, an avatar/name/logout footer above server release information, and a persisted light/dark preference.
 
 Device history uses Mantine LineChart. Select up to five metric names; label variants remain separate lines (64 total series and 20,000 returned points maximum). Hover shows original values, units, labels and local timestamps. Mixed units automatically use independently normalized lines; this compares timing/shape, not absolute magnitude. Constant normalized series appear at 50. Single-unit series can use their real scale. Missing buckets remain gaps.
 
@@ -11,3 +11,5 @@ History API retains the legacy `range`/`metric` query. It additionally accepts p
 Network values are stored in bytes per second (`By/s`) but displayed as B/s, kB/s, MB/s, GB/s, kb/s, Mb/s or Gb/s. Units use decimal prefixes; bit units multiply bytes by eight. CPU cores in use is explicitly an estimate from total CPU-capacity percentage times reported logical CPU count. Disk totals are shown only when reported.
 
 `GET /api/version` reports the running server version/revision. Builds default to `dev`; release builds can set `-ldflags "-X main.version=1.2.3 -X main.revision=COMMIT"`. The sidebar checks the fixed public deranjer/vigara GitHub release endpoint with a timeout and five-minute cache, supports a manual recheck, and compares semantic versions. No release, development/uncomparable version and unavailable checks are distinct states.
+
+Devices lists inventory and basic CPU, memory, and disk stats. Monitoring lists per-device CPU, memory, and network rates. Clicking a row, its View monitoring button, or pressing Enter/Space on a focused row opens that device’s monitoring detail. The Monitoring sidebar item returns to the full overview. Device enrollment/settings remain separate feature work.

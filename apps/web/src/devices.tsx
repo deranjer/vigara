@@ -49,6 +49,11 @@ const metricLabels: Record<string, string> = {
 function prettyName(name: string) { return metricLabels[name] ?? name.replaceAll('_', ' ').replace(/\b\w/g, (part) => part.toUpperCase()) }
 function formatValue(value: number, unit: string, rateUnit: RateUnit = 'B/s') { return formatMetric(value, unit, rateUnit) }
 
+function summaryMetric(device: Device, name: string, rateUnit: RateUnit = 'B/s') {
+  const metrics = device.latest?.metrics?.filter((metric) => metric.name === name) ?? []
+  return metrics.length ? metrics.map((metric) => `${formatValue(metric.value, metric.unit, rateUnit)}${metric.labels && Object.keys(metric.labels).length ? ` (${Object.values(metric.labels).join(', ')})` : ''}`).join(' · ') : '—'
+}
+
 function labelValueForChart(key: string, value: string) { return key === 'container_id' ? value.slice(0, 12) : value }
 
 function toLocalInput(value: Date) { const local = new Date(value.getTime() - value.getTimezoneOffset() * 60_000); return local.toISOString().slice(0, 23) }
@@ -138,8 +143,8 @@ function BackupHistory({ refresh }: { refresh: number }) {
   </Card>
 }
 
-export function Devices({ displayName, section = 'devices' }: { displayName: string; section?: 'devices' | 'backups' }) {
-  const [devices, setDevices] = useState<Device[]>([]); const [selectedId, setSelectedId] = useState<string | null>(null); const [history, setHistory] = useState<History | null>(null); const [range, setRange] = useState('24h'); const [error, setError] = useState(''); const [historyError, setHistoryError] = useState(''); const [historyLoading, setHistoryLoading] = useState(false); const [loading, setLoading] = useState(true); const [offset, setOffset] = useState(0); const [total, setTotal] = useState(0); const [refresh, setRefresh] = useState(0); const [metricNames, setMetricNames] = useState<string[]>([]); const [normalized, setNormalized] = useState(false); const [rateUnit, setRateUnit] = useState<RateUnit>('MB/s')
+export function Devices({ section, selectedId, onSelect }: { section: 'devices' | 'monitoring' | 'backups'; selectedId: string | null; onSelect: (id: string | null) => void }) {
+  const [devices, setDevices] = useState<Device[]>([]); const [history, setHistory] = useState<History | null>(null); const [range, setRange] = useState('24h'); const [error, setError] = useState(''); const [historyError, setHistoryError] = useState(''); const [historyLoading, setHistoryLoading] = useState(false); const [loading, setLoading] = useState(true); const [offset, setOffset] = useState(0); const [total, setTotal] = useState(0); const [refresh, setRefresh] = useState(0); const [metricNames, setMetricNames] = useState<string[]>([]); const [normalized, setNormalized] = useState(false); const [rateUnit, setRateUnit] = useState<RateUnit>('MB/s')
   const [customStart, setCustomStart] = useState(''); const [customEnd, setCustomEnd] = useState(''); const [appliedInterval, setAppliedInterval] = useState<{ start: string; end: string } | null>(null); const [customError, setCustomError] = useState('')
   const initialMetric = useRef(true)
   const [zoomBase, setZoomBase] = useState<{ range: string; interval: { start: string; end: string } | null } | null>(null)
@@ -148,26 +153,26 @@ export function Devices({ displayName, section = 'devices' }: { displayName: str
   const latestMetrics = useMemo(() => selected?.latest?.metrics ?? [], [selected])
   const labelValue = (key: string, value: string) => key === 'container_id' ? selected?.latest?.dockerContainers?.find((container) => container.id === value)?.name || value.slice(0, 12) : value
 
-  useEffect(() => { let active = true; setLoading(true); void get<DevicePage>(`/api/inventory/devices?limit=100&offset=${offset}`).then((page) => { if (active) { setDevices(page.devices); setTotal(page.total); setSelectedId((current) => current && page.devices.some((item) => item.id === current) ? current : null) } }).catch((cause: unknown) => { if (active) setError(cause instanceof Error ? cause.message : 'Could not load devices.') }).finally(() => { if (active) setLoading(false) }); return () => { active = false } }, [offset, refresh])
+  useEffect(() => { let active = true; setLoading(true); void get<DevicePage>(`/api/inventory/devices?limit=100&offset=${offset}`).then((page) => { if (active) { setDevices(page.devices); setTotal(page.total) } }).catch((cause: unknown) => { if (active) setError(cause instanceof Error ? cause.message : 'Could not load devices.') }).finally(() => { if (active) setLoading(false) }); return () => { active = false } }, [offset, refresh])
   useEffect(() => { initialMetric.current = true; setZoomBase(null); setHistory(null); setHistoryError(''); setMetricNames([]); setCustomStart(''); setCustomEnd(''); setAppliedInterval(null) }, [selectedId])
-  useEffect(() => { if (section === 'backups') setSelectedId(null) }, [section])
   useEffect(() => { setAvailability(null); if (!selectedId) return; let active = true; void get<Availability>(`/api/devices/${encodeURIComponent(selectedId)}/availability`).then((value) => { if (active) setAvailability(value) }).catch(() => { /* Availability rules are optional until configured. */ }); return () => { active = false } }, [selectedId, refresh])
   useEffect(() => { if (!selectedId) return; let active = true; setHistoryLoading(true); setHistoryError(''); const query = new URLSearchParams()
     if (range === 'custom' && appliedInterval) { query.set('start', appliedInterval.start); query.set('end', appliedInterval.end) } else query.set('range', range === 'custom' ? '24h' : range)
     metricNames.slice(0, 5).forEach((name) => query.append('metrics', name))
     void get<History>(`/api/inventory/devices/${encodeURIComponent(selectedId)}/history?${query}`).then((data) => { if (active) { setHistory(data); if (initialMetric.current && data.metrics.length) { initialMetric.current = false; setMetricNames([data.metrics[0]!]) } } }).catch((cause: unknown) => { if (active) setHistoryError(cause instanceof Error ? cause.message : 'Could not load metric history.') }).finally(() => { if (active) setHistoryLoading(false) }); return () => { active = false } }, [selectedId, range, metricNames, appliedInterval, refresh])
 
-  function backToList() { setSelectedId(null); setHistory(null); setError('') }
+  function backToList() { onSelect(null); setHistory(null); setError('') }
+  function openMonitoring(id: string) { onSelect(id); setError('') }
   return <section className="devices-page">
     <Group justify="space-between" align="center" mb="xl">
 <div>
 <Text c="dimmed" size="sm" fw={600} tt="uppercase">Home infrastructure</Text>
-<Title order={1} mt={4}>{selected ? selected.name : section === 'backups' ? 'Backup history' : 'Devices'}</Title>
-<Text c="dimmed" mt={6}>{selected ? 'Latest check-in and recorded resource measurements.' : section === 'backups' ? 'Execution state and recent snapshots for configured backup policies.' : `Signed in as ${displayName}. Device health is based on agent check-ins and collection reports.`}</Text>
+<Title order={1} mt={4}>{selected ? selected.name : section === 'backups' ? 'Backup history' : section === 'monitoring' ? 'Monitoring' : 'Devices'}</Title>
+<Text c="dimmed" mt={6}>{selected ? 'Latest check-in and recorded resource measurements.' : section === 'backups' ? 'Execution state and recent snapshots for configured backup policies.' : section === 'monitoring' ? 'Compare current measurements across devices. Open a device to explore its history.' : 'Your enrolled and discovered devices, platform details, and basic health. View a device to open its monitoring page.'}</Text>
 </div>
 <Group>
 <Button variant="default" onClick={() => setRefresh((value) => value + 1)}>Refresh</Button>
-{selected && <Button variant="subtle" onClick={backToList}>← All devices</Button>}
+{selected && <Button variant="subtle" onClick={backToList}>← All monitoring</Button>}
 </Group>
 </Group>
     {error && <Alert color="red" mb="md" title="Unable to load information" onClose={() => setError('')} withCloseButton>{error}</Alert>}
@@ -291,11 +296,12 @@ export function Devices({ displayName, section = 'devices' }: { displayName: str
 <Table.Th>Platform</Table.Th>
 <Table.Th>Status</Table.Th>
 <Table.Th>Last check-in</Table.Th>
-<Table.Th>Latest measurements</Table.Th>
+{section === 'monitoring' ? <><Table.Th>CPU</Table.Th><Table.Th>Memory</Table.Th><Table.Th>Network receive / send</Table.Th></> : <Table.Th>Basic stats</Table.Th>}
 <Table.Th />
 </Table.Tr>
 </Table.Thead>
-<Table.Tbody>{devices.map((device) => <Table.Tr key={device.id} className="device-row">
+<Table.Tbody>{devices.map((device) => <Table.Tr key={device.id} className="device-row" onClick={() => openMonitoring(device.id)} onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); openMonitoring(device.id) } }} tabIndex={0} aria-label={`Open monitoring for ${device.name}`}>
+
 <Table.Td>
 <Text fw={600}>{device.name}</Text>
 <Text size="xs" c="dimmed">{device.platformId || device.id.slice(0, 8)}</Text>
@@ -308,9 +314,13 @@ export function Devices({ displayName, section = 'devices' }: { displayName: str
 <Text size="sm">{relativeLabel(device.lastSeenAt)}</Text>
 <Text size="xs" c="dimmed">{timeLabel(device.lastSeenAt)}</Text>
 </Table.Td>
-<Table.Td>{device.latest?.metrics?.length ? device.latest.metrics.slice(0, 2).map((metric, index) => <Text key={`${metric.name}-${index}`} size="sm">{prettyName(metric.name)}: {formatValue(metric.value, metric.unit)}</Text>) : <Text size="sm" c="dimmed">{device.latest ? 'No measurements reported' : 'No snapshot yet'}</Text>}</Table.Td>
+{section === 'monitoring' ? <>
+<Table.Td>{summaryMetric(device, 'cpu_used_percent')}</Table.Td>
+<Table.Td>{summaryMetric(device, 'memory_used_percent')}</Table.Td>
+<Table.Td><Text size="sm">↓ {summaryMetric(device, 'network_receive_bytes_per_second', 'MB/s')}</Text><Text size="sm">↑ {summaryMetric(device, 'network_send_bytes_per_second', 'MB/s')}</Text></Table.Td>
+</> : <Table.Td><Text size="sm">CPU: {summaryMetric(device, 'cpu_used_percent')} · Memory: {summaryMetric(device, 'memory_used_percent')}</Text><Text size="xs" c="dimmed">Disk total: {summaryMetric(device, 'filesystem_total_bytes')}</Text></Table.Td>}
 <Table.Td>
-<Button size="xs" variant="light" onClick={() => { setSelectedId(device.id); setError('') }} aria-label={`View ${device.name}`}>View</Button>
+<Button size="xs" variant="light" onClick={(event) => { event.stopPropagation(); openMonitoring(device.id) }} aria-label={`View ${device.name}`}>View monitoring</Button>
 </Table.Td>
 </Table.Tr>)}</Table.Tbody>
 </Table>
