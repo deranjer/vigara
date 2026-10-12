@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Alert, LoadingOverlay, Badge, Button, Card, Checkbox, Group, Loader, SegmentedControl, Select, SimpleGrid, Stack, Table, Text, TextInput, Title } from '@mantine/core'
+import { Alert, LoadingOverlay, Badge, Button, Card, Checkbox, Group, Loader, SegmentedControl, Select, SimpleGrid, Stack, Tabs, Table, Text, TextInput, Title } from '@mantine/core'
 import { LineChart } from '@mantine/charts'
 import { ReferenceArea } from 'recharts'
+import { DeviceInfo, DeviceSettings, MonitoringOverview } from './device-panels'
 import { chartRows, formatMetric, type MetricSeries, type RateUnit } from './metric-utils'
 
 type Metric = { name: string; value: number; unit: string; labels?: Record<string, string> }
 type DockerContainer = { id: string; name?: string; image?: string; state: string }
 type Snapshot = { observedAt?: string; host?: { os?: string; osVersion?: string; architecture?: string; agentVersion?: string; cpuModel?: string; logicalCpus?: number; totalMemoryBytes?: number; uptimeSeconds?: number }; metrics?: Metric[]; dockerContainers?: DockerContainer[]; errors?: { capability: string; message: string }[] }
-type Device = { id: string; name: string; platformId?: string | null; status: 'healthy' | 'stale' | 'failed' | 'unsupported'; agentId?: string | null; platform: string; architecture: string; agentVersion: string; capabilities: string[]; lastSeenAt?: string | null; latest?: Snapshot; telemetryObservedAt?: string | null; collectionErrors?: Snapshot['errors'] }
+export type Device = { id: string; name: string; platformId?: string | null; status: 'healthy' | 'stale' | 'failed' | 'unsupported'; agentId?: string | null; platform: string; architecture: string; agentVersion: string; capabilities: string[]; lastSeenAt?: string | null; latest?: Snapshot; telemetryObservedAt?: string | null; collectionErrors?: Snapshot['errors'] }
 type Point = { at: string; value: number | null; min?: number; max?: number; samples: number; resolutionSeconds?: number }
 type Series = { name: string; unit: string; labels: Record<string, string>; points: Point[] }
 type History = { range: string; windowStart: string; windowEnd: string; metrics: string[]; series: Series[]; resolutionSeconds: number; resolution: string }
@@ -15,7 +16,7 @@ type DevicePage = { devices: Device[]; total: number; offset: number; limit: num
 type Availability = { expectedAwake: boolean; maintenanceActive: boolean }
 type BackupProgress = { observedAt: string; phase: string; filesDone?: number; filesTotal?: number; bytesDone?: number; bytesTotal?: number; percentDone?: number }
 type BackupJob = { id: string; profileId: string; scheduledFor: string; status: string; executionStatus: string; outcome?: string; snapshotIds?: string[]; errorCode?: string; errorMessage?: string; progress?: BackupProgress }
-type BackupPolicy = { id: string; name: string; profileId: string }
+type BackupPolicy = { deviceId: string; id: string; name: string; profileId: string }
 
 async function get<T>(path: string): Promise<T> {
   const response = await fetch(path, { credentials: 'same-origin' })
@@ -49,7 +50,7 @@ const metricLabels: Record<string, string> = {
 function prettyName(name: string) { return metricLabels[name] ?? name.replaceAll('_', ' ').replace(/\b\w/g, (part) => part.toUpperCase()) }
 function formatValue(value: number, unit: string, rateUnit: RateUnit = 'B/s') { return formatMetric(value, unit, rateUnit) }
 
-function summaryMetric(device: Device, name: string, rateUnit: RateUnit = 'B/s') {
+export function summaryMetric(device: Device, name: string, rateUnit: RateUnit = 'B/s') {
   const metrics = device.latest?.metrics?.filter((metric) => metric.name === name) ?? []
   return metrics.length ? metrics.map((metric) => `${formatValue(metric.value, metric.unit, rateUnit)}${metric.labels && Object.keys(metric.labels).length ? ` (${Object.values(metric.labels).join(', ')})` : ''}`).join(' · ') : '—'
 }
@@ -83,7 +84,7 @@ function LineChartWrapper({ loading, series, history, normalized, onZoom, rateUn
 </Stack>
 }
 
-function BackupHistory({ refresh }: { refresh: number }) {
+function BackupHistory({ refresh, deviceId }: { refresh: number; deviceId?: string }) {
   const [rows, setRows] = useState<{ policy: BackupPolicy; jobs: BackupJob[] }[]>([])
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
@@ -91,8 +92,14 @@ function BackupHistory({ refresh }: { refresh: number }) {
     let active = true
     const load = async () => {
       try {
-        const policies = await get<BackupPolicy[]>('/api/backups/policies?limit=100')
-        const result = await Promise.all(policies.map(async (policy) => ({ policy, jobs: await get<BackupJob[]>(`/api/backups/policies/${encodeURIComponent(policy.id)}/history?limit=20`) })))
+        const policies: BackupPolicy[] = []
+        for (let offset = 0; ; offset += 100) {
+          const response = await fetch(`/api/backups/policies?limit=100&offset=${offset}`, { credentials: 'same-origin' })
+          if (!response.ok) throw new Error('Could not load backup policies.')
+          policies.push(...await response.json() as BackupPolicy[])
+          if (response.headers.get('X-Has-More') !== 'true') break
+        }
+        const result = await Promise.all(policies.filter((policy) => !deviceId || policy.deviceId === deviceId).map(async (policy) => ({ policy, jobs: await get<BackupJob[]>(`/api/backups/policies/${encodeURIComponent(policy.id)}/history?limit=20`) })))
         if (active) { setRows(result); setError('') }
       } catch (cause) { if (active) setError(cause instanceof Error ? cause.message : 'Could not load backup history.') }
       finally { if (active) setLoading(false) }
@@ -100,7 +107,7 @@ function BackupHistory({ refresh }: { refresh: number }) {
     void load()
     const timer = window.setInterval(() => { void load() }, 15_000)
     return () => { active = false; window.clearInterval(timer) }
-  }, [refresh])
+  }, [refresh, deviceId])
   return <Card withBorder radius="md" padding="lg" mb="lg">
     <Group justify="space-between" mb="md">
 <div>
@@ -112,7 +119,7 @@ function BackupHistory({ refresh }: { refresh: number }) {
     {error ? <Alert color="red" title="Backup history could not be loaded">{error}</Alert> : loading ? <Group>
 <Loader size="xs" />
 <Text size="sm" c="dimmed">Loading backup history…</Text>
-</Group> : rows.length === 0 ? <Text c="dimmed">No backup policies are configured.</Text> : <Stack gap="md">{rows.map(({ policy, jobs }) => <div key={policy.id}>
+</Group> : rows.length === 0 ? <Text c="dimmed">{deviceId ? 'No backup policies are configured for this device.' : 'No backup policies are configured.'}</Text> : <Stack gap="md">{rows.map(({ policy, jobs }) => <div key={policy.id}>
 <Group justify="space-between" mb="xs">
 <Text fw={600}>{policy.name}</Text>
 <Text size="xs" c="dimmed">Profile {policy.profileId}</Text>
@@ -144,38 +151,61 @@ function BackupHistory({ refresh }: { refresh: number }) {
 }
 
 export function Devices({ section, selectedId, onSelect }: { section: 'devices' | 'monitoring' | 'backups'; selectedId: string | null; onSelect: (id: string | null) => void }) {
-  const [devices, setDevices] = useState<Device[]>([]); const [history, setHistory] = useState<History | null>(null); const [range, setRange] = useState('24h'); const [error, setError] = useState(''); const [historyError, setHistoryError] = useState(''); const [historyLoading, setHistoryLoading] = useState(false); const [loading, setLoading] = useState(true); const [offset, setOffset] = useState(0); const [total, setTotal] = useState(0); const [refresh, setRefresh] = useState(0); const [metricNames, setMetricNames] = useState<string[]>([]); const [normalized, setNormalized] = useState(false); const [rateUnit, setRateUnit] = useState<RateUnit>('MB/s')
+  const [allDevices, setAllDevices] = useState<Device[]>([]);
+  const [detailTab, setDetailTab] = useState<string | null>('info'); const [history, setHistory] = useState<History | null>(null); const [range, setRange] = useState('24h'); const [error, setError] = useState(''); const [historyError, setHistoryError] = useState(''); const [historyLoading, setHistoryLoading] = useState(false); const [loading, setLoading] = useState(true); const [offset, setOffset] = useState(0); const [total, setTotal] = useState(0); const [refresh, setRefresh] = useState(0); const [metricNames, setMetricNames] = useState<string[]>([]); const [normalized, setNormalized] = useState(false); const [rateUnit, setRateUnit] = useState<RateUnit>('MB/s')
   const [customStart, setCustomStart] = useState(''); const [customEnd, setCustomEnd] = useState(''); const [appliedInterval, setAppliedInterval] = useState<{ start: string; end: string } | null>(null); const [customError, setCustomError] = useState('')
   const initialMetric = useRef(true)
   const [zoomBase, setZoomBase] = useState<{ range: string; interval: { start: string; end: string } | null } | null>(null)
   const [availability, setAvailability] = useState<Availability | null>(null)
-  const selected = devices.find((device) => device.id === selectedId) ?? null
+  const devices = allDevices.slice(offset, offset + 100)
+  const selected = allDevices.find((device) => device.id === selectedId) ?? null
   const latestMetrics = useMemo(() => selected?.latest?.metrics ?? [], [selected])
   const labelValue = (key: string, value: string) => key === 'container_id' ? selected?.latest?.dockerContainers?.find((container) => container.id === value)?.name || value.slice(0, 12) : value
 
-  useEffect(() => { let active = true; setLoading(true); void get<DevicePage>(`/api/inventory/devices?limit=100&offset=${offset}`).then((page) => { if (active) { setDevices(page.devices); setTotal(page.total) } }).catch((cause: unknown) => { if (active) setError(cause instanceof Error ? cause.message : 'Could not load devices.') }).finally(() => { if (active) setLoading(false) }); return () => { active = false } }, [offset, refresh])
-  useEffect(() => { initialMetric.current = true; setZoomBase(null); setHistory(null); setHistoryError(''); setMetricNames([]); setCustomStart(''); setCustomEnd(''); setAppliedInterval(null) }, [selectedId])
+  useEffect(() => {
+    let active = true
+    if (!allDevices.length) setLoading(true)
+    const load = async () => {
+      const result: Device[] = []
+      for (let pageOffset = 0; ; pageOffset += 100) {
+        const page = await get<DevicePage>(`/api/inventory/devices?limit=100&offset=${pageOffset}`)
+        result.push(...page.devices)
+        if (!page.devices.length || result.length >= page.total) break
+      }
+      if (active) { setAllDevices(result); setTotal(result.length); setError('') }
+    }
+    void load().catch((cause: unknown) => { if (active) setError(cause instanceof Error ? cause.message : 'Could not load devices.') }).finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
+    // Refresh deliberately preserves selection and tab drafts.
+  }, [refresh])
+  useEffect(() => {
+    if (section !== 'monitoring' || selectedId) return
+    const timer = window.setInterval(() => setRefresh((value) => value + 1), 30_000)
+    return () => window.clearInterval(timer)
+  }, [section, selectedId])
+  useEffect(() => { initialMetric.current = true; setZoomBase(null); setHistory(null); setHistoryError(''); setMetricNames([]); setCustomStart(''); setCustomEnd(''); setAppliedInterval(null); setRange('24h') }, [selectedId])
   useEffect(() => { setAvailability(null); if (!selectedId) return; let active = true; void get<Availability>(`/api/devices/${encodeURIComponent(selectedId)}/availability`).then((value) => { if (active) setAvailability(value) }).catch(() => { /* Availability rules are optional until configured. */ }); return () => { active = false } }, [selectedId, refresh])
-  useEffect(() => { if (!selectedId) return; let active = true; setHistoryLoading(true); setHistoryError(''); const query = new URLSearchParams()
+  useEffect(() => { if (!selectedId || detailTab !== 'monitoring') return; let active = true; setHistoryLoading(true); setHistoryError(''); const query = new URLSearchParams()
     if (range === 'custom' && appliedInterval) { query.set('start', appliedInterval.start); query.set('end', appliedInterval.end) } else query.set('range', range === 'custom' ? '24h' : range)
     metricNames.slice(0, 5).forEach((name) => query.append('metrics', name))
-    void get<History>(`/api/inventory/devices/${encodeURIComponent(selectedId)}/history?${query}`).then((data) => { if (active) { setHistory(data); if (initialMetric.current && data.metrics.length) { initialMetric.current = false; setMetricNames([data.metrics[0]!]) } } }).catch((cause: unknown) => { if (active) setHistoryError(cause instanceof Error ? cause.message : 'Could not load metric history.') }).finally(() => { if (active) setHistoryLoading(false) }); return () => { active = false } }, [selectedId, range, metricNames, appliedInterval, refresh])
+    void get<History>(`/api/inventory/devices/${encodeURIComponent(selectedId)}/history?${query}`).then((data) => { if (active) { setHistory(data); if (initialMetric.current && data.metrics.length) { initialMetric.current = false; setMetricNames([data.metrics[0]!]) } } }).catch((cause: unknown) => { if (active) setHistoryError(cause instanceof Error ? cause.message : 'Could not load metric history.') }).finally(() => { if (active) setHistoryLoading(false) }); return () => { active = false } }, [selectedId, detailTab, range, metricNames, appliedInterval, refresh])
 
   function backToList() { onSelect(null); setHistory(null); setError('') }
-  function openMonitoring(id: string) { onSelect(id); setError('') }
+  function openDevice(id: string, tab = 'info') { setDetailTab(tab); onSelect(id); setError('') }
   return <section className="devices-page">
     <Group justify="space-between" align="center" mb="xl">
 <div>
 <Text c="dimmed" size="sm" fw={600} tt="uppercase">Home infrastructure</Text>
 <Title order={1} mt={4}>{selected ? selected.name : section === 'backups' ? 'Backup history' : section === 'monitoring' ? 'Monitoring' : 'Devices'}</Title>
-<Text c="dimmed" mt={6}>{selected ? 'Latest check-in and recorded resource measurements.' : section === 'backups' ? 'Execution state and recent snapshots for configured backup policies.' : section === 'monitoring' ? 'Compare current measurements across devices. Open a device to explore its history.' : 'Your enrolled and discovered devices, platform details, and basic health. View a device to open its monitoring page.'}</Text>
+<Text c="dimmed" mt={6}>{selected ? 'Device information, monitoring, backups and settings.' : section === 'backups' ? 'Execution state and recent snapshots for configured backup policies.' : section === 'monitoring' ? 'Compare current measurements across devices. Open a device to explore its history.' : 'Your enrolled and discovered devices. Open a device for information, monitoring, backups and settings.'}</Text>
 </div>
 <Group>
 <Button variant="default" onClick={() => setRefresh((value) => value + 1)}>Refresh</Button>
-{selected && <Button variant="subtle" onClick={backToList}>← All monitoring</Button>}
+{selected && <Button variant="subtle" onClick={backToList}>← All devices</Button>}
 </Group>
 </Group>
     {error && <Alert color="red" mb="md" title="Unable to load information" onClose={() => setError('')} withCloseButton>{error}</Alert>}
+    {!selected && section === 'monitoring' && !loading && <MonitoringOverview devices={allDevices} refresh={refresh} onOpen={(id) => openDevice(id, 'monitoring')} />}
     {!selected && section === 'backups' ? <BackupHistory refresh={refresh} /> : loading ? <div className="device-empty">
 <Loader size="sm" />
 <Text c="dimmed" mt="sm">Loading devices…</Text>
@@ -194,21 +224,20 @@ export function Devices({ section, selectedId, onSelect }: { section: 'devices' 
 <Text size="xs" c="dimmed">{timeLabel(selected.lastSeenAt)}</Text>
 </div>
 </Group>
-        {selected.latest?.host && <div className="host-grid">{selected.latest.host.cpuModel && <div>
-<Text size="xs" c="dimmed">Processor</Text>
-<Text size="sm">{selected.latest.host.cpuModel} · {selected.latest.host.logicalCpus ?? '—'} cores</Text>
-</div>}{selected.latest.host.totalMemoryBytes !== undefined && selected.latest.host.totalMemoryBytes !== 0 && <div>
-<Text size="xs" c="dimmed">Memory</Text>
-<Text size="sm">{formatValue(selected.latest.host.totalMemoryBytes, 'By')}</Text>
-</div>}{selected.latest.host.uptimeSeconds !== undefined && <div>
-<Text size="xs" c="dimmed">Uptime</Text>
-<Text size="sm">{Math.floor(selected.latest.host.uptimeSeconds / 86400)} day{Math.floor(selected.latest.host.uptimeSeconds / 86400) === 1 ? '' : 's'}</Text>
-</div>}<div>
-<Text size="xs" c="dimmed">Telemetry observed</Text>
-<Text size="sm">{timeLabel(selected.telemetryObservedAt)}</Text>
-</div>
-</div>}
+
       </Card>
+      <Tabs value={detailTab} onChange={setDetailTab} keepMounted={false}>
+        <Tabs.List mb="lg">
+          <Tabs.Tab value="info">Device info</Tabs.Tab>
+          <Tabs.Tab value="monitoring">Monitoring</Tabs.Tab>
+          <Tabs.Tab value="backups">Backups</Tabs.Tab>
+          <Tabs.Tab value="settings">Device settings</Tabs.Tab>
+          {!!selected.latest?.dockerContainers?.length && <Tabs.Tab value="containers">Containers</Tabs.Tab>}
+        </Tabs.List>
+        <Tabs.Panel value="info"><DeviceInfo device={selected} /></Tabs.Panel>
+        <Tabs.Panel value="backups"><BackupHistory key={selected.id} refresh={refresh} deviceId={selected.id} /></Tabs.Panel>
+        <Tabs.Panel value="settings"><DeviceSettings key={selected.id} device={selected} onSaved={() => setRefresh((value) => value + 1)} /></Tabs.Panel>
+        <Tabs.Panel value="monitoring"><Stack gap="lg">
       {selected.collectionErrors && selected.collectionErrors.length > 0 && <Alert color="red" title="Collection errors">{selected.collectionErrors.map((item, index) => <Text key={`${item.capability}-${index}`} size="sm">{item.capability}: {item.message}</Text>)}</Alert>}
       <Card withBorder radius="md" padding="lg">
 <Group justify="space-between" mb="md">
@@ -221,37 +250,7 @@ export function Devices({ section, selectedId, onSelect }: { section: 'devices' 
 <Text size="sm" c="dimmed">{prettyName(metric.name)}{metric.labels && Object.keys(metric.labels).length ? ` · ${Object.entries(metric.labels).map(([key, value]) => labelValue(key, value)).join(', ')}` : ''}</Text>
 <Text fw={700} size="xl">{formatValue(metric.value, metric.unit, rateUnit)}</Text>
 </div>)}</SimpleGrid>}{selected.latest?.host?.logicalCpus && latestMetrics.find((metric) => metric.name === 'cpu_used_percent') && <div className="cpu-estimate"><Text size="sm" c="dimmed">CPU in use (estimated)</Text><Text fw={700} size="lg">{((latestMetrics.find((metric) => metric.name === 'cpu_used_percent')!.value * selected.latest.host.logicalCpus) / 100).toFixed(2)} of {selected.latest.host.logicalCpus} logical cores</Text><Text size="xs" c="dimmed">Derived from total CPU capacity percent × logical CPU count.</Text></div>}</Card>
-      {selected.latest?.dockerContainers && selected.latest.dockerContainers.length > 0 && <Card withBorder radius="md" padding="lg">
-<Group justify="space-between" mb="md">
-<div>
-<Title order={3}>Docker containers</Title>
-<Text size="sm" c="dimmed">Containers from the latest Docker collection</Text>
-</div>
-<Badge variant="light">{selected.latest.dockerContainers.length}</Badge>
-</Group>
-<Table.ScrollContainer minWidth={520}>
-<Table>
-<Table.Thead>
-<Table.Tr>
-<Table.Th>Name</Table.Th>
-<Table.Th>Image</Table.Th>
-<Table.Th>State</Table.Th>
-<Table.Th>Container ID</Table.Th>
-</Table.Tr>
-</Table.Thead>
-<Table.Tbody>{selected.latest.dockerContainers.map((container) => <Table.Tr key={container.id}>
-<Table.Td>{container.name || '—'}</Table.Td>
-<Table.Td>{container.image || '—'}</Table.Td>
-<Table.Td>
-<Badge size="sm" variant="light" color={container.state === 'running' ? 'green' : 'gray'}>{container.state}</Badge>
-</Table.Td>
-<Table.Td>
-<Text size="xs" ff="monospace">{container.id.slice(0, 12)}</Text>
-</Table.Td>
-</Table.Tr>)}</Table.Tbody>
-</Table>
-</Table.ScrollContainer>
-</Card>}
+
       <Card withBorder radius="md" padding="lg">
 <Group justify="space-between" align="flex-start" mb="md">
 <div>
@@ -282,11 +281,44 @@ export function Devices({ section, selectedId, onSelect }: { section: 'devices' 
 </Checkbox.Group>{history.series.length > 64 && <Alert color="yellow" mt="sm">More than 64 label variants match. Select fewer metrics to keep the chart readable.</Alert>}<div className="chart-frame">
 <LineChartWrapper loading={historyLoading} series={history.series.slice(0,64)} range={range} history={history} normalized={normalized} onZoom={(start, end) => { if (!zoomBase) setZoomBase({ range, interval: appliedInterval }); setCustomStart(toLocalInput(start)); setCustomEnd(toLocalInput(end)); setAppliedInterval({ start: start.toISOString(), end: end.toISOString() }); setCustomError(''); setRange('custom') }} rateUnit={rateUnit} />
 </div>{range === 'custom' && <Button size="xs" variant="default" mt="sm" onClick={() => { setCustomStart(zoomBase?.interval ? toLocalInput(new Date(zoomBase.interval.start)) : ''); setCustomEnd(zoomBase?.interval ? toLocalInput(new Date(zoomBase.interval.end)) : ''); setAppliedInterval(zoomBase?.interval ?? null); setRange(zoomBase?.range ?? '24h'); setZoomBase(null); setCustomError('') }}>Reset zoom</Button>}</>}</Card>
+        </Stack></Tabs.Panel>
+        <Tabs.Panel value="containers">      {selected.latest?.dockerContainers && selected.latest.dockerContainers.length > 0 && <Card withBorder radius="md" padding="lg">
+<Group justify="space-between" mb="md">
+<div>
+<Title order={3}>Docker containers</Title>
+<Text size="sm" c="dimmed">Containers from the latest Docker collection</Text>
+</div>
+<Badge variant="light">{selected.latest.dockerContainers.length}</Badge>
+</Group>
+<Table.ScrollContainer minWidth={520}>
+<Table>
+<Table.Thead>
+<Table.Tr>
+<Table.Th>Name</Table.Th>
+<Table.Th>Image</Table.Th>
+<Table.Th>State</Table.Th>
+<Table.Th>Container ID</Table.Th>
+</Table.Tr>
+</Table.Thead>
+<Table.Tbody>{selected.latest.dockerContainers.map((container) => <Table.Tr key={container.id}>
+<Table.Td>{container.name || '—'}</Table.Td>
+<Table.Td>{container.image || '—'}</Table.Td>
+<Table.Td>
+<Badge size="sm" variant="light" color={container.state === 'running' ? 'green' : 'gray'}>{container.state}</Badge>
+</Table.Td>
+<Table.Td>
+<Text size="xs" ff="monospace">{container.id.slice(0, 12)}</Text>
+</Table.Td>
+</Table.Tr>)}</Table.Tbody>
+</Table>
+</Table.ScrollContainer>
+</Card>}<Text size="sm" c="dimmed">Compose stack grouping will appear when stack inventory is available from the server.</Text></Tabs.Panel>
+      </Tabs>
     </Stack> : devices.length === 0 ? <div className="device-empty">
 <Text fw={600}>No devices yet</Text>
 <Text c="dimmed" size="sm" mt={6}>Enrolled agents and discovered devices will appear here.</Text>
 </div> : <>
-      <Group gap="xs" mb="md">{(['healthy', 'stale', 'failed', 'unsupported'] as const).map((status) => <Badge key={status} color={statusColor[status]} variant="light">{devices.filter((device) => device.status === status).length} {statusLabel[status]}</Badge>)}</Group>
+      <Group gap="xs" mb="md">{(['healthy', 'stale', 'failed', 'unsupported'] as const).map((status) => <Badge key={status} color={statusColor[status]} variant="light">{allDevices.filter((device) => device.status === status).length} {statusLabel[status]}</Badge>)}</Group>
       <Card withBorder radius="md" padding={0} className="inventory-card">
 <div className="table-scroll">
 <Table highlightOnHover verticalSpacing="md" horizontalSpacing="lg">
@@ -300,7 +332,7 @@ export function Devices({ section, selectedId, onSelect }: { section: 'devices' 
 <Table.Th />
 </Table.Tr>
 </Table.Thead>
-<Table.Tbody>{devices.map((device) => <Table.Tr key={device.id} className="device-row" onClick={() => openMonitoring(device.id)} onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); openMonitoring(device.id) } }} tabIndex={0} aria-label={`Open monitoring for ${device.name}`}>
+<Table.Tbody>{devices.map((device) => <Table.Tr key={device.id} className="device-row" onClick={() => openDevice(device.id, section === 'monitoring' ? 'monitoring' : 'info')} onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); openDevice(device.id, section === 'monitoring' ? 'monitoring' : 'info') } }} tabIndex={0} aria-label={`Open device ${device.name}`}>
 
 <Table.Td>
 <Text fw={600}>{device.name}</Text>
@@ -320,7 +352,7 @@ export function Devices({ section, selectedId, onSelect }: { section: 'devices' 
 <Table.Td><Text size="sm">↓ {summaryMetric(device, 'network_receive_bytes_per_second', 'MB/s')}</Text><Text size="sm">↑ {summaryMetric(device, 'network_send_bytes_per_second', 'MB/s')}</Text></Table.Td>
 </> : <Table.Td><Text size="sm">CPU: {summaryMetric(device, 'cpu_used_percent')} · Memory: {summaryMetric(device, 'memory_used_percent')}</Text><Text size="xs" c="dimmed">Disk total: {summaryMetric(device, 'filesystem_total_bytes')}</Text></Table.Td>}
 <Table.Td>
-<Button size="xs" variant="light" onClick={(event) => { event.stopPropagation(); openMonitoring(device.id) }} aria-label={`View ${device.name}`}>View monitoring</Button>
+<Button size="xs" variant="light" onClick={(event) => { event.stopPropagation(); openDevice(device.id, section === 'monitoring' ? 'monitoring' : 'info') }} aria-label={`View ${device.name}`}>View device</Button>
 </Table.Td>
 </Table.Tr>)}</Table.Tbody>
 </Table>

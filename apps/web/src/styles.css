@@ -39,3 +39,4 @@ body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--mantine
 .inventory-card th:first-child { min-width: 210px; }
 .inventory-card .mantine-Badge-root { flex-shrink: 0; }
 .inventory-card .mantine-Badge-root { width: max-content; }
+.settings-fields { border: 0; padding: 0; margin: 0; min-width: 0; }

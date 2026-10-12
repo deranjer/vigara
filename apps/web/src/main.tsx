@@ -180,7 +180,7 @@ function App() {
             <Button type="submit" loading={busy}>Log in</Button>
           </form>
         </section>}
-        {view === 'dashboard' && <>{error && <Alert color="red" mb="md" withCloseButton onClose={() => setError('')}>{error}</Alert>}<Devices key={user?.id} section={section} selectedId={selectedDeviceId} onSelect={(id) => { setSelectedDeviceId(id); setSection('monitoring') }} /></>}
+        {view === 'dashboard' && <>{error && <Alert color="red" mb="md" withCloseButton onClose={() => setError('')}>{error}</Alert>}<Devices key={user?.id} section={section} selectedId={selectedDeviceId} onSelect={(id) => { setSelectedDeviceId(id); if (id) setSection('devices') }} /></>}
       </AppShell.Main>
     </AppShell>
   </>
