@@ -1,0 +1,24 @@
+{
+  "observedAt": "2026-10-13T16:30:00Z",
+  "cpuStatus": "available",
+  "cpu": {
+    "vendor": "GenuineIntel",
+    "model": "12th Gen Intel(R) Core(TM) i7-12700K",
+    "physicalPackages": 1,
+    "physicalCores": 12,
+    "logicalThreads": 20
+  },
+  "gpuStatus": "available",
+  "gpus": [
+    { "vendor": "NVIDIA", "model": "PCI device 10de:2684", "vramBytes": 12884901888 }
+  ],
+  "memoryStatus": "unsupported",
+  "memoryModules": [],
+  "boardStatus": "available",
+  "motherboard": { "manufacturer": "Example Systems", "model": "Demo Board" },
+  "firmware": { "manufacturer": "Example Firmware", "version": "1.4.2", "releaseDate": "2025-05-20" },
+  "diskStatus": "available",
+  "disks": [
+    { "model": "Example NVMe SSD", "capacityBytes": 2000398934016, "type": "SSD" }
+  ]
+}

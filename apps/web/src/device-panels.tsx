@@ -16,9 +16,11 @@ const date = (value?: string | null) => value ? new Date(value).toLocaleString()
 
 export function DeviceInfo({ device }: { device: Device }) {
   const host = device.latest?.host
+  const hardware = host?.hardwareInventory
   const fields = [
     ['Processor', host?.cpuModel || 'Not reported'],
     ['Logical CPUs', host?.logicalCpus ? String(host.logicalCpus) : 'Not reported'],
+    ['CPU topology', hardware?.cpuStatus === 'available' || hardware?.cpuStatus === 'partial' ? `${hardware.cpu.physicalPackages || '—'} packages · ${hardware.cpu.physicalCores || '—'} cores · ${hardware.cpu.logicalThreads || '—'} threads` : hardware?.cpuStatus ?? 'Not reported'],
     ['Installed memory', host?.totalMemoryBytes ? formatMetric(host.totalMemoryBytes, 'By') : 'Not reported'],
     ['Total disk space', summaryMetric(device, 'filesystem_total_bytes')],
     ['Operating system', [host?.os || device.platform, host?.osVersion].filter(Boolean).join(' ') || 'Not reported'],
@@ -27,10 +29,16 @@ export function DeviceInfo({ device }: { device: Device }) {
     ['Uptime at observation', host?.uptimeSeconds === undefined ? 'Not reported' : `${Math.floor(host.uptimeSeconds / 86400)} days, ${Math.floor(host.uptimeSeconds / 3600) % 24} hours`],
   ]
   return <Stack>
-    <Card withBorder padding="lg"><Title order={3} mb="xs">Hardware and system</Title><Text size="sm" c="dimmed" mb="lg">{device.telemetryObservedAt ? `Reported ${date(device.telemetryObservedAt)}. These details describe the latest agent snapshot.` : 'No hardware snapshot has been reported for this device.'}</Text><SimpleGrid cols={{base: 1, sm: 2, lg: 3}}>{fields.map(([label, value]) => <div key={label}><Text size="xs" c="dimmed">{label}</Text><Text fw={500}>{value}</Text></div>)}</SimpleGrid></Card>
+    <Card withBorder padding="lg"><Title order={3} mb="xs">Hardware and system</Title><Text size="sm" c="dimmed" mb="lg">{hardware?.observedAt ? `Hardware inventory observed ${date(hardware.observedAt)}.` : device.telemetryObservedAt ? `Reported ${date(device.telemetryObservedAt)}. These details describe the latest agent snapshot.` : 'No hardware snapshot has been reported for this device.'}</Text><SimpleGrid cols={{base: 1, sm: 2, lg: 3}}>{fields.map(([label, value]) => <div key={label}><Text size="xs" c="dimmed">{label}</Text><Text fw={500}>{value}</Text></div>)}</SimpleGrid></Card>
+    {hardware && <Card withBorder padding="lg"><Title order={3} mb="xs">Detailed hardware inventory</Title><Text size="sm" c="dimmed" mb="md">Collection status is reported per section. Hardware details are separate from monitoring measurements.</Text><SimpleGrid cols={{base: 1, sm: 2, lg: 3}}>
+      <div><Text size="xs" c="dimmed">Processor · {hardware.cpuStatus}</Text><Text fw={500}>{[hardware.cpu.vendor, hardware.cpu.model].filter(Boolean).join(' · ') || 'No processor details reported'}</Text><Text size="sm">{hardware.cpu.physicalPackages || '—'} packages · {hardware.cpu.physicalCores || '—'} cores · {hardware.cpu.logicalThreads || '—'} threads</Text></div>
+      <div><Text size="xs" c="dimmed">Graphics · {hardware.gpuStatus}</Text>{hardware.gpus.length ? hardware.gpus.map((gpu, index) => <Text fw={500} key={index}>{[gpu.vendor, gpu.model].filter(Boolean).join(' · ') || 'Graphics device'}{gpu.vramBytes ? ` · ${formatMetric(gpu.vramBytes, 'By')}` : ''}</Text>) : <Text fw={500}>{hardware.gpuStatus === 'unsupported' ? 'Not supported on this platform' : 'No graphics details reported'}</Text>}</div>
+      <div><Text size="xs" c="dimmed">Memory modules · {hardware.memoryStatus}</Text>{hardware.memoryModules.length ? hardware.memoryModules.map((module, index) => <Text fw={500} key={index}>{[module.capacityBytes ? formatMetric(module.capacityBytes, 'By') : '', module.type, module.speedMHz ? `${module.speedMHz} MHz` : ''].filter(Boolean).join(' · ') || 'Module details unavailable'}</Text>) : <Text fw={500}>{hardware.memoryStatus === 'unsupported' ? 'Not supported on this platform' : 'No module details reported'}</Text>}</div>
+      <div><Text size="xs" c="dimmed">Motherboard · firmware · {hardware.boardStatus}</Text><Text fw={500}>{[hardware.motherboard.manufacturer, hardware.motherboard.model].filter(Boolean).join(' · ') || 'Motherboard not reported'}</Text><Text size="sm">{[hardware.firmware.manufacturer, hardware.firmware.version, hardware.firmware.releaseDate].filter(Boolean).join(' · ') || 'Firmware not reported'}</Text></div>
+      <div><Text size="xs" c="dimmed">Physical disks · {hardware.diskStatus}</Text>{hardware.disks.length ? hardware.disks.map((disk, index) => <Text fw={500} key={index}>{[disk.model, disk.capacityBytes ? formatMetric(disk.capacityBytes, 'By') : '', disk.type].filter(Boolean).join(' · ') || 'Disk details unavailable'}</Text>) : <Text fw={500}>{hardware.diskStatus === 'unsupported' ? 'Not supported on this platform' : 'No disk details reported'}</Text>}</div>
+    </SimpleGrid></Card>}
     <Card withBorder padding="lg"><Title order={3} mb="md">Device identity and capabilities</Title><Text size="sm">Device ID: {device.id}</Text><Text size="sm">Agent ID: {device.agentId || 'No enrolled agent'}</Text><Text size="sm" mb="md">Last check-in: {date(device.lastSeenAt)}</Text><Group gap="xs">{device.capabilities.length ? device.capabilities.map((capability) => <Badge key={capability} variant="light">{capability}</Badge>) : <Text size="sm" c="dimmed">No agent capabilities reported.</Text>}</Group></Card>
     {!!device.collectionErrors?.length && <Alert color="red" title="Collection issues">{device.collectionErrors.map((item, index) => <Text size="sm" key={index}>{item.capability}: {item.message}</Text>)}</Alert>}
-    <Text size="sm" c="dimmed">GPU, memory module, motherboard and firmware details are not collected yet.</Text>
   </Stack>
 }
 

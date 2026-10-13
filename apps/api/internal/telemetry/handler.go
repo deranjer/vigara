@@ -149,6 +149,14 @@ func validate(s protocol.TelemetrySnapshot, agentID string, now time.Time) error
 	if s.Host.OS == "" || len(s.Host.OS) > 64 || s.Host.Architecture == "" || len(s.Host.Architecture) > 64 || s.Host.AgentVersion == "" || len(s.Host.AgentVersion) > 64 || len(s.Host.OSVersion) > 256 || len(s.Host.CPUModel) > 256 || s.Host.LogicalCPUs < 0 {
 		return errors.New("invalid host summary")
 	}
+	if s.HardwareInventory != nil {
+		if !s.HardwareInventory.ObservedAt.Equal(s.ObservedAt) {
+			return errors.New("hardware inventory observation time must match snapshot")
+		}
+		if err := validateHardwareInventory(*s.HardwareInventory); err != nil {
+			return err
+		}
+	}
 	if len(s.Metrics) > 512 || len(s.Capabilities) > 128 || len(s.Errors) > 128 {
 		return errors.New("snapshot exceeds item limits")
 	}
@@ -218,6 +226,43 @@ func validate(s protocol.TelemetrySnapshot, agentID string, now time.Time) error
 			if key == "" || len(key) > 64 || len(value) > 256 {
 				return errors.New("invalid metric label")
 			}
+		}
+	}
+	return nil
+}
+
+func validateHardwareInventory(h protocol.HardwareInventory) error {
+	if h.ObservedAt.IsZero() {
+		return errors.New("hardware inventory requires an observation time")
+	}
+	validStatus := func(status string) bool {
+		return status == "available" || status == "partial" || status == "unsupported" || status == "unavailable"
+	}
+	if !validStatus(h.CPUStatus) || !validStatus(h.GPUStatus) || !validStatus(h.MemoryStatus) || !validStatus(h.BoardStatus) || !validStatus(h.DiskStatus) {
+		return errors.New("invalid hardware inventory status")
+	}
+	if h.CPU.PhysicalPackages < 0 || h.CPU.PhysicalPackages > 256 || h.CPU.PhysicalCores < 0 || h.CPU.PhysicalCores > 4096 || h.CPU.LogicalThreads < 0 || h.CPU.LogicalThreads > 8192 || len(h.CPU.Vendor) > 128 || len(h.CPU.Model) > 256 {
+		return errors.New("invalid hardware CPU inventory")
+	}
+	if len(h.GPUs) > 8 || len(h.MemoryModules) > 64 || len(h.Disks) > 32 {
+		return errors.New("hardware inventory exceeds item limits")
+	}
+	for _, g := range h.GPUs {
+		if len(g.Vendor) > 128 || len(g.Model) > 256 {
+			return errors.New("invalid GPU inventory")
+		}
+	}
+	for _, m := range h.MemoryModules {
+		if len(m.Type) > 64 || m.SpeedMHz > 100000 {
+			return errors.New("invalid memory module inventory")
+		}
+	}
+	if len(h.Motherboard.Manufacturer) > 128 || len(h.Motherboard.Model) > 256 || len(h.Firmware.Manufacturer) > 128 || len(h.Firmware.Version) > 128 || len(h.Firmware.ReleaseDate) > 32 {
+		return errors.New("invalid motherboard or firmware inventory")
+	}
+	for _, d := range h.Disks {
+		if len(d.Model) > 256 || len(d.Type) > 64 {
+			return errors.New("invalid disk inventory")
 		}
 	}
 	return nil

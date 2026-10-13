@@ -61,6 +61,12 @@ func TestCollectReturnsBoundedFiniteMeasurements(t *testing.T) {
 	if snapshot.ObservedAt.IsZero() || snapshot.Host.OS == "" || snapshot.Host.Architecture == "" {
 		t.Fatalf("missing observation or host identity: %+v", snapshot)
 	}
+	if snapshot.HardwareInventory == nil || snapshot.HardwareInventory.ObservedAt.IsZero() || snapshot.HardwareInventory.CPUStatus == "" || snapshot.HardwareInventory.GPUStatus == "" || snapshot.HardwareInventory.MemoryStatus == "" || snapshot.HardwareInventory.BoardStatus == "" || snapshot.HardwareInventory.DiskStatus == "" {
+		t.Fatalf("hardware inventory must report an observation and explicit section statuses: %+v", snapshot.HardwareInventory)
+	}
+	if len(snapshot.HardwareInventory.GPUs) > 8 || len(snapshot.HardwareInventory.MemoryModules) > 64 || len(snapshot.HardwareInventory.Disks) > 32 {
+		t.Fatalf("hardware inventory exceeded item bounds: %+v", snapshot.HardwareInventory)
+	}
 	if len(snapshot.Metrics) > 512 || len(snapshot.Errors) > 128 || len(snapshot.Capabilities) > 128 {
 		t.Fatalf("collector exceeded wire bounds: metrics=%d errors=%d capabilities=%d", len(snapshot.Metrics), len(snapshot.Errors), len(snapshot.Capabilities))
 	}
