@@ -74,3 +74,29 @@ an explicit scoped permission grant. The agent refuses jobs it cannot support.
 When choosing a custom `--config` path, place it in a dedicated private
 directory that the service account can access; the agent secures newly created
 state directories and always protects the credential file itself.
+
+## Downloading configured client bundles
+
+The Devices page offers Windows x64, Linux x64, and Linux ARM64 bundles when
+the server has verified release artifacts. Build them from the repository root
+and copy the output directory to a private, operator-managed location readable
+by the API process:
+
+```sh
+python scripts/package_agent_releases.py 0.1.0 ./agent-releases
+```
+
+Set `VIGIRA_AGENT_RELEASE_DIR` to that directory and `VIGIRA_PUBLIC_URL` to the
+reachable HTTPS base URL of this Vigira instance (for example
+`https://vigira.example`). The directory must contain the generated
+`manifest.json` and fixed artifact filenames. The API verifies each SHA-256
+digest on availability checks and downloads. Missing or invalid artifacts are
+shown as unavailable; the server does not build binaries during downloads.
+
+Authenticated bundle creation issues a single-use enrollment token that expires
+after 30 minutes. The archive contains a bootstrap file, so handle it like a
+secret. Run its installer on the target device; after successful enrollment the
+installer removes the extracted bootstrap file and the agent stores its
+per-device credential in protected state. Canceling a waiting enrollment
+revokes its token. Feature selection limits server-side capabilities; it does
+not install or enable local modules.

@@ -3,11 +3,12 @@ import { Alert, LoadingOverlay, Badge, Button, Card, Checkbox, Group, Loader, Se
 import { LineChart } from '@mantine/charts'
 import { ReferenceArea } from 'recharts'
 import { DeviceInfo, DeviceSettings, MonitoringOverview } from './device-panels'
+import { AddDevice } from './add-device'
 import { chartRows, formatMetric, type MetricSeries, type RateUnit } from './metric-utils'
 
 type Metric = { name: string; value: number; unit: string; labels?: Record<string, string> }
 type DockerContainer = { id: string; name?: string; image?: string; state: string }
-type Snapshot = { observedAt?: string; host?: { os?: string; osVersion?: string; architecture?: string; agentVersion?: string; cpuModel?: string; logicalCpus?: number; totalMemoryBytes?: number; uptimeSeconds?: number }; metrics?: Metric[]; dockerContainers?: DockerContainer[]; errors?: { capability: string; message: string }[] }
+type Snapshot = { observedAt?: string; host?: { os?: string; osVersion?: string; architecture?: string; agentVersion?: string; cpuModel?: string; logicalCpus?: number; totalMemoryBytes?: number; uptimeSeconds?: number; hardwareInventory?: { observedAt?: string; cpuStatus?: string; cpu?: unknown; gpuStatus?: string; gpus?: unknown[]; memoryStatus?: string; memoryModules?: unknown[]; boardStatus?: string; motherboard?: unknown; firmware?: unknown; diskStatus?: string; disks?: unknown[] } }; metrics?: Metric[]; dockerContainers?: DockerContainer[]; errors?: { capability: string; message: string }[] }
 export type Device = { id: string; name: string; platformId?: string | null; status: 'healthy' | 'stale' | 'failed' | 'unsupported'; agentId?: string | null; platform: string; architecture: string; agentVersion: string; capabilities: string[]; lastSeenAt?: string | null; latest?: Snapshot; telemetryObservedAt?: string | null; collectionErrors?: Snapshot['errors'] }
 type Point = { at: string; value: number | null; min?: number; max?: number; samples: number; resolutionSeconds?: number }
 type Series = { name: string; unit: string; labels: Record<string, string>; points: Point[] }
@@ -151,6 +152,7 @@ function BackupHistory({ refresh, deviceId }: { refresh: number; deviceId?: stri
 }
 
 export function Devices({ section, selectedId, onSelect }: { section: 'devices' | 'monitoring' | 'backups'; selectedId: string | null; onSelect: (id: string | null) => void }) {
+  const [addDeviceOpen, setAddDeviceOpen] = useState(false)
   const [allDevices, setAllDevices] = useState<Device[]>([]);
   const [detailTab, setDetailTab] = useState<string | null>('info'); const [history, setHistory] = useState<History | null>(null); const [range, setRange] = useState('24h'); const [error, setError] = useState(''); const [historyError, setHistoryError] = useState(''); const [historyLoading, setHistoryLoading] = useState(false); const [loading, setLoading] = useState(true); const [offset, setOffset] = useState(0); const [total, setTotal] = useState(0); const [refresh, setRefresh] = useState(0); const [metricNames, setMetricNames] = useState<string[]>([]); const [normalized, setNormalized] = useState(false); const [rateUnit, setRateUnit] = useState<RateUnit>('MB/s')
   const [customStart, setCustomStart] = useState(''); const [customEnd, setCustomEnd] = useState(''); const [appliedInterval, setAppliedInterval] = useState<{ start: string; end: string } | null>(null); const [customError, setCustomError] = useState('')
@@ -200,6 +202,7 @@ export function Devices({ section, selectedId, onSelect }: { section: 'devices' 
 <Text c="dimmed" mt={6}>{selected ? 'Device information, monitoring, backups and settings.' : section === 'backups' ? 'Execution state and recent snapshots for configured backup policies.' : section === 'monitoring' ? 'Compare current measurements across devices. Open a device to explore its history.' : 'Your enrolled and discovered devices. Open a device for information, monitoring, backups and settings.'}</Text>
 </div>
 <Group>
+{!selected && section === 'devices' && <Button onClick={() => setAddDeviceOpen(true)}>Add device</Button>}
 <Button variant="default" onClick={() => setRefresh((value) => value + 1)}>Refresh</Button>
 {selected && <Button variant="subtle" onClick={backToList}>← All devices</Button>}
 </Group>
@@ -366,5 +369,6 @@ export function Devices({ section, selectedId, onSelect }: { section: 'devices' 
 </Group>
 </Group>
     </>}
+    <AddDevice opened={addDeviceOpen} onClose={() => setAddDeviceOpen(false)} />
   </section>
 }

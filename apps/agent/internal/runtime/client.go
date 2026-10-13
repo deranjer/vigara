@@ -25,7 +25,8 @@ import (
 	"github.com/deranjer/vigara/internal/restic"
 )
 
-const AgentVersion = "0.1.0"
+var AgentVersion = "0.1.0"
+
 const MaxJobTimeout = 7 * 24 * time.Hour
 
 type Client struct {
