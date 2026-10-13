@@ -25,7 +25,7 @@ export function AddDevice({ opened, onClose }: Props) {
   }, [opened])
 
   useEffect(() => {
-    if (!session || status === 'enrolled' || status === 'canceled' || status === 'expired') return
+    if (!opened || !session || status === 'enrolled' || status === 'canceled' || status === 'expired') return
     let active = true
     const poll = async () => {
       try {
@@ -36,7 +36,7 @@ export function AddDevice({ opened, onClose }: Props) {
     void poll()
     const timer = window.setInterval(() => { void poll() }, 3000)
     return () => { active = false; window.clearInterval(timer) }
-  }, [session, status])
+  }, [opened, session, status])
 
   async function createBundle() {
     setBusy(true); setError('')
@@ -47,7 +47,7 @@ export function AddDevice({ opened, onClose }: Props) {
       const blob = await response.blob()
       const href = URL.createObjectURL(blob)
       const link = document.createElement('a'); link.href = href; link.download = `vigira-agent-${target}.zip`; link.click()
-      URL.revokeObjectURL(href)
+      window.setTimeout(() => URL.revokeObjectURL(href), 60_000)
       setSession(sessionId); setStatus('waiting')
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not prepare the bundle.') }
     finally { setBusy(false) }
@@ -60,7 +60,12 @@ export function AddDevice({ opened, onClose }: Props) {
     else setError('This enrollment has already finished or expired.')
   }
 
-  return <Modal opened={opened} onClose={onClose} title="Add device" size="md">
+  function close() {
+    if (['enrolled', 'canceled', 'expired'].includes(status)) { setSession(''); setStatus(''); setName(''); setBackupFeature(false) }
+    onClose()
+  }
+
+  return <Modal opened={opened} onClose={close} title="Add device" size="md">
     <Stack>
       {error && <Alert color="red" title="Could not prepare device">{error}</Alert>}
       {availability.serverUrl ? <Text size="sm">Agents will connect to <b>{availability.serverUrl}</b>.</Text> : <Alert color="yellow">No reachable public HTTPS server URL is configured.</Alert>}
@@ -75,8 +80,8 @@ export function AddDevice({ opened, onClose }: Props) {
       <Text size="sm" c="dimmed">Telemetry and inventory are included by the standard agent. Bundle selection never installs or enables privileged local modules.</Text>
       {status && <Alert color={status === 'enrolled' ? 'green' : status === 'waiting' ? 'blue' : 'gray'} title={`Enrollment ${status}`}>{status === 'waiting' ? <>Extract the bundle on the device and run <code>{target?.startsWith('linux-') ? 'sh install.sh' : 'install.ps1'}</code> as an administrator. This one-use enrollment expires after 30 minutes.</> : status === 'enrolled' ? 'The device has enrolled and will appear in the inventory.' : status === 'canceled' ? 'The enrollment was canceled.' : 'The enrollment expired.'}</Alert>}
       <Group justify="space-between">
-        {session && status === 'waiting' ? <Button variant="default" onClick={() => void cancel()}>Cancel enrollment</Button> : <Button variant="default" onClick={onClose}>Close</Button>}
-        {!session && <Button loading={busy} disabled={!target || !name.trim() || !availability.targets.includes(target)} onClick={() => void createBundle()}>Download bundle</Button>}
+        {session && status === 'waiting' ? <Button variant="default" onClick={() => void cancel()}>Cancel enrollment</Button> : <Button variant="default" onClick={close}>Close</Button>}
+        {!session && <Button loading={busy} disabled={!availability.serverUrl.startsWith('https://') || !target || !name.trim() || !availability.targets.includes(target)} onClick={() => void createBundle()}>Download bundle</Button>}
       </Group>
     </Stack>
   </Modal>
