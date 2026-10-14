@@ -34,6 +34,9 @@ services:
         condition: service_healthy
     ports:
       - "${VIGIRA_PORT:-8080}:8080"
+    volumes:
+      - android-backups:/var/lib/vigira/android-backups
 
 volumes:
   postgres-data:
+  android-backups:

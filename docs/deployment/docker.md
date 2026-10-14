@@ -31,6 +31,26 @@ docker compose --env-file deploy/.env.staging -f deploy/compose.staging.yml up -
 
 By default the setup pulls `ghcr.io/deranjer/vigara:staging`, persists database contents in the `postgres-data` volume, and publishes the app on port 8080. Set `VIGIRA_PORT` in the environment file to change the host port. Set `VIGIRA_IMAGE` to a commit tag or version tag to test a fixed image instead of the moving staging tag. Before each deployment, pull the image, run the migration service, and then recreate the app so the database schema is ready for that image.
 
+## Optional Android file storage
+
+Android uploads are disabled when `VIGIRA_ANDROID_BACKUP_ROOT` is empty. To enable them, set it in `deploy/.env.staging` to `/var/lib/vigira/android-backups`. The Compose setup mounts that path from the persistent `android-backups` volume, and the container user can write there. Protect and back up this volume alongside PostgreSQL; the uploaded files are stored unencrypted. See [Android storage details](../android.md#enable-server-storage).
+
+## Optional agent downloads
+
+Agent bundle downloads require release files and a public HTTPS URL. Build the bundles on an operator machine and copy the output directory to the staging host. From the repository root, the bundle command is:
+
+```sh
+python scripts/package_agent_releases.py 0.1.0 deploy/agent-releases
+```
+
+Set `VIGIRA_AGENT_RELEASE_HOST_DIR=./agent-releases` and `VIGIRA_PUBLIC_URL=https://vigira.example` in `deploy/.env.staging`. Ensure the directory and files are readable by the container's UID 10001, usually with directory mode 755 and file mode 644. Start or update the app with the optional override file:
+
+```sh
+docker compose --env-file deploy/.env.staging -f deploy/compose.staging.yml -f deploy/compose.staging.downloads.example.yml up -d app
+```
+
+The bundle directory is mounted read-only at `/opt/vigira/releases`. Omit the override file and leave the URL and host directory unset to keep downloads disabled. See [agent bundle setup](../agent.md#downloading-configured-client-bundles).
+
 Check service state and the health endpoint with:
 
 ```sh

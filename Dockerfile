@@ -25,7 +25,9 @@ COPY --from=web-build /src/apps/api/web ./apps/api/web
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o /out/vigira ./apps/api/cmd/vigira
 
 FROM alpine:3.22 AS runtime
-RUN addgroup -S -g 10001 vigira && adduser -S -D -H -u 10001 -G vigira vigira
+RUN addgroup -S -g 10001 vigira && adduser -S -D -H -u 10001 -G vigira vigira \
+    && mkdir -p /var/lib/vigira/android-backups \
+    && chown -R 10001:10001 /var/lib/vigira
 COPY --from=assemble --chown=10001:10001 /out/vigira /usr/local/bin/vigira
 USER 10001:10001
 EXPOSE 8080
