@@ -21,6 +21,12 @@ Login and first-user setup share a limit of five attempts per connection IP per 
 
 Go integration tests run when `VIGIRA_TEST_DATABASE_URL` points to a test PostgreSQL database whose user can create schemas. Each run creates and removes an isolated schema. CI supplies this database automatically.
 
+## Documentation and staging
+
+The [documentation site](https://deranjer.github.io/vigara/docs/) is built with Docusaurus from the Markdown files in `docs`. Run `pnpm docs:dev` to preview it locally or `pnpm docs:build` to check the production build. GitHub Actions deploys it to GitHub Pages when changes reach `main`.
+
+Container builds publish to `ghcr.io/deranjer/vigara`: `main` updates the `staging` tag, and version tags publish numbered releases. See the [Docker deployment guide](docs/deployment/docker.md) for the staging Compose setup, database migrations, and upgrades.
+
 ## Layout
 
 - `apps/api`: Go HTTP API and migrations
