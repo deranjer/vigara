@@ -1,6 +1,8 @@
 # Docker deployment
 
-The container runs the Vigira API and serves the web UI embedded in the same process. PostgreSQL is a separate service. The API does not migrate the database automatically, so the staging Compose setup applies checked-in migrations before starting it.
+The container runs the Vigira API and serves the web UI embedded in the same process. PostgreSQL is a separate service. On startup, the server applies pending migrations embedded in its binary before accepting requests. No migration container or mounted SQL files are required.
+
+The server preserves the `schema_migrations` history used by previous CLI/container deployments and serializes simultaneous migration attempts with a database lock. If a migration fails or the database is marked dirty, startup stops without resetting that state. Inspect and repair the failure before restarting; do not force the version forward without checking the database. The configured database user needs permission to apply the schema changes, including creating the `pgcrypto` extension on a fresh database.
 
 ## Image releases
 
@@ -24,12 +26,12 @@ Clone the repository on the host, create the environment file, and set a unique 
 cp deploy/.env.staging.example deploy/.env.staging
 # Edit deploy/.env.staging and set POSTGRES_PASSWORD.
 docker compose --env-file deploy/.env.staging -f deploy/compose.staging.yml pull app
-docker compose --env-file deploy/.env.staging -f deploy/compose.staging.yml up -d db
-docker compose --env-file deploy/.env.staging -f deploy/compose.staging.yml run --rm migrate
-docker compose --env-file deploy/.env.staging -f deploy/compose.staging.yml up -d app
+docker compose --env-file deploy/.env.staging -f deploy/compose.staging.yml up -d --remove-orphans
 ```
 
-By default the setup pulls `ghcr.io/deranjer/vigara:staging`, persists database contents in the `postgres-data` volume, and publishes the app on port 8080. Set `VIGIRA_PORT` in the environment file to change the host port. Set `VIGIRA_IMAGE` to a commit tag or version tag to test a fixed image instead of the moving staging tag. Before each deployment, pull the image, run the migration service, and then recreate the app so the database schema is ready for that image.
+By default the setup pulls `ghcr.io/deranjer/vigara:staging`, persists database contents in the `postgres-data` volume, and publishes the app on port 8080. Set `VIGIRA_PORT` in the environment file to change the host port. Set `VIGIRA_IMAGE` to a commit tag or version tag to test a fixed image instead of the moving staging tag. For upgrades, pull the image and run the same `up` command; the server applies new migrations automatically. `--remove-orphans` removes the obsolete migration container from earlier deployments. Use an image containing automatic startup migrations with this simplified Compose file.
+
+The [Derajnet Compose example](https://github.com/deranjer/vigara/blob/main/deploy/compose.derajnet.yml) uses the external `web` network, Caddy/Homepage labels, `/mnt/data/vigara/db` storage, and host port 8081. Supply `POSTGRES_PASSWORD` in an environment file and run it with `docker compose --env-file .env -f deploy/compose.derajnet.yml up -d --remove-orphans`. Use a URL-safe password. The app is served at `https://vigara.derajnet.duckdns.org` with secure cookies enabled; PostgreSQL stays on its private network.
 
 ## Optional Android file storage
 

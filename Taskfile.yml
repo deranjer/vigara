@@ -15,7 +15,6 @@ tasks:
     cmds: [docker compose down]
   dev:api:
     desc: Run the API server
-    deps: [db:migrate]
     cmds: [go run ./apps/api/cmd/vigira]
   dev:api:watch:
     desc: Run the API with Air reloads (requires Air installed)
