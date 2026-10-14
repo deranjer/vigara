@@ -1,0 +1,39 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    env_file: .env.staging
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    image: migrate/migrate:v4.18.3
+    env_file: .env.staging
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ../apps/api/migrations:/migrations:ro
+    command: ["-path", "/migrations", "-database", "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}?sslmode=disable", "up"]
+    restart: "no"
+
+  app:
+    image: ${VIGIRA_IMAGE:-ghcr.io/deranjer/vigara:staging}
+    restart: unless-stopped
+    env_file: .env.staging
+    environment:
+      VIGIRA_ADDR: ":8080"
+      VIGIRA_DATABASE_URL: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}?sslmode=disable"
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${VIGIRA_PORT:-8080}:8080"
+
+volumes:
+  postgres-data:
