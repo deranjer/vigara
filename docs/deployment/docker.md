@@ -31,7 +31,25 @@ docker compose --env-file deploy/.env.staging -f deploy/compose.staging.yml up -
 
 By default the setup pulls `ghcr.io/deranjer/vigara:staging`, persists database contents in the `postgres-data` volume, and publishes the app on port 8080. Set `VIGIRA_PORT` in the environment file to change the host port. Set `VIGIRA_IMAGE` to a commit tag or version tag to test a fixed image instead of the moving staging tag. For upgrades, pull the image and run the same `up` command; the server applies new migrations automatically. `--remove-orphans` removes the obsolete migration container from earlier deployments. Use an image containing automatic startup migrations with this simplified Compose file.
 
-The [Derajnet Compose example](https://github.com/deranjer/vigara/blob/main/deploy/compose.derajnet.yml) uses the external `web` network, Caddy/Homepage labels, `/mnt/data/vigara/db` storage, and host port 8081. Supply `POSTGRES_PASSWORD` in an environment file and run it with `docker compose --env-file .env -f deploy/compose.derajnet.yml up -d --remove-orphans`. Use a URL-safe password. The app is served at `https://vigara.derajnet.duckdns.org` with secure cookies enabled; PostgreSQL stays on its private network.
+## Caddy reverse-proxy example
+
+The [Caddy Compose example](https://github.com/deranjer/vigara/blob/main/deploy/compose.caddy.example.yml) connects the app to an existing external network shared with `caddy-docker-proxy`. It uses Caddy labels for HTTPS routing and keeps PostgreSQL on a private backend network with a named data volume. No app or database host port is published. Container and volume names are scoped to the Compose project.
+
+Create an environment file with your hostname and a URL-safe database password. Set `VIGIRA_PROXY_NETWORK` to the existing proxy network name; it defaults to `web`. You can also set `VIGIRA_IMAGE` to pin a version or commit tag.
+
+```dotenv
+POSTGRES_PASSWORD=replace-with-a-long-random-url-safe-password
+VIGIRA_DOMAIN=vigara.example.com
+VIGIRA_PROXY_NETWORK=web
+```
+
+```sh
+docker compose --env-file .env -f deploy/compose.caddy.example.yml up -d
+```
+
+Point the hostname at your proxy and access the app through HTTPS; secure cookies are enabled. This example requires `caddy-docker-proxy`, which reads Docker labels, rather than a plain Caddy installation. For a different proxy, replace the routing labels with that proxy's configuration. Use the staging example above if you want direct access through a published host port.
+
+When replacing an existing deployment, preserve its actual database volume or bind mount rather than switching it to a new empty named volume. Back up the database before changing storage settings.
 
 ## Optional Android file storage
 

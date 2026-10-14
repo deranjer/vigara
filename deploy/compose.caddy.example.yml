@@ -1,54 +1,48 @@
 networks:
-  web:
-    name: web
+  proxy:
+    # Must already exist and be shared with caddy-docker-proxy.
+    name: ${VIGIRA_PROXY_NETWORK:-web}
     external: true
-  vigara-backend:
-    name: vigara-backend
+  backend:
+    internal: true
 
 services:
-  vigara:
-    image: ghcr.io/deranjer/vigara:staging
-    hostname: vigara
-    container_name: vigara
+  app:
+    image: ${VIGIRA_IMAGE:-ghcr.io/deranjer/vigara:staging}
     depends_on:
       postgres:
         condition: service_healthy
     networks:
-      - web
-      - vigara-backend
+      - proxy
+      - backend
     environment:
       VIGIRA_ADDR: :8080
       VIGIRA_DATABASE_URL: postgres://vigara:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/vigara?sslmode=disable
       VIGIRA_COOKIE_SECURE: "true"
-    ports:
-      - "8081:8080"
+    # Caddy connects over the proxy network; no host port is published.
     labels:
-      caddy: vigara.derajnet.duckdns.org
+      caddy: ${VIGIRA_DOMAIN:?Set VIGIRA_DOMAIN to your public hostname}
       caddy.reverse_proxy: "{{upstreams 8080}}"
-      caddy_ingress_network: web
-      homepage.group: Monitoring
-      homepage.name: Vigara
-      homepage.icon: mdi-monitor-dashboard
-      homepage.href: https://vigara.derajnet.duckdns.org
-      homepage.description: Device monitoring and backups
+      caddy_ingress_network: ${VIGIRA_PROXY_NETWORK:-web}
     restart: unless-stopped
 
   postgres:
     image: postgres:17-alpine
-    hostname: postgres
-    container_name: vigara-postgres
     networks:
-      - vigara-backend
+      - backend
     environment:
       POSTGRES_USER: vigara
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
       POSTGRES_DB: vigara
     volumes:
-      - /mnt/data/vigara/db:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U vigara -d vigara"]
       interval: 5s
       timeout: 5s
       retries: 10
     restart: unless-stopped
+
+volumes:
+  postgres-data:
 
