@@ -140,6 +140,23 @@ func (c *Collector) Collect(ctx context.Context) protocol.TelemetrySnapshot {
 		}
 		capabilities["cpu_info"] = true
 	}
+	hardware := collectHardware(ctx, snapshot.ObservedAt, fail)
+	snapshot.HardwareInventory = &hardware
+	if hardware.CPUStatus == "available" {
+		capabilities["hardware_cpu"] = true
+	}
+	if hardware.GPUStatus == "available" {
+		capabilities["hardware_gpu"] = true
+	}
+	if hardware.MemoryStatus == "available" {
+		capabilities["hardware_memory"] = true
+	}
+	if hardware.BoardStatus == "available" {
+		capabilities["hardware_board"] = true
+	}
+	if hardware.DiskStatus == "available" {
+		capabilities["hardware_disks"] = true
+	}
 	if usage, err := mem.VirtualMemoryWithContext(ctx); err != nil {
 		fail("memory", err)
 	} else {

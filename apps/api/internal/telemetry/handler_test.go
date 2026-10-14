@@ -50,6 +50,35 @@ func TestValidateRejectsBadUnitsAndFutureObservationButAllowsOfflineData(t *test
 	}
 }
 
+func TestValidateHardwareInventoryBoundsAndOptionalCompatibility(t *testing.T) {
+	now := time.Now().UTC()
+	s := validSnapshot("agent", "hardware", now)
+	if err := validate(s, "agent", now); err != nil {
+		t.Fatalf("legacy snapshot without hardware inventory rejected: %v", err)
+	}
+	h := protocol.HardwareInventory{ObservedAt: now, CPUStatus: "available", CPU: protocol.HardwareCPU{Vendor: "GenuineIntel", Model: "Core CPU", PhysicalPackages: 1, PhysicalCores: 8, LogicalThreads: 16}, GPUStatus: "unsupported", MemoryStatus: "unsupported", BoardStatus: "unavailable", DiskStatus: "unsupported"}
+	s.HardwareInventory = &h
+	if err := validate(s, "agent", now); err != nil {
+		t.Fatalf("valid hardware inventory rejected: %v", err)
+	}
+	h.ObservedAt = now.Add(time.Second)
+	s.HardwareInventory = &h
+	if err := validate(s, "agent", now); err == nil {
+		t.Fatal("mismatched inventory observation time accepted")
+	}
+	h.ObservedAt = now
+	h.CPUStatus = "secret"
+	s.HardwareInventory = &h
+	if err := validate(s, "agent", now); err == nil {
+		t.Fatal("invalid inventory status accepted")
+	}
+	h.CPUStatus, h.CPU.PhysicalCores = "available", 9000
+	s.HardwareInventory = &h
+	if err := validate(s, "agent", now); err == nil {
+		t.Fatal("unbounded CPU topology accepted")
+	}
+}
+
 func TestValidateAcceptsBoundedDockerInventoryAndUnits(t *testing.T) {
 	now := time.Now().UTC()
 	s := validSnapshot("agent", "docker", now)

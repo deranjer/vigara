@@ -10,7 +10,19 @@ reports.
 Each snapshot has an observation time, OS and OS version, architecture, agent
 version, CPU model and logical CPU count, memory and uptime summary, numeric
 measurements with canonical names and units, capabilities collected, and
-collection errors. A missing measurement means no valid value was available;
+collection errors. Optional `hardwareInventory` is a separate point-in-time
+inventory with its own observation time and explicit per-section status
+(`available`, `partial`, `unsupported`, or `unavailable`). It contains bounded
+CPU topology, GPU model/vendor/VRAM, memory module details, motherboard and
+firmware, and disk model/capacity/type when the local platform exposes them.
+The current Linux collector reads unprivileged sysfs values and reports memory
+module details as unsupported; Windows currently reports CPU topology and
+marks other detailed hardware sections unsupported. It never invokes hardware
+utilities or downloads code. Serial numbers, MAC addresses, license keys,
+machine IDs and other persistent identifiers are not part of this schema.
+The synthetic example in `docs/testdata/hardware-inventory.json` contains no
+device identifiers.
+A missing measurement means no valid value was available;
 the agent does not substitute zero. A capability is listed only when a
 collector successfully returned data. Throughput measurements use differences
 between two cumulative counter reads and are omitted until a baseline exists.
