@@ -53,12 +53,14 @@ An operator can enable HTTP and TCP health checks by setting
 VIGIRA_NETWORK_CHECKS_CONFIG to a local JSON file. The file is not downloaded
 from the server or included in agent state:
 
-    {
-      "checks": [
-        {"name":"router-health","type":"http","url":"http://192.168.1.1/health"},
-        {"name":"switch-https","type":"tcp","address":"192.168.1.2:443","timeoutMs":1000}
-      ]
-    }
+```json
+{
+  "checks": [
+    {"name":"router-health","type":"http","url":"http://192.168.1.1/health"},
+    {"name":"switch-https","type":"tcp","address":"192.168.1.2:443","timeoutMs":1000}
+  ]
+}
+```
 
 Checks are disabled when the setting is empty. At most 16 uniquely named checks
 are accepted. Targets must use literal private, loopback, or link-local IP
