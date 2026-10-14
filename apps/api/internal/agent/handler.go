@@ -26,8 +26,10 @@ const maxRequestBytes = 1 << 20
 // Handler serves the device-facing API. Device credentials are random bearer
 // secrets; only their SHA-256 hashes are stored in PostgreSQL.
 type Handler struct {
-	pool *pgxpool.Pool
-	auth *auth.Service
+	pool       *pgxpool.Pool
+	auth       *auth.Service
+	publicURL  string
+	releaseDir string
 }
 
 func NewHandler(pool *pgxpool.Pool, authService *auth.Service) *Handler {
@@ -74,6 +76,10 @@ type EnrollmentTokenResponse struct {
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/agent-downloads/availability", h.downloadAvailability)
+	mux.HandleFunc("POST /api/agent-downloads", h.createAgentDownload)
+	mux.HandleFunc("GET /api/agent-downloads/{id}", h.agentDownloadStatus)
+	mux.HandleFunc("POST /api/agent-downloads/{id}/cancel", h.cancelAgentDownload)
 	mux.HandleFunc("POST /api/agent/enroll", h.enroll)
 	mux.HandleFunc("POST /api/agent/poll", h.poll)
 	mux.HandleFunc("POST /api/agent/reports", h.reports)
@@ -330,6 +336,9 @@ func (h *Handler) enroll(w http.ResponseWriter, r *http.Request) {
 	}
 	if err == nil {
 		_, err = tx.Exec(r.Context(), `UPDATE agent_enrollment_tokens SET used_at=now() WHERE id=$1`, tokenID)
+	}
+	if err == nil {
+		_, err = tx.Exec(r.Context(), `UPDATE agent_download_sessions SET status='enrolled' WHERE id=$1 AND status='waiting' AND expires_at>now()`, tokenID)
 	}
 	if err != nil {
 		http.Error(w, "could not enroll agent", http.StatusInternalServerError)

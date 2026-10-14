@@ -153,11 +153,12 @@ func (h *Handler) devices(w http.ResponseWriter, r *http.Request) {
 }
 
 type Point struct {
-	At      time.Time `json:"at"`
-	Value   *float64  `json:"value"`
-	Min     *float64  `json:"min,omitempty"`
-	Max     *float64  `json:"max,omitempty"`
-	Samples int64     `json:"samples"`
+	At                time.Time `json:"at"`
+	Value             *float64  `json:"value"`
+	Min               *float64  `json:"min,omitempty"`
+	Max               *float64  `json:"max,omitempty"`
+	Samples           int64     `json:"samples"`
+	ResolutionSeconds int64     `json:"resolutionSeconds"`
 }
 type Series struct {
 	Name   string          `json:"name"`
@@ -166,11 +167,13 @@ type Series struct {
 	Points []Point         `json:"points"`
 }
 type History struct {
-	Range       string    `json:"range"`
-	WindowStart time.Time `json:"windowStart"`
-	WindowEnd   time.Time `json:"windowEnd"`
-	Metrics     []string  `json:"metrics"`
-	Series      []Series  `json:"series"`
+	Range             string    `json:"range"`
+	WindowStart       time.Time `json:"windowStart"`
+	WindowEnd         time.Time `json:"windowEnd"`
+	Metrics           []string  `json:"metrics"`
+	Series            []Series  `json:"series"`
+	ResolutionSeconds int64     `json:"resolutionSeconds"`
+	Resolution        string    `json:"resolution"`
 }
 
 func (h *Handler) history(w http.ResponseWriter, r *http.Request) {
@@ -179,10 +182,34 @@ func (h *Handler) history(w http.ResponseWriter, r *http.Request) {
 	}
 	rangeName := r.URL.Query().Get("range")
 	ranges := map[string]time.Duration{"1h": time.Hour, "6h": 6 * time.Hour, "24h": 24 * time.Hour, "7d": 7 * 24 * time.Hour, "30d": 30 * 24 * time.Hour}
+	startRaw, endRaw := r.URL.Query().Get("start"), r.URL.Query().Get("end")
+	custom := startRaw != "" || endRaw != ""
 	duration, ok := ranges[rangeName]
-	if !ok {
+	if !ok && !custom {
 		http.Error(w, "range must be 1h, 6h, 24h, 7d, or 30d", 400)
 		return
+	}
+	windowEnd := time.Now().UTC()
+	windowStart := windowEnd.Add(-duration)
+	if custom {
+		var err error
+		windowStart, err = time.Parse(time.RFC3339Nano, startRaw)
+		if err != nil {
+			http.Error(w, "start and end must be RFC3339 timestamps with timezone", 400)
+			return
+		}
+		windowEnd, err = time.Parse(time.RFC3339Nano, endRaw)
+		if err != nil {
+			http.Error(w, "start and end must be RFC3339 timestamps with timezone", 400)
+			return
+		}
+		windowStart, windowEnd = windowStart.UTC(), windowEnd.UTC()
+		duration = windowEnd.Sub(windowStart)
+		if duration <= 0 || duration > 30*24*time.Hour || windowEnd.After(time.Now().UTC().Add(time.Minute)) {
+			http.Error(w, "custom interval must be positive, at most 30 days, and end no more than one minute in the future", 400)
+			return
+		}
+		rangeName = "custom"
 	}
 	deviceID := r.PathValue("deviceID")
 	if !uuidRE.MatchString(deviceID) {
@@ -198,7 +225,21 @@ func (h *Handler) history(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "device not found", 404)
 		return
 	}
+	metricNames := r.URL.Query()["metrics"]
 	metric := r.URL.Query().Get("metric")
+	if len(metricNames) == 0 && metric != "" {
+		metricNames = []string{metric}
+	}
+	if len(metricNames) > 5 {
+		http.Error(w, "at most five metrics may be selected", 400)
+		return
+	}
+	for _, name := range metricNames {
+		if len(name) > 80 || !metricRE.MatchString(name) {
+			http.Error(w, "invalid metric name", 400)
+			return
+		}
+	}
 	if len(metric) > 80 || (metric != "" && !metricRE.MatchString(metric)) {
 		http.Error(w, "invalid metric name", 400)
 		return
@@ -227,34 +268,42 @@ func (h *Handler) history(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "device has too many distinct metrics to list", 422)
 		return
 	}
-	if metric == "" {
-		now := time.Now().UTC()
-		writeJSON(w, History{Range: rangeName, WindowStart: now.Add(-duration), WindowEnd: now, Metrics: metrics, Series: []Series{}})
+	if len(metricNames) == 0 {
+		writeJSON(w, History{Range: rangeName, WindowStart: windowStart, WindowEnd: windowEnd, Metrics: metrics, Series: []Series{}})
 		return
 	}
-	allowed := false
-	for _, name := range metrics {
-		if name == metric {
-			allowed = true
-			break
+	for _, metric := range metricNames {
+		allowed := false
+		for _, name := range metrics {
+			if name == metric {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			http.Error(w, "metric not available for device", 404)
+			return
 		}
 	}
-	if !allowed {
-		http.Error(w, "metric not available for device", 404)
+	binSeconds := int64(60)
+	var hasRollup bool
+	if err := h.pool.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM telemetry_metric_rollups r JOIN agent_identities i ON i.id=r.agent_id WHERE i.device_id=$1 AND i.revoked_at IS NULL AND r.bucket_start < $3 AND r.bucket_start + interval '1 hour' > $2 AND r.metric_name=ANY($4::text[]))`, deviceID, windowStart, windowEnd, metricNames).Scan(&hasRollup); err != nil {
+		http.Error(w, "could not load history", 500)
 		return
 	}
-	binSeconds := int64(60)
 	if duration > 24*time.Hour {
 		binSeconds = 3600
 	}
-	windowEnd := time.Now().UTC()
-	windowStart := windowEnd.Add(-duration)
+	binOrigin := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+	if custom && binSeconds == 60 {
+		binOrigin = windowStart
+	}
 	rows, err := h.pool.Query(r.Context(), `WITH device_agents AS (SELECT id FROM agent_identities WHERE device_id=$1 AND revoked_at IS NULL), raw AS (
-		SELECT t.observed_at AS at,m->>'name' name,COALESCE(m->>'unit',CASE m->>'name' WHEN 'cpu_used_percent' THEN '%' WHEN 'memory_available_bytes' THEN 'By' WHEN 'memory_total_bytes' THEN 'By' WHEN 'memory_used_percent' THEN '%' WHEN 'uptime_seconds' THEN 's' WHEN 'filesystem_total_bytes' THEN 'By' WHEN 'filesystem_free_bytes' THEN 'By' WHEN 'network_receive_bytes_per_second' THEN 'By/s' WHEN 'network_send_bytes_per_second' THEN 'By/s' WHEN 'disk_read_bytes_per_second' THEN 'By/s' WHEN 'disk_write_bytes_per_second' THEN 'By/s' ELSE '' END) unit,COALESCE(NULLIF(m->'labels','null'::jsonb),'{}'::jsonb) labels,(m->>'value')::double precision value,NULL::double precision min,NULL::double precision max,1::bigint samples
-	 FROM agent_telemetry t JOIN device_agents a ON a.id=t.agent_id CROSS JOIN LATERAL jsonb_array_elements(COALESCE(t.payload->'metrics','[]'::jsonb)) m WHERE t.observed_at>=now()-($2 * interval '1 second') AND t.observed_at<=now() AND m->>'name'=$4
-		UNION ALL SELECT r.bucket_start,r.metric_name,CASE r.metric_name WHEN 'cpu_used_percent' THEN '%' WHEN 'memory_available_bytes' THEN 'By' WHEN 'memory_total_bytes' THEN 'By' WHEN 'memory_used_percent' THEN '%' WHEN 'uptime_seconds' THEN 's' WHEN 'filesystem_total_bytes' THEN 'By' WHEN 'filesystem_free_bytes' THEN 'By' WHEN 'network_receive_bytes_per_second' THEN 'By/s' WHEN 'network_send_bytes_per_second' THEN 'By/s' WHEN 'disk_read_bytes_per_second' THEN 'By/s' WHEN 'disk_write_bytes_per_second' THEN 'By/s' ELSE '' END,r.labels,r.sum_value/r.sample_count,r.min_value,r.max_value,r.sample_count FROM telemetry_metric_rollups r JOIN device_agents a ON a.id=r.agent_id WHERE r.bucket_start>=now()-($2 * interval '1 second') AND r.bucket_start<=now() AND r.metric_name=$4
-	), binned AS (SELECT date_bin(($3 * interval '1 second'),raw.at,timestamptz '2000-01-01') at,name,unit,labels,sum(value*samples)/sum(samples) value,min(COALESCE(min,value)) min,max(COALESCE(max,value)) max,sum(samples)::bigint samples FROM raw GROUP BY 1,2,3,4)
-	SELECT at,name,unit,labels,value,min,max,samples FROM binned ORDER BY name,labels,at LIMIT 20001`, deviceID, int64(duration.Seconds()), binSeconds, metric)
+		SELECT t.observed_at AS at,m->>'name' name,COALESCE(m->>'unit',CASE m->>'name' WHEN 'cpu_used_percent' THEN '%' WHEN 'memory_available_bytes' THEN 'By' WHEN 'memory_total_bytes' THEN 'By' WHEN 'memory_used_percent' THEN '%' WHEN 'uptime_seconds' THEN 's' WHEN 'filesystem_total_bytes' THEN 'By' WHEN 'filesystem_free_bytes' THEN 'By' WHEN 'network_receive_bytes_per_second' THEN 'By/s' WHEN 'network_send_bytes_per_second' THEN 'By/s' WHEN 'disk_read_bytes_per_second' THEN 'By/s' WHEN 'disk_write_bytes_per_second' THEN 'By/s' ELSE '' END) unit,COALESCE(NULLIF(m->'labels','null'::jsonb),'{}'::jsonb) labels,(m->>'value')::double precision value,NULL::double precision min,NULL::double precision max,1::bigint samples,$4::bigint source_resolution
+	 FROM agent_telemetry t JOIN device_agents a ON a.id=t.agent_id CROSS JOIN LATERAL jsonb_array_elements(COALESCE(t.payload->'metrics','[]'::jsonb)) m WHERE t.observed_at >= $2 AND t.observed_at <= $3 AND m->>'name'=ANY($5::text[])
+		UNION ALL SELECT r.bucket_start,r.metric_name,CASE r.metric_name WHEN 'cpu_used_percent' THEN '%' WHEN 'memory_available_bytes' THEN 'By' WHEN 'memory_total_bytes' THEN 'By' WHEN 'memory_used_percent' THEN '%' WHEN 'uptime_seconds' THEN 's' WHEN 'filesystem_total_bytes' THEN 'By' WHEN 'filesystem_free_bytes' THEN 'By' WHEN 'network_receive_bytes_per_second' THEN 'By/s' WHEN 'network_send_bytes_per_second' THEN 'By/s' WHEN 'disk_read_bytes_per_second' THEN 'By/s' WHEN 'disk_write_bytes_per_second' THEN 'By/s' WHEN 'docker_cpu_capacity_used_percent' THEN '%' WHEN 'docker_memory_usage_bytes' THEN 'By' WHEN 'docker_memory_limit_bytes' THEN 'By' WHEN 'docker_memory_used_percent' THEN '%' WHEN 'docker_network_receive_bytes_per_second' THEN 'By/s' WHEN 'docker_network_transmit_bytes_per_second' THEN 'By/s' ELSE '' END,r.labels,r.sum_value/r.sample_count,r.min_value,r.max_value,r.sample_count,3600::bigint FROM telemetry_metric_rollups r JOIN device_agents a ON a.id=r.agent_id WHERE r.bucket_start >= $2 AND r.bucket_start + interval '1 hour' <= $3 AND r.metric_name=ANY($5::text[])
+	), binned AS (SELECT CASE WHEN raw.source_resolution=3600 AND $4<3600 THEN raw.at ELSE GREATEST(date_bin(($4 * interval '1 second'),raw.at,$6::timestamptz),$2::timestamptz) END at,name,unit,labels,sum(value*samples)/sum(samples) value,min(COALESCE(min,value)) min,max(COALESCE(max,value)) max,sum(samples)::bigint samples,GREATEST(max(source_resolution),$4)::bigint source_resolution FROM raw GROUP BY 1,2,3,4)
+	SELECT at,name,unit,labels,value,min,max,samples,source_resolution FROM binned WHERE at <= $3 ORDER BY name,labels,at LIMIT 20001`, deviceID, windowStart, windowEnd, binSeconds, metricNames, binOrigin)
 	if err != nil {
 		http.Error(w, "could not load history", 500)
 		return
@@ -274,20 +323,24 @@ func (h *Handler) history(w http.ResponseWriter, r *http.Request) {
 		var labels []byte
 		var value float64
 		var min, max *float64
-		var samples int64
-		if err = rows.Scan(&at, &name, &unit, &labels, &value, &min, &max, &samples); err != nil {
+		var samples, sourceResolution int64
+		if err = rows.Scan(&at, &name, &unit, &labels, &value, &min, &max, &samples, &sourceResolution); err != nil {
 			http.Error(w, "could not load history", 500)
 			return
 		}
 		key := name + "\x00" + string(labels)
 		s := seriesMap[key]
 		if s == nil {
+			if len(ordered) >= 64 {
+				http.Error(w, "selected metrics produce too many label series; select fewer metrics", 422)
+				return
+			}
 			s = &Series{Name: name, Unit: unit, Labels: labels, Points: []Point{}}
 			seriesMap[key] = s
 			ordered = append(ordered, s)
 		}
 		v := value
-		s.Points = append(s.Points, Point{At: at, Value: &v, Min: min, Max: max, Samples: samples})
+		s.Points = append(s.Points, Point{At: at, Value: &v, Min: min, Max: max, Samples: samples, ResolutionSeconds: sourceResolution})
 	}
 	if err = rows.Err(); err != nil {
 		http.Error(w, "could not load history", 500)
@@ -297,7 +350,18 @@ func (h *Handler) history(w http.ResponseWriter, r *http.Request) {
 	for i, s := range ordered {
 		out[i] = *s
 	}
-	writeJSON(w, History{Range: rangeName, WindowStart: windowStart, WindowEnd: windowEnd, Metrics: metrics, Series: out})
+	resolution := "one-minute samples"
+	if hasRollup && binSeconds < 3600 {
+		resolution = "one-minute samples and retained hourly summaries; partial summary hours are excluded"
+	}
+	effectiveResolution := binSeconds
+	if hasRollup {
+		effectiveResolution = 3600
+	}
+	if binSeconds == 3600 {
+		resolution = "hourly summaries; partial hours are excluded and exact sub-hour detail is unavailable"
+	}
+	writeJSON(w, History{Range: rangeName, WindowStart: windowStart, WindowEnd: windowEnd, Metrics: metrics, Series: out, ResolutionSeconds: effectiveResolution, Resolution: resolution})
 }
 
 var uuidRE = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)

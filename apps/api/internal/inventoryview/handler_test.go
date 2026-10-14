@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -50,6 +51,7 @@ func TestInventoryAndHistoryAreAuthenticatedBoundedAndPreserveGaps(t *testing.T)
 		t.Fatalf("foreign origin status=%d", denied.Code)
 	}
 	var healthy string
+	var preciseStart time.Time
 	now := time.Now().UTC()
 	for _, item := range []struct {
 		name   string
@@ -86,6 +88,7 @@ func TestInventoryAndHistoryAreAuthenticatedBoundedAndPreserveGaps(t *testing.T)
 				t.Fatal(err)
 			}
 			bucket := now.Add(-2 * time.Hour).Truncate(time.Hour)
+			preciseStart = bucket.Add(20 * time.Second)
 			if _, err = pool.Exec(ctx, `INSERT INTO agent_telemetry(agent_id,report_id,observed_at,payload) VALUES($1,'raw-rollup-overlap',$2,$3::jsonb)`, agentID, bucket.Add(30*time.Second), `{"metrics":[{"name":"memory_total_bytes","value":200,"unit":"By"}]}`); err != nil {
 				t.Fatal(err)
 			}
@@ -183,6 +186,34 @@ func TestInventoryAndHistoryAreAuthenticatedBoundedAndPreserveGaps(t *testing.T)
 		if point.At.After(time.Now().Add(time.Second)) {
 			t.Fatalf("future point returned: %s", point.At)
 		}
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO telemetry_metric_series(agent_id,metric_name,labels) SELECT id,'cpu_used_percent','{}' FROM agent_identities WHERE device_id=$1 AND revoked_at IS NULL`, healthy); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO agent_telemetry(agent_id,report_id,observed_at,payload) SELECT id,'custom-cpu-sample',$2,$3::jsonb FROM agent_identities WHERE device_id=$1 AND revoked_at IS NULL`, healthy, preciseStart.Add(20*time.Second), `{"metrics":[{"name":"cpu_used_percent","value":55,"unit":"%"}]}`); err != nil {
+		t.Fatal(err)
+	}
+	customPath := fmt.Sprintf("/api/inventory/devices/%s/history?start=%s&end=%s&metrics=memory_total_bytes&metrics=cpu_used_percent", healthy, url.QueryEscape(preciseStart.Format(time.RFC3339Nano)), url.QueryEscape(preciseStart.Add(30*time.Second).Format(time.RFC3339Nano)))
+	custom := request(customPath, true)
+	if custom.Code != 200 {
+		t.Fatalf("custom multi-metric history status=%d body=%s", custom.Code, custom.Body)
+	}
+	if err = json.Unmarshal(custom.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Range != "custom" || len(result.Series) != 2 {
+		t.Fatalf("custom history range/series mismatch: %+v", result)
+	}
+	for _, series := range result.Series {
+		if len(series.Points) != 1 || !series.Points[0].At.Equal(preciseStart) {
+			t.Fatalf("custom bins lost their precise interval origin: %+v", series)
+		}
+	}
+	if got := request(fmt.Sprintf("/api/inventory/devices/%s/history?start=%s&end=%s", healthy, url.QueryEscape(preciseStart.Format(time.RFC3339Nano)), url.QueryEscape(preciseStart.Format(time.RFC3339Nano))), true).Code; got != 400 {
+		t.Fatalf("zero-length custom interval status=%d", got)
+	}
+	if got := request(fmt.Sprintf("/api/inventory/devices/%s/history?range=1h&metrics=a&metrics=b&metrics=c&metrics=d&metrics=e&metrics=f", healthy), true).Code; got != 400 {
+		t.Fatalf("too many metric selection status=%d", got)
 	}
 }
 
@@ -282,4 +313,51 @@ func inventoryTestPool(t *testing.T) *pgxpool.Pool {
 		}
 	}
 	return pool
+}
+
+func TestCustomHistoryReportsHourlySourceAndExcludesPartialBuckets(t *testing.T) {
+	pool := inventoryTestPool(t)
+	ctx := context.Background()
+	service := auth.NewService(pool, db.New(pool))
+	session, err := service.CreateFirstUser(ctx, "hourly-admin", "Hourly Admin", "correct horse battery", "correct horse battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deviceID, agentID string
+	if err = pool.QueryRow(ctx, `INSERT INTO devices(display_name) VALUES('hourly history') RETURNING id::text`).Scan(&deviceID); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `INSERT INTO agent_identities(device_id,credential_hash,protocol_version) VALUES($1,decode(md5($2),'hex'),'v1') RETURNING id::text`, deviceID, "hourly-agent").Scan(&agentID); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Now().UTC().Add(-10 * 24 * time.Hour).Truncate(time.Hour)
+	if _, err = pool.Exec(ctx, `INSERT INTO telemetry_metric_rollups(agent_id,metric_name,bucket_start,sample_count,sum_value,min_value,max_value) VALUES($1,'cpu_used_percent',$2,12,240,10,30),($1,'cpu_used_percent',$2+interval '1 hour',12,1080,80,100)`, agentID, base); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	NewHandler(pool, service).Register(mux)
+	query := func(start, end time.Time) History {
+		t.Helper()
+		path := fmt.Sprintf("/api/inventory/devices/%s/history?start=%s&end=%s&metrics=cpu_used_percent", deviceID, url.QueryEscape(start.Format(time.RFC3339Nano)), url.QueryEscape(end.Format(time.RFC3339Nano)))
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		r.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: session.Token})
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, r)
+		if w.Code != 200 {
+			t.Fatalf("history status=%d body=%s", w.Code, w.Body)
+		}
+		var history History
+		if err := json.Unmarshal(w.Body.Bytes(), &history); err != nil {
+			t.Fatal(err)
+		}
+		return history
+	}
+	history := query(base.Add(-30*time.Minute), base.Add(90*time.Minute))
+	if history.ResolutionSeconds != 3600 || len(history.Series) != 1 || len(history.Series[0].Points) != 1 || *history.Series[0].Points[0].Value != 20 || !history.Series[0].Points[0].At.Equal(base) {
+		t.Fatalf("hourly bounds/resolution mismatch: %+v", history)
+	}
+	partial := query(base.Add(10*time.Minute), base.Add(40*time.Minute))
+	if partial.ResolutionSeconds != 3600 || len(partial.Series) != 0 {
+		t.Fatalf("partial hour must stay empty and report hourly resolution: %+v", partial)
+	}
 }

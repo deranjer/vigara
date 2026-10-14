@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -34,6 +36,9 @@ type healthOutput struct {
 		Status string `json:"status" example:"ok"`
 	}
 }
+
+var version = "dev"
+var revision = ""
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -78,7 +83,9 @@ func main() {
 	backupMux := http.NewServeMux()
 	backups.NewHandler(database.Pool, authService).Register(backupMux)
 	agentMux := http.NewServeMux()
-	agent.NewHandler(database.Pool, authService).Register(agentMux)
+	agentHandler := agent.NewHandler(database.Pool, authService)
+	agentHandler.ConfigureDownloads(os.Getenv("VIGIRA_PUBLIC_URL"), os.Getenv("VIGIRA_AGENT_RELEASE_DIR"))
+	agentHandler.Register(agentMux)
 	androidBackupMux := http.NewServeMux()
 	androidbackup.NewHandler(database.Pool, authService, cfg.AndroidBackupRoot, cfg.AndroidBackupMaxFileBytes, cfg.AndroidBackupMaxTotalBytes).Register(agentMux, androidBackupMux)
 	telemetryMux := http.NewServeMux()
@@ -88,8 +95,24 @@ func main() {
 	inventoryview.NewHandler(database.Pool, authService).Register(inventoryMux)
 
 	router := chi.NewRouter()
+	if info, ok := debug.ReadBuildInfo(); ok {
+		if version == "dev" && info.Main.Version != "" && info.Main.Version != "(devel)" {
+			version = info.Main.Version
+		}
+		if revision == "" {
+			for _, setting := range info.Settings {
+				if setting.Key == "vcs.revision" {
+					revision = setting.Value
+				}
+			}
+		}
+	}
 	router.Use(auth.NewAttemptLimiter().Middleware)
 	router.Use(authService.SessionMiddleware)
+	router.Get("/api/version", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"version": version, "revision": revision})
+	})
 	api := humachi.New(router, huma.DefaultConfig("Vigira API", "0.1.0"))
 	huma.Register(api, huma.Operation{
 		OperationID: "healthCheck", Method: http.MethodGet, Path: "/healthz", Summary: "Check service health",
