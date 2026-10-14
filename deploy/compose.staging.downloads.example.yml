@@ -1,0 +1,12 @@
+services:
+  app:
+    environment:
+      VIGIRA_AGENT_RELEASE_DIR: /opt/vigira/releases
+      VIGIRA_PUBLIC_URL: ${VIGIRA_PUBLIC_URL:?Set VIGIRA_PUBLIC_URL to the public HTTPS base URL}
+    volumes:
+      - type: bind
+        source: ${VIGIRA_AGENT_RELEASE_HOST_DIR:?Set VIGIRA_AGENT_RELEASE_HOST_DIR to the release directory}
+        target: /opt/vigira/releases
+        read_only: true
+        bind:
+          create_host_path: false

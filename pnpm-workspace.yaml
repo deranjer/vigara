@@ -1,5 +1,7 @@
 packages:
   - apps/web
+  - docs-site
 
 allowBuilds:
+  core-js: true
   esbuild: true

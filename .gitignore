@@ -1,6 +1,7 @@
 .env
 .env.*
 !.env.example
+!/deploy/.env.staging.example
 /data/
 /bin/
 /dist/
@@ -11,6 +12,10 @@
 /apps/android/app/build/
 **/node_modules/
 **/dist/
+docs-site/build/
+docs-site/.docusaurus/
+pages-artifact/
+.pnpm-store/
 /coverage/
 /.cache/
 /.tools/
