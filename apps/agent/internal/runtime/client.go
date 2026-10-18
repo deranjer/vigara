@@ -11,7 +11,6 @@ import (
 	"io"
 	"log/slog"
 	"math/rand/v2"
-	"net"
 	"net/http"
 	"net/url"
 	"runtime"
@@ -23,6 +22,7 @@ import (
 	"github.com/deranjer/vigara/internal/modules"
 	"github.com/deranjer/vigara/internal/protocol"
 	"github.com/deranjer/vigara/internal/restic"
+	"github.com/deranjer/vigara/internal/serverurl"
 )
 
 var AgentVersion = "0.1.0"
@@ -52,7 +52,7 @@ func NewClient(statePath string) (*Client, error) {
 }
 
 func (c *Client) Enroll(ctx context.Context, serverURL, token, name string) error {
-	if err := validateServerURL(serverURL); err != nil {
+	if err := validateServerURL(serverURL, c.State.AllowInsecurePrivateHTTP); err != nil {
 		return err
 	}
 	capability := protocol.CapabilityReport{ProtocolVersion: protocol.CurrentVersion, Platform: runtime.GOOS, Architecture: runtime.GOARCH, AgentVersion: AgentVersion, Capabilities: c.capabilities()}
@@ -516,7 +516,7 @@ func (c *Client) collectTelemetry(ctx context.Context) error {
 }
 
 func (c *Client) post(ctx context.Context, base, path, credential string, body, output any) error {
-	if err := validateServerURL(base); err != nil {
+	if err := validateServerURL(base, c.State.AllowInsecurePrivateHTTP); err != nil {
 		return err
 	}
 	endpoint, err := url.JoinPath(strings.TrimRight(base, "/"), path)
@@ -552,19 +552,8 @@ func (c *Client) post(ctx context.Context, base, path, credential string, body, 
 	return nil
 }
 
-func validateServerURL(raw string) error {
-	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return fmt.Errorf("server URL must be an origin without user info, query, or fragment")
-	}
-	if u.Scheme == "https" {
-		return nil
-	}
-	host := u.Hostname()
-	if u.Scheme == "http" && (host == "localhost" || net.ParseIP(host) != nil && net.ParseIP(host).IsLoopback()) {
-		return nil
-	}
-	return fmt.Errorf("server URL must use HTTPS")
+func validateServerURL(raw string, allowInsecurePrivateHTTP bool) error {
+	return serverurl.Validate(raw, allowInsecurePrivateHTTP)
 }
 
 func randomID() (string, error) {

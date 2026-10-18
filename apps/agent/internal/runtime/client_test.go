@@ -164,14 +164,54 @@ func TestRejectedTelemetryDoesNotBlockNormalPoll(t *testing.T) {
 
 func TestServerURLRequiresHTTPSOutsideLoopback(t *testing.T) {
 	for _, raw := range []string{"http://vigira.example", "https://user:pass@vigira.example", "https://vigira.example/path?token=x"} {
-		if err := validateServerURL(raw); err == nil {
+		if err := validateServerURL(raw, false); err == nil {
 			t.Errorf("accepted unsafe server URL %q", raw)
 		}
 	}
 	for _, raw := range []string{"https://vigira.example", "http://127.0.0.1:8080", "http://localhost:8080"} {
-		if err := validateServerURL(raw); err != nil {
+		if err := validateServerURL(raw, false); err != nil {
 			t.Errorf("rejected valid server URL %q: %v", raw, err)
 		}
+	}
+}
+
+func TestPrivateHTTPRequiresExplicitOptIn(t *testing.T) {
+	for _, raw := range []string{"http://192.168.1.97:8080", "http://100.101.102.103:8080", "http://nas.local:8080"} {
+		if err := validateServerURL(raw, false); err == nil {
+			t.Errorf("accepted private HTTP URL %q without opt-in", raw)
+		}
+		if err := validateServerURL(raw, true); err != nil {
+			t.Errorf("rejected private HTTP URL %q with opt-in: %v", raw, err)
+		}
+	}
+	for _, raw := range []string{"http://vigira.example", "http://8.8.8.8:8080"} {
+		if err := validateServerURL(raw, true); err == nil {
+			t.Errorf("opt-in allowed plain HTTP to public host %q", raw)
+		}
+	}
+}
+
+func TestPrivateHTTPOptInIsPersistedAndUsedByPolls(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "agent.json")
+	c, err := NewClient(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.State.AllowInsecurePrivateHTTP = true
+	c.State.ServerURL, c.State.AgentID, c.State.Credential = "http://192.168.1.97:8080", "agent", "credential"
+	if err := Save(path, c.State); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := NewClient(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reloaded.State.AllowInsecurePrivateHTTP {
+		t.Fatal("opt-in was not persisted")
+	}
+	reloaded.State.AllowInsecurePrivateHTTP = false
+	if err := reloaded.post(context.Background(), reloaded.State.ServerURL, "/api/agent/poll", "credential", map[string]string{}, nil); err == nil || !strings.Contains(err.Error(), "HTTPS") {
+		t.Fatalf("poll without opt-in error = %v", err)
 	}
 }
 
