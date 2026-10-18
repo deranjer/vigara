@@ -328,9 +328,9 @@ fi
 getent group vigira-agent >/dev/null || sudo groupadd --system vigira-agent
 id -u vigira-agent >/dev/null 2>&1 || sudo useradd --system --gid vigira-agent --home-dir /var/lib/vigira-agent --shell /usr/sbin/nologin vigira-agent
 sudo install -d -o vigira-agent -g vigira-agent -m 0700 /var/lib/vigira-agent
-printf '%s\n' "$TOKEN" | sudo -u vigira-agent "$BASE/vigira-agent" --config /var/lib/vigira-agent/agent.json enroll --server "$SERVER" --name "$NAME" $INSECURE_FLAG
-rm -f -- "$CONFIG"
 sudo install -m 0755 "$BASE/vigira-agent" /usr/local/bin/vigira-agent
+printf '%s\n' "$TOKEN" | sudo -u vigira-agent /usr/local/bin/vigira-agent --config /var/lib/vigira-agent/agent.json enroll --server "$SERVER" --name "$NAME" $INSECURE_FLAG
+rm -f -- "$CONFIG"
 sudo install -m 0644 "$BASE/vigira-agent.service" /etc/systemd/system/vigira-agent.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now vigira-agent.service

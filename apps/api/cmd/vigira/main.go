@@ -146,6 +146,8 @@ func main() {
 	router.Handle("/api/devices/{deviceID}/maintenance", alertsMux)
 	router.Handle("/api/devices/{deviceID}/maintenance/{windowID}", alertsMux)
 	router.Handle("/api/agents/*", agentMux)
+	router.Handle("/api/agent-downloads", agentMux)
+	router.Handle("/api/agent-downloads/*", agentMux)
 	router.Handle("/api/devices/*", agentMux)
 	router.Handle("/api/inventory/*", inventoryMux)
 	auth.RegisterAPI(api, authService, cfg.SecureSessionCookie)
