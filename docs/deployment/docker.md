@@ -63,7 +63,7 @@ Agent bundle downloads require release files and a public HTTPS URL. Build the b
 python scripts/package_agent_releases.py 0.1.0 deploy/agent-releases
 ```
 
-Set `VIGIRA_AGENT_RELEASE_HOST_DIR=./agent-releases` and `VIGIRA_PUBLIC_URL=https://vigira.example` in `deploy/.env.staging`. Ensure the directory and files are readable by the container's UID 10001, usually with directory mode 755 and file mode 644. Start or update the app with the optional override file:
+Set `VIGIRA_AGENT_RELEASE_HOST_DIR=./agent-releases` and `VIGIRA_PUBLIC_URL=https://vigira.example` in `deploy/.env.staging`. Ensure the directory and files are readable by the container's UID 10001, usually with directory mode 755 and file mode 644. For a home network without HTTPS, you can instead set `VIGIRA_PUBLIC_URL=http://192.168.1.50:8080` and `VIGIRA_ALLOW_INSECURE_AGENT_HTTP=true`; add other addresses such as a Tailscale one with `VIGIRA_PUBLIC_URLS`. This is limited to private-network addresses and leaves agent traffic unencrypted; read [Server addresses and plain HTTP](../agent.md#server-addresses-and-plain-http) first. Start or update the app with the optional override file:
 
 ```sh
 docker compose --env-file deploy/.env.staging -f deploy/compose.staging.yml -f deploy/compose.staging.downloads.example.yml up -d app
