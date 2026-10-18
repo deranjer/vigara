@@ -298,6 +298,12 @@ func TestPrivateHTTPBundleCarriesInsecureMarkerAndOnlyApprovedURLs(t *testing.T)
 		t.Fatalf("insecure bootstrap = %+v installer flag present=%v", bootstrap, strings.Contains(installer, "--allow-insecure-private-http"))
 	}
 
+	// The agent binary must be installed to a path the service account can execute
+	// before enrollment, because the extracted bundle may sit in a private home directory.
+	if install, enroll := strings.Index(installer, "install -m 0755"), strings.Index(installer, " enroll "); install < 0 || enroll < 0 || install > enroll || strings.Contains(installer, `sudo -u vigira-agent "$BASE/`) {
+		t.Fatalf("installer must install the binary to /usr/local/bin before enrolling from there: %s", installer)
+	}
+
 	// An approved HTTPS alternate is not flagged.
 	rec = post(`{"target":"linux-amd64","serverUrl":"https://vigira.example/","name":"TLS node","features":[]}`)
 	if rec.Code != http.StatusOK {
