@@ -117,7 +117,7 @@ export function Resources({ kind, route, role, onNavigate }: Props) {
     </Card>
 
     {detail && hostId && <DetailDialog kind={kind} hostId={hostId} row={detail} mayManage={mayManage} onClose={() => setDetail(null)} onRemove={(row) => { setDetail(null); setRemoving(row) }} onOpenContainer={(name) => onNavigate(routeOf('containers', hostId, name))} />}
-    {removing && hostId && <RemoveDialog kind={kind} hostId={hostId} row={removing} onClose={() => setRemoving(null)} onDone={() => { setRemoving(null); void refresh() }} />}
+    {removing && hostId && <RemoveDialog kind={kind} hostId={hostId} row={removing} onClose={() => setRemoving(null)} onDone={() => void refresh()} />}
     {pruning && hostId && <PruneDialog kind={kind} hostId={hostId} onClose={() => setPruning(false)} onDone={() => void refresh()} />}
     {pulling && hostId && <PullDialog hostId={hostId} onClose={() => setPulling(false)} onDone={() => void refresh()} />}
   </>
