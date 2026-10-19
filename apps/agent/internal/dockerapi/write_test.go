@@ -560,3 +560,38 @@ func TestRecreateRejectsBadReferences(t *testing.T) {
 		t.Fatal("bad references reached Docker")
 	}
 }
+
+func TestAPullFailureKeepsDockersExplanation(t *testing.T) {
+	client, e := newFakeEngine(t)
+	original := e.add(appContainer(true))
+	e.failures["POST /images/create"] = func(w http.ResponseWriter) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"message": "pull access denied for app, repository does not exist or may require 'docker login'"})
+	}
+	_, err := client.Recreate(context.Background(), protocol.DockerRecreateParams{ID: "web", Pull: true}, nil)
+	var failure *RecreateError
+	if !errors.As(err, &failure) || failure.Step != protocol.StepPull || failure.RolledBack {
+		t.Fatalf("error = %v", err)
+	}
+	if !strings.Contains(err.Error(), "pull access denied") || strings.Contains(err.Error(), "container not found") {
+		t.Fatalf("the user must see why the pull failed, got %q", err)
+	}
+	if c := e.byName("web"); c == nil || c.id != original.id || !c.running {
+		t.Fatal("the original changed")
+	}
+}
+
+func TestSlowStopsAreNotCutOffByTheTransport(t *testing.T) {
+	// Docker answers a stop only after the container exits, which for a process that ignores
+	// SIGTERM is the full grace period. The default transport must not impose a shorter limit.
+	client, err := New("http://127.0.0.1:1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport, ok := client.http.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("unexpected transport %T", client.http.Transport)
+	}
+	if transport.ResponseHeaderTimeout != 0 || client.http.Timeout != 0 {
+		t.Fatalf("response header timeout %v and client timeout %v would cut slow stops short", transport.ResponseHeaderTimeout, client.http.Timeout)
+	}
+}

@@ -62,7 +62,9 @@ func New(host string, httpClient *http.Client) (*Client, error) {
 		return nil, err
 	}
 	if httpClient == nil {
-		transport := &http.Transport{ResponseHeaderTimeout: 10 * time.Second, IdleConnTimeout: 30 * time.Second}
+		// No response-header timeout: stopping a container that ignores SIGTERM only answers after
+		// Docker's grace period (up to 300 s), and every request already carries its own deadline.
+		transport := &http.Transport{IdleConnTimeout: 30 * time.Second}
 		if socket != "" {
 			transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
 				return (&net.Dialer{Timeout: 3 * time.Second}).DialContext(ctx, "unix", socket)
@@ -80,6 +82,10 @@ type APIError struct {
 	Status  int
 	Message string
 }
+
+// Is lets callers keep testing errors.Is(err, ErrNotFound) for a 404 while still
+// seeing Docker's explanation, which for a missing image says why it could not be pulled.
+func (e *APIError) Is(target error) bool { return target == ErrNotFound && e.Status == http.StatusNotFound }
 
 func (e *APIError) Error() string {
 	if e.Message != "" {
@@ -110,11 +116,7 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	if err != nil {
 		return nil, err
 	}
-	switch {
-	case resp.StatusCode == http.StatusNotFound:
-		resp.Body.Close()
-		return nil, ErrNotFound
-	case resp.StatusCode == http.StatusNotModified, resp.StatusCode >= 200 && resp.StatusCode < 300:
+	if resp.StatusCode == http.StatusNotModified || resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return resp, nil
 	}
 	var failure struct {
