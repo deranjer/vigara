@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Alert, Badge, Button, Card, Group, Loader, Pagination, Select, Stack, Switch, Table, Text, TextInput, Title } from '@mantine/core'
+import { Alert, Badge, Button, Card, Checkbox, Group, Loader, Pagination, Select, Stack, Switch, Table, Text, TextInput, Title } from '@mantine/core'
+import { BulkBar } from './container-actions'
 import { ContainerDetail } from './container-detail'
-import { filterRows, fleetRows, groupRows, paginate, portSummary, stateColors, stateCounts, type FleetRow, type HostEntry } from './container-utils'
+import { canManage, filterRows, fleetRows, groupRows, paginate, portSummary, stateColors, stateCounts, type FleetRow, type HostEntry } from './container-utils'
 import { route as routeOf, type Route } from './route'
 
 const pageSize = 25
@@ -37,18 +38,19 @@ export function Containers({ route, role, onNavigate }: Props) {
   }, [refresh])
 
   if (route.id && route.sub) {
-    return <ContainerDetail hostId={route.id} reference={route.sub} tab={route.tab ?? 'overview'} hosts={hosts} role={role} onNavigate={onNavigate} />
+    return <ContainerDetail hostId={route.id} reference={route.sub} tab={route.tab ?? 'overview'} hosts={hosts} role={role} onNavigate={onNavigate} refreshFleet={() => void refresh()} />
   }
-  return <Fleet hosts={hosts} error={error} refresh={refresh} onNavigate={onNavigate} />
+  return <Fleet hosts={hosts} error={error} role={role} refresh={refresh} onNavigate={onNavigate} />
 }
 
-function Fleet({ hosts, error, refresh, onNavigate }: { hosts: HostEntry[] | null; error: string; refresh: () => Promise<void>; onNavigate: (route: Route) => void }) {
+function Fleet({ hosts, error, role, refresh, onNavigate }: { hosts: HostEntry[] | null; error: string; role: string; refresh: () => Promise<void>; onNavigate: (route: Route) => void }) {
   const [search, setSearch] = useState('')
   const [hostId, setHostId] = useState<string | null>(null)
   const [state, setState] = useState<string | null>(null)
   const [grouped, setGrouped] = useState(false)
   const [page, setPage] = useState(1)
   const [pings, setPings] = useState<Record<string, PingResult>>({})
+  const [selected, setSelected] = useState<Set<string>>(new Set())
 
   const rows = useMemo(() => fleetRows(hosts ?? []), [hosts])
   const filtered = useMemo(() => filterRows(rows, { search, hostId, state }), [rows, search, hostId, state])
@@ -68,16 +70,26 @@ function Fleet({ hosts, error, refresh, onNavigate }: { hosts: HostEntry[] | nul
     }
   }
 
-  const open = (row: FleetRow) => onNavigate(routeOf('containers', row.hostId, row.id))
+  const key = (row: FleetRow) => `${row.hostId}/${row.id}`
+  const selectable = (row: FleetRow) => canManage(role, row.hostTier)
+  const selectableRows = shown.items.filter(selectable)
+  const chosen = rows.filter((row) => selected.has(key(row)))
+  const showSelect = rows.some(selectable)
+  const allChosen = selectableRows.length > 0 && selectableRows.every((row) => selected.has(key(row)))
+  const toggle = (row: FleetRow, on: boolean) => setSelected((current) => { const next = new Set(current); if (on) next.add(key(row)); else next.delete(key(row)); return next })
+  const toggleAll = (on: boolean) => setSelected((current) => { const next = new Set(current); for (const row of selectableRows) { if (on) next.add(key(row)); else next.delete(key(row)) } return next })
+  // Containers are opened by name, which survives a recreate; the ID changes.
+  const open = (row: FleetRow) => onNavigate(routeOf('containers', row.hostId, row.name || row.id))
   const renderRow = (row: FleetRow, showHost: boolean) => <Table.Tr key={`${row.hostId}/${row.id}`} className="device-row" tabIndex={0} aria-label={`Open container ${row.name}`}
     onClick={() => open(row)} onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); open(row) } }}>
+    {showSelect && <Table.Td onClick={(event) => event.stopPropagation()} w={36}>{selectable(row) && <Checkbox size="xs" aria-label={`Select ${row.name}`} checked={selected.has(key(row))} onChange={(event) => toggle(row, event.currentTarget.checked)} />}</Table.Td>}
     <Table.Td><Text fw={600} size="sm">{row.name || row.id.slice(0, 12)}</Text>{row.service && <Text size="xs" c="dimmed">{row.service}</Text>}</Table.Td>
     <Table.Td><Text size="sm" style={{ wordBreak: 'break-all' }}>{row.image}</Text></Table.Td>
     <Table.Td><Badge color={stateColors[row.state] ?? 'gray'} variant="light">{row.state}</Badge><Text size="xs" c="dimmed" mt={2}>{row.status}</Text></Table.Td>
     <Table.Td><Text size="sm">{portSummary(row.ports) || '–'}</Text></Table.Td>
     {showHost && <Table.Td><Text size="sm">{row.hostName}</Text></Table.Td>}
   </Table.Tr>
-  const head = (showHost: boolean) => <Table.Thead><Table.Tr><Table.Th>Name</Table.Th><Table.Th>Image</Table.Th><Table.Th>State</Table.Th><Table.Th>Ports</Table.Th>{showHost && <Table.Th>Host</Table.Th>}</Table.Tr></Table.Thead>
+  const head = (showHost: boolean) => <Table.Thead><Table.Tr>{showSelect && <Table.Th w={36}><Checkbox size="xs" aria-label="Select all on this page" checked={allChosen} indeterminate={!allChosen && selectableRows.some((row) => selected.has(key(row)))} onChange={(event) => toggleAll(event.currentTarget.checked)} disabled={selectableRows.length === 0} /></Table.Th>}<Table.Th>Name</Table.Th><Table.Th>Image</Table.Th><Table.Th>State</Table.Th><Table.Th>Ports</Table.Th>{showHost && <Table.Th>Host</Table.Th>}</Table.Tr></Table.Thead>
 
   return <>
     <Text size="xs" fw={700} c="dimmed" tt="uppercase">Home infrastructure</Text>
@@ -115,6 +127,7 @@ function Fleet({ hosts, error, refresh, onNavigate }: { hosts: HostEntry[] | nul
         <Select label="State" placeholder="Any state" clearable value={state} onChange={(value) => { setState(value); setPage(1) }} data={states.map((value) => ({ value, label: `${value} (${counts[value]})` }))} />
         <Switch label="Group by Compose project" checked={grouped} onChange={(event) => { setGrouped(event.currentTarget.checked); setPage(1) }} mb={6} />
       </Group>
+      {chosen.length > 0 && <BulkBar rows={chosen} role={role} onClear={() => setSelected(new Set())} onFinished={() => void refresh()} />}
       {filtered.length === 0 ? <Text c="dimmed">No containers match these filters.</Text>
         : grouped ? <Stack gap="lg">{groupRows(shown.items).map((group) => <div key={group.key}>
           <Group gap="xs" mb={4}><Text fw={700} size="sm">{group.title}</Text><Text size="xs" c="dimmed">on {group.subtitle}</Text><Badge variant="light" color="gray">{group.rows.length}</Badge></Group>

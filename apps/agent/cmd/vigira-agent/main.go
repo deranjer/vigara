@@ -20,6 +20,7 @@ import (
 	"github.com/deranjer/vigara/apps/agent/internal/dockerchannel"
 	agentruntime "github.com/deranjer/vigara/apps/agent/internal/runtime"
 	"github.com/deranjer/vigara/internal/composeadoption"
+	"github.com/deranjer/vigara/internal/protocol"
 	"github.com/deranjer/vigara/internal/serverurl"
 )
 
@@ -179,6 +180,10 @@ func registerDocker(live *agentchannel.Client, logger *slog.Logger) {
 		return
 	}
 	dockerchannel.Register(live, api)
+	if protocol.DockerTierRank(protocol.DockerTier(live.Capabilities())) >= protocol.DockerTierRank(protocol.DockerModeManage) {
+		dockerchannel.RegisterManage(live, api)
+		logger.Info("container management is enabled on this host", "tier", protocol.DockerTier(live.Capabilities()))
+	}
 }
 
 func interruptContext() (context.Context, context.CancelFunc) {

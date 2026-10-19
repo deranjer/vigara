@@ -58,7 +58,7 @@ func (s *Service) Authorize(w http.ResponseWriter, r *http.Request, permission P
 // Everything else that changes state needs the admin role, so a viewer or
 // operator can never reach an older admin-only endpoint that predates roles.
 // Routes under these prefixes must check their own, narrower permission.
-var writeGuardOpen = []string{"/api/auth/", "/api/setup/", "/api/agent/", "/api/channel/"}
+var writeGuardOpen = []string{"/api/auth/", "/api/setup/", "/api/agent/", "/api/channel/", "/api/containers/"}
 
 // WriteGuard rejects state-changing /api requests from signed-in users who are
 // not administrators, except on routes that enforce their own permission.

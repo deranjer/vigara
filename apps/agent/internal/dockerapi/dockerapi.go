@@ -1,7 +1,9 @@
-// Package dockerapi is the agent's read-only client for the local Docker Engine
-// API: container lists, curated inspect, and log and statistics streams. It only
-// issues GET requests, validates every container reference, and bounds every
-// response, so a compromised server cannot use it to reach anything else.
+// Package dockerapi is the agent's client for the local Docker Engine API. The
+// read methods in this file (container lists, curated inspect, log and statistics
+// streams) only issue GET requests. The methods in write.go change the host; the
+// agent registers them only at the manage tier. Every container reference is
+// validated and every response bounded, so a compromised server cannot use the
+// client to reach anything beyond its fixed set of operations.
 package dockerapi
 
 import (
@@ -71,14 +73,38 @@ func New(host string, httpClient *http.Client) (*Client, error) {
 	return &Client{base: base, http: httpClient}, nil
 }
 
-func (c *Client) open(ctx context.Context, path string, query url.Values) (*http.Response, error) {
+// APIError is a refusal from the Docker Engine: Status is its HTTP status and
+// Message the explanation it gave, which Docker words for operators and which
+// carries no credentials.
+type APIError struct {
+	Status  int
+	Message string
+}
+
+func (e *APIError) Error() string {
+	if e.Message != "" {
+		return fmt.Sprintf("docker returned HTTP %d: %s", e.Status, e.Message)
+	}
+	return fmt.Sprintf("docker returned HTTP %d", e.Status)
+}
+
+// do issues one request. A 304 (Docker's "already in that state") is returned as a
+// response; 404 becomes ErrNotFound and any other failure an *APIError.
+func (c *Client) do(ctx context.Context, method, path string, query url.Values, body []byte) (*http.Response, error) {
 	endpoint := c.base + "/" + apiVersion + path
 	if len(query) > 0 {
 		endpoint += "?" + query.Encode()
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, reader)
 	if err != nil {
 		return nil, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -88,11 +114,24 @@ func (c *Client) open(ctx context.Context, path string, query url.Values) (*http
 	case resp.StatusCode == http.StatusNotFound:
 		resp.Body.Close()
 		return nil, ErrNotFound
-	case resp.StatusCode < 200 || resp.StatusCode >= 300:
-		resp.Body.Close()
-		return nil, fmt.Errorf("docker returned HTTP %d", resp.StatusCode)
+	case resp.StatusCode == http.StatusNotModified, resp.StatusCode >= 200 && resp.StatusCode < 300:
+		return resp, nil
 	}
-	return resp, nil
+	var failure struct {
+		Message string `json:"message"`
+	}
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+	resp.Body.Close()
+	_ = json.Unmarshal(data, &failure)
+	if len(failure.Message) > 300 {
+		failure.Message = failure.Message[:300]
+	}
+	return nil, &APIError{Status: resp.StatusCode, Message: strings.TrimSpace(failure.Message)}
+}
+
+// open issues a GET; every read method goes through it.
+func (c *Client) open(ctx context.Context, path string, query url.Values) (*http.Response, error) {
+	return c.do(ctx, http.MethodGet, path, query, nil)
 }
 
 func (c *Client) getJSON(ctx context.Context, path string, query url.Values, limit int64, out any) error {

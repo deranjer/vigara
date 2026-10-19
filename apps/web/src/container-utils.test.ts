@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { appendBounded, filterLogLines, filterRows, fleetRows, formatBytes, formatRate, groupRows, isStreamEnd, logsToText, paginate, parseRecords, portSummary, stateCounts, streamUrl, type HostEntry, type LogLine } from './container-utils'
+import { actionsFor, appendBounded, canManage, drainRecords, filterLogLines, filterRows, fleetRows, formatBytes, formatRate, groupRows, isStreamEnd, logsToText, manageBlocker, needsConfirmation, paginate, parseRecords, portSummary, runLimited, shortImageId, stateCounts, streamUrl, type ActionName, type HostEntry, type LogLine } from './container-utils'
 
 const hosts: HostEntry[] = [
   { agentId: 'a1', name: 'nas', state: 'ok', containers: [
@@ -81,5 +81,68 @@ describe('container-utils', () => {
     expect(filterLogLines(lines, 'warning')).toEqual([lines[1]])
     expect(filterLogLines(lines, '  ')).toEqual(lines)
     expect(logsToText(lines)).toBe('2026-10-18T10:00:00Z Started server\n[stderr] Disk WARNING')
+  })
+})
+
+describe('container actions', () => {
+  it('offers sensible actions for each state', () => {
+    expect(actionsFor('running')).toEqual(['stop', 'restart', 'pause', 'kill', 'remove'])
+    expect(actionsFor('paused')).toEqual(['unpause', 'stop', 'kill', 'remove'])
+    expect(actionsFor('restarting')).toEqual(['stop', 'kill', 'remove'])
+    expect(actionsFor('exited')).toEqual(['start', 'remove'])
+    expect(actionsFor('created')).toEqual(['start', 'remove'])
+    expect(actionsFor('something-new')).toEqual(['start', 'remove'])
+  })
+
+  it('requires both a role and a host tier before allowing changes', () => {
+    expect(canManage('admin', 'manage')).toBe(true)
+    expect(canManage('operator', 'exec')).toBe(true)
+    expect(canManage('operator', 'deploy')).toBe(true)
+    expect(canManage('viewer', 'manage')).toBe(false)
+    expect(canManage('admin', 'read')).toBe(false)
+    expect(canManage('admin', undefined)).toBe(false)
+    expect(canManage('', 'manage')).toBe(false)
+    expect(manageBlocker('admin', 'manage')).toBeNull()
+    expect(manageBlocker('viewer', 'manage')).toContain('view')
+    expect(manageBlocker('operator', 'read')).toContain('VIGIRA_DOCKER_MODE')
+  })
+
+  it('asks for confirmation only on destructive actions', () => {
+    expect(['start', 'stop', 'restart', 'pause', 'unpause'].some((action) => needsConfirmation(action as ActionName))).toBe(false)
+    expect(needsConfirmation('kill')).toBe(true)
+    expect(needsConfirmation('remove')).toBe(true)
+    expect(needsConfirmation('recreate')).toBe(true)
+  })
+
+  it('drains complete NDJSON records and keeps the partial tail', () => {
+    const first = drainRecords<{ step: string }>('{"step":"pull"}\n{"step":"cre')
+    expect(first.records).toEqual([{ step: 'pull' }])
+    expect(first.rest).toBe('{"step":"cre')
+    const second = drainRecords<{ step: string }>(first.rest + 'ate"}\nnot json\n\n{"step":"done"}\n')
+    expect(second.records).toEqual([{ step: 'create' }, { step: 'done' }])
+    expect(second.rest).toBe('')
+    expect(drainRecords('')).toEqual({ records: [], rest: '' })
+  })
+
+  it('runs tasks with a concurrency limit and keeps result order', async () => {
+    let running = 0
+    let peak = 0
+    const results = await runLimited([30, 5, 20, 1, 10, 2], 2, async (ms) => {
+      running += 1
+      peak = Math.max(peak, running)
+      await new Promise((resolve) => setTimeout(resolve, ms))
+      running -= 1
+      return ms * 2
+    })
+    expect(results).toEqual([60, 10, 40, 2, 20, 4])
+    expect(peak).toBe(2)
+    expect(await runLimited([], 3, async (value: number) => value)).toEqual([])
+  })
+
+  it('formats image ids and carries the host tier on rows', () => {
+    expect(shortImageId('sha256:0123456789abcdef0123')).toBe('0123456789ab')
+    expect(shortImageId(undefined)).toBe('–')
+    const rows = fleetRows([{ agentId: 'a', name: 'nas', state: 'ok', dockerTier: 'manage', containers: [{ id: 'c', name: 'web', image: 'x', state: 'running', status: 'Up', created: 1 }] }])
+    expect(rows[0].hostTier).toBe('manage')
   })
 })

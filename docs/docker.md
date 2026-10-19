@@ -84,3 +84,18 @@ With Docker collection enabled, the agent also answers read-only requests from t
 A host that has not set `VIGIRA_DOCKER_ENABLED=true` does not register these methods, and the Containers page reports that Docker is not enabled there. Container references are validated as plain Docker names or IDs before any request is made, responses are size-limited, and log lines over 16 KiB are cut and marked.
 
 Environment variable **values** are not sent unless an administrator asks to reveal them; that request is recorded in the [audit log](users-and-roles.md#audit-log) as `container.env.reveal`. Command arguments, labels, and mounts are shown, so avoid putting secrets there.
+
+## Changing containers
+
+Hosts at the `manage` tier or above also answer methods that change containers. They are registered only when `VIGIRA_DOCKER_MODE` is `manage`, `exec`, or `deploy`, and the channel refuses them below that tier, so a read-only host can never run them.
+
+| Method | What it does |
+|---|---|
+| `docker.action` | One lifecycle action: `start`, `stop`, `restart`, `pause`, `unpause`, `kill` (with a signal from a fixed list), or `remove` (optionally forced, optionally deleting anonymous volumes) |
+| `docker.recreate` | Replaces a container with a fresh copy built from its own settings, optionally pulling its image first, and streams progress |
+
+Actions return Docker's own explanation when it refuses, for example removing a running container without force. Starting a container that is running, or stopping one that is stopped, is reported as already in that state rather than as an error.
+
+**Recreate** builds the replacement while the original keeps running, so a failure to create it, for example because the image is missing or the pull fails, leaves the original untouched. It then stops the original, moves the names, starts the replacement, and waits a couple of seconds to confirm it is still running before removing the original. If anything fails after the swap begins, the replacement is removed and the original is renamed back and started again. Once the swap begins it always finishes or rolls back, even if the browser disconnects. A container that was stopped stays stopped.
+
+The replacement keeps the original's image reference, environment, command, labels, mounts and bind mounts, ports, restart policy, limits, and network attachments (including static addresses and aliases). Docker-assigned values such as the generated hostname, container ID, and dynamic addresses are not copied. Volumes are reused, so data in them carries over. Pulls use no registry credentials, so private registries are not supported yet. Images pinned by digest are not pulled. A container managed by Docker Compose keeps its Compose labels, but recreating it here does not apply changes made to the Compose file; redeploy the stack for that.
