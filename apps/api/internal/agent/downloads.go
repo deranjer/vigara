@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/deranjer/vigara/internal/protocol"
 )
 
 // ConfigureDownloads sets operator-owned bundle provenance and the reachable
@@ -32,7 +34,12 @@ type releaseManifest struct {
 
 var supportedDownloads = map[string]string{"windows-amd64": "vigira-agent-windows-amd64.exe", "linux-amd64": "vigira-agent-linux-amd64", "linux-arm64": "vigira-agent-linux-arm64"}
 
-var selectableFeatures = map[string]bool{"restic.backup": true}
+var selectableFeatures = map[string]bool{
+	"restic.backup":                 true,
+	protocol.CapabilityDockerManage: true,
+	protocol.CapabilityDockerExec:   true,
+	protocol.CapabilityDockerDeploy: true,
+}
 
 type boundedBundleWriter struct {
 	w         http.ResponseWriter

@@ -227,3 +227,29 @@ func TestAgentResponseAcceptsAdditiveOptionalFields(t *testing.T) {
 		t.Fatalf("poll delay = %s, want at least 30 seconds", delay)
 	}
 }
+
+func TestDockerTierCapabilitiesRequireLocalOptIn(t *testing.T) {
+	c, err := NewClient(filepath.Join(t.TempDir(), "state", "agent.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		enabled, mode string
+		want          []string
+	}{
+		{"", "deploy", nil},
+		{"true", "", nil},
+		{"true", "read", nil},
+		{"true", "manage", []string{"docker.manage"}},
+		{"true", "exec", []string{"docker.manage", "docker.exec"}},
+		{"true", "deploy", []string{"docker.manage", "docker.exec", "docker.deploy"}},
+		{"true", "bogus", nil},
+	} {
+		t.Setenv("VIGIRA_DOCKER_ENABLED", tc.enabled)
+		t.Setenv("VIGIRA_DOCKER_MODE", tc.mode)
+		got := c.capabilities()
+		if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+			t.Errorf("enabled=%q mode=%q capabilities = %v, want %v", tc.enabled, tc.mode, got, tc.want)
+		}
+	}
+}

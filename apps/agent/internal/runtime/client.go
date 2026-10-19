@@ -13,6 +13,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
+	"os"
 	"net/url"
 	"runtime"
 	"strings"
@@ -194,10 +195,26 @@ func recoverInterruptedBackup(state *State) error {
 }
 
 func (c *Client) capabilities() []string {
+	capabilities := []string{}
 	if resticCapabilityEnabled(c.State.ResticProfiles) {
-		return []string{resticCapability}
+		capabilities = append(capabilities, resticCapability)
 	}
-	return []string{}
+	return append(capabilities, dockerTierCapabilities()...)
+}
+
+// dockerTierCapabilities returns the Docker management tiers the local operator
+// has enabled. They apply only when Docker collection itself is enabled, and an
+// invalid VIGIRA_DOCKER_MODE offers nothing rather than guessing.
+func dockerTierCapabilities() []string {
+	if !strings.EqualFold(strings.TrimSpace(os.Getenv("VIGIRA_DOCKER_ENABLED")), "true") {
+		return nil
+	}
+	capabilities, err := protocol.DockerTierCapabilities(os.Getenv("VIGIRA_DOCKER_MODE"))
+	if err != nil {
+		slog.Warn("ignoring invalid Docker mode; no management capability is offered", "error", err)
+		return nil
+	}
+	return capabilities
 }
 
 func (c *Client) executeJob(parent context.Context, job protocol.Job, resultID string, progressCallbacks ...func(restic.Progress) error) (result protocol.JobResult) {
