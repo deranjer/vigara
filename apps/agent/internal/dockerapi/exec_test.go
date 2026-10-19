@@ -31,6 +31,14 @@ type fakeExecEngine struct {
 	// greeting is written in the same packet as the response headers.
 	greeting string
 	calls    []string
+	// announce, when set, is the PID the shell announces before its first output. With
+	// splitAnnounce the announcement arrives in two separate writes.
+	announce      string
+	splitAnnounce bool
+	// creates records every exec created (the terminal, then any hang-up), and detached
+	// records the bodies of detached starts.
+	creates  []map[string]any
+	detached []map[string]any
 }
 
 func newExecClient(t *testing.T) (*Client, *fakeExecEngine) {
@@ -55,9 +63,23 @@ func (e *fakeExecEngine) serve(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		e.mu.Lock()
-		e.createBody = body
+		if e.createBody == nil {
+			e.createBody = body
+		}
+		e.creates = append(e.creates, body)
+		id := "exec1"
+		if len(e.creates) > 1 {
+			id = "exec2"
+		}
 		e.mu.Unlock()
-		writeJSON(w, http.StatusCreated, map[string]string{"Id": "exec1"})
+		writeJSON(w, http.StatusCreated, map[string]string{"Id": id})
+	case r.Method == http.MethodPost && path == "/exec/exec2/start":
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		e.mu.Lock()
+		e.detached = append(e.detached, body)
+		e.mu.Unlock()
+		w.WriteHeader(http.StatusOK)
 	case r.Method == http.MethodPost && path == "/containers/stopped/exec":
 		writeJSON(w, http.StatusConflict, map[string]string{"message": "Container abc is not running"})
 	case r.Method == http.MethodPost && strings.HasSuffix(path, "/exec") && strings.Contains(path, "gone"):
@@ -79,7 +101,21 @@ func (e *fakeExecEngine) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer conn.Close()
-		_, _ = rw.WriteString("HTTP/1.1 101 UPGRADED\r\nContent-Type: application/vnd.docker.raw-stream\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n" + e.greeting)
+		e.mu.Lock()
+		announcement, split := "", e.splitAnnounce
+		if e.announce != "" {
+			announcement = "\x1b]777;vigara-pid=" + e.announce + "\x07"
+		}
+		e.mu.Unlock()
+		headers := "HTTP/1.1 101 UPGRADED\r\nContent-Type: application/vnd.docker.raw-stream\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n"
+		if split && len(announcement) > 8 {
+			_, _ = rw.WriteString(headers + announcement[:8])
+			_ = rw.Flush()
+			time.Sleep(80 * time.Millisecond)
+			_, _ = rw.WriteString(announcement[8:] + e.greeting)
+		} else {
+			_, _ = rw.WriteString(headers + announcement + e.greeting)
+		}
 		_ = rw.Flush()
 		reader := bufio.NewReader(conn)
 		buf := make([]byte, 1024)
@@ -197,7 +233,7 @@ func TestExecOpensAnUpgradedTerminalAndMovesBytesBothWays(t *testing.T) {
 }
 
 func TestExecShellChoices(t *testing.T) {
-	for shell, want := range map[string]string{"sh": "/bin/sh", "bash": "/bin/bash"} {
+	for shell, want := range map[string]string{"sh": "exec /bin/sh", "bash": "exec /bin/bash"} {
 		client, e := newExecClient(t)
 		session, err := client.StartExec(context.Background(), protocol.DockerExecParams{ID: "web", Shell: shell})
 		if err != nil {
@@ -205,8 +241,8 @@ func TestExecShellChoices(t *testing.T) {
 		}
 		session.Close()
 		cmd := e.createBody["Cmd"].([]any)
-		if len(cmd) != 1 || cmd[0] != want {
-			t.Errorf("shell %q ran %v, want [%s]", shell, cmd, want)
+		if len(cmd) != 3 || cmd[0] != "/bin/sh" || cmd[1] != "-c" || !strings.HasSuffix(cmd[2].(string), want) || !strings.Contains(cmd[2].(string), "vigara-pid=") {
+			t.Errorf("shell %q ran %v, want a /bin/sh wrapper that announces its PID and ends with %q", shell, cmd, want)
 		}
 		if _, hasUser := e.createBody["User"]; hasUser {
 			t.Error("an unset user must not be sent, so the container's own user applies")
