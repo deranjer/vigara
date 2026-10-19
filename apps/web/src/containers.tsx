@@ -1,46 +1,60 @@
-import { useCallback, useEffect, useState } from 'react'
-import { Alert, Badge, Button, Card, Group, Loader, Table, Text, Title } from '@mantine/core'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Alert, Badge, Button, Card, Group, Loader, Pagination, Select, Stack, Switch, Table, Text, TextInput, Title } from '@mantine/core'
+import { ContainerDetail } from './container-detail'
+import { filterRows, fleetRows, groupRows, paginate, portSummary, stateColors, stateCounts, type FleetRow, type HostEntry } from './container-utils'
+import { route as routeOf, type Route } from './route'
 
-type LiveAgent = { agentId: string; dockerTier: string; agentVersion: string; connectedAt: string }
-type DeviceRef = { id: string; name: string; agentId?: string | null }
-type PingResult = { state: 'running' } | { state: 'ok'; roundTripMillis: number } | { state: 'error'; message: string }
-
+const pageSize = 25
 const tierLabels: Record<string, { label: string; color: string; hint: string }> = {
-  read: { label: 'Read only', color: 'gray', hint: 'The host can be viewed but not changed.' },
+  read: { label: 'Read only', color: 'gray', hint: 'Containers can be viewed but not changed.' },
   manage: { label: 'Manage', color: 'blue', hint: 'Containers, images, networks and volumes can be changed.' },
   exec: { label: 'Manage + terminal', color: 'orange', hint: 'Includes interactive terminals inside containers.' },
   deploy: { label: 'Full control', color: 'red', hint: 'Includes deploying Compose stacks.' },
 }
+const hostStateColors: Record<string, string> = { ok: 'green', offline: 'gray', unavailable: 'yellow', error: 'red' }
+const hostStateLabels: Record<string, string> = { ok: 'Connected', offline: 'Offline', unavailable: 'Docker not enabled', error: 'Error' }
 
-async function getJSON<T>(path: string): Promise<T> {
-  const response = await fetch(path, { credentials: 'same-origin' })
-  if (!response.ok) throw new Error((await response.text()).trim().slice(0, 200) || 'The request failed.')
-  return response.json() as Promise<T>
+type Props = { route: Route; role: string; onNavigate: (route: Route) => void }
+type PingResult = { state: 'running' } | { state: 'ok'; roundTripMillis: number } | { state: 'error'; message: string }
+
+async function getFleet(): Promise<HostEntry[]> {
+  const response = await fetch('/api/containers', { credentials: 'same-origin' })
+  if (!response.ok) throw new Error((await response.text()).trim().slice(0, 200) || 'The container list could not be loaded.')
+  return ((await response.json()) as { hosts: HostEntry[] }).hosts
 }
 
-export function Containers({ selectedId, onSelect }: { selectedId: string | null; onSelect: (id: string | null) => void }) {
-  const [agents, setAgents] = useState<LiveAgent[] | null>(null)
-  const [names, setNames] = useState<Record<string, string>>({})
+export function Containers({ route, role, onNavigate }: Props) {
+  const [hosts, setHosts] = useState<HostEntry[] | null>(null)
   const [error, setError] = useState('')
-  const [pings, setPings] = useState<Record<string, PingResult>>({})
-
   const refresh = useCallback(async () => {
-    try {
-      const [live, devices] = await Promise.all([
-        getJSON<LiveAgent[]>('/api/channel/agents'),
-        getJSON<{ devices: DeviceRef[] }>('/api/inventory/devices?limit=100&offset=0').catch(() => ({ devices: [] as DeviceRef[] })),
-      ])
-      setAgents(live)
-      setNames(Object.fromEntries(devices.devices.filter((device) => device.agentId).map((device) => [device.agentId as string, device.name])))
-      setError('')
-    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not load live connections.') }
+    try { setHosts(await getFleet()); setError('') } catch (cause) { setError(cause instanceof Error ? cause.message : 'The container list could not be loaded.') }
   }, [])
 
   useEffect(() => {
-    void refresh()
+    const first = window.setTimeout(() => { void refresh() }, 0)
     const timer = window.setInterval(() => { void refresh() }, 10_000)
-    return () => window.clearInterval(timer)
+    return () => { window.clearTimeout(first); window.clearInterval(timer) }
   }, [refresh])
+
+  if (route.id && route.sub) {
+    return <ContainerDetail hostId={route.id} reference={route.sub} tab={route.tab ?? 'overview'} hosts={hosts} role={role} onNavigate={onNavigate} />
+  }
+  return <Fleet hosts={hosts} error={error} refresh={refresh} onNavigate={onNavigate} />
+}
+
+function Fleet({ hosts, error, refresh, onNavigate }: { hosts: HostEntry[] | null; error: string; refresh: () => Promise<void>; onNavigate: (route: Route) => void }) {
+  const [search, setSearch] = useState('')
+  const [hostId, setHostId] = useState<string | null>(null)
+  const [state, setState] = useState<string | null>(null)
+  const [grouped, setGrouped] = useState(false)
+  const [page, setPage] = useState(1)
+  const [pings, setPings] = useState<Record<string, PingResult>>({})
+
+  const rows = useMemo(() => fleetRows(hosts ?? []), [hosts])
+  const filtered = useMemo(() => filterRows(rows, { search, hostId, state }), [rows, search, hostId, state])
+  const counts = useMemo(() => stateCounts(rows), [rows])
+  const shown = paginate(filtered, page, pageSize)
+  const states = Object.keys(counts).sort()
 
   async function ping(agentId: string) {
     setPings((current) => ({ ...current, [agentId]: { state: 'running' } }))
@@ -54,42 +68,62 @@ export function Containers({ selectedId, onSelect }: { selectedId: string | null
     }
   }
 
-  const visible = (agents ?? []).filter((agent) => !selectedId || agent.agentId === selectedId)
+  const open = (row: FleetRow) => onNavigate(routeOf('containers', row.hostId, row.id))
+  const renderRow = (row: FleetRow, showHost: boolean) => <Table.Tr key={`${row.hostId}/${row.id}`} className="device-row" tabIndex={0} aria-label={`Open container ${row.name}`}
+    onClick={() => open(row)} onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); open(row) } }}>
+    <Table.Td><Text fw={600} size="sm">{row.name || row.id.slice(0, 12)}</Text>{row.service && <Text size="xs" c="dimmed">{row.service}</Text>}</Table.Td>
+    <Table.Td><Text size="sm" style={{ wordBreak: 'break-all' }}>{row.image}</Text></Table.Td>
+    <Table.Td><Badge color={stateColors[row.state] ?? 'gray'} variant="light">{row.state}</Badge><Text size="xs" c="dimmed" mt={2}>{row.status}</Text></Table.Td>
+    <Table.Td><Text size="sm">{portSummary(row.ports) || '–'}</Text></Table.Td>
+    {showHost && <Table.Td><Text size="sm">{row.hostName}</Text></Table.Td>}
+  </Table.Tr>
+  const head = (showHost: boolean) => <Table.Thead><Table.Tr><Table.Th>Name</Table.Th><Table.Th>Image</Table.Th><Table.Th>State</Table.Th><Table.Th>Ports</Table.Th>{showHost && <Table.Th>Host</Table.Th>}</Table.Tr></Table.Thead>
+
   return <>
     <Text size="xs" fw={700} c="dimmed" tt="uppercase">Home infrastructure</Text>
     <Title order={1} mt={4}>Containers</Title>
-    <Text c="dimmed" mt={6}>Container management for your hosts. Live features need a host's agent to hold an open connection to this server.</Text>
-    {error && <Alert color="red" mt="md" title="Live connections could not be loaded">{error}</Alert>}
-    <Alert color="blue" mt="md" title="Getting started">
-      Container lists, logs, actions and terminals are being added in stages. This page currently shows which hosts are connected and how much access each one allows.
-      A host offers more than read-only access only when its operator enables it locally with <code>VIGIRA_DOCKER_MODE</code> and its enrollment allows it.
-    </Alert>
-    {selectedId && <Group mt="md"><Button variant="default" size="xs" onClick={() => onSelect(null)}>← All hosts</Button></Group>}
+    <Text c="dimmed" mt={6}>Every container on your connected hosts. Open one to see its details, logs and live resource use.</Text>
+    {error && <Alert color="red" mt="md" title="The container list could not be loaded">{error}</Alert>}
+
     <Card withBorder radius="md" padding="lg" mt="lg">
-      <Group justify="space-between" mb="sm">
-        <Title order={3}>Connected hosts</Title>
-        <Button variant="default" size="xs" onClick={() => void refresh()}>Refresh</Button>
-      </Group>
-      {agents === null && !error ? <Group><Loader size="sm" /><Text c="dimmed">Loading…</Text></Group>
-        : visible.length === 0 ? <Text c="dimmed">No hosts are connected. Update the agent on a host to a build with live-channel support and restart it.</Text>
-        : <Table.ScrollContainer minWidth={640}><Table verticalSpacing="sm"><Table.Thead><Table.Tr><Table.Th>Host</Table.Th><Table.Th>Docker access</Table.Th><Table.Th>Agent</Table.Th><Table.Th>Connected since</Table.Th><Table.Th>Connection</Table.Th></Table.Tr></Table.Thead>
-          <Table.Tbody>{visible.map((agent) => {
-            const tier = tierLabels[agent.dockerTier] ?? tierLabels.read
-            const result = pings[agent.agentId]
-            return <Table.Tr key={agent.agentId}>
-              <Table.Td><Text fw={600} size="sm">{names[agent.agentId] ?? agent.agentId.slice(0, 8)}</Text><Text size="xs" c="dimmed">{agent.agentId.slice(0, 8)}</Text></Table.Td>
-              <Table.Td><Badge color={tier.color} variant="light" title={tier.hint}>{tier.label}</Badge></Table.Td>
-              <Table.Td><Text size="sm">{agent.agentVersion || 'unknown'}</Text></Table.Td>
-              <Table.Td><Text size="sm">{new Date(agent.connectedAt).toLocaleString()}</Text></Table.Td>
-              <Table.Td>
-                <Group gap="xs" wrap="nowrap">
-                  <Button size="xs" variant="light" loading={result?.state === 'running'} onClick={() => void ping(agent.agentId)}>Test connection</Button>
-                  {result?.state === 'ok' && <Text size="xs" c="green">Replied in {result.roundTripMillis} ms</Text>}
-                  {result?.state === 'error' && <Text size="xs" c="red">{result.message}</Text>}
-                </Group>
-              </Table.Td>
-            </Table.Tr>
-          })}</Table.Tbody></Table></Table.ScrollContainer>}
+      <Group justify="space-between" mb="sm"><Title order={3}>Hosts</Title><Button variant="default" size="xs" onClick={() => void refresh()}>Refresh</Button></Group>
+      {hosts === null && !error ? <Group><Loader size="sm" /><Text c="dimmed">Loading…</Text></Group>
+        : hosts && hosts.length === 0 ? <Text c="dimmed">No hosts have enrolled yet. Add a device first, then enable Docker on its agent.</Text>
+        : <Stack gap="xs">{hosts?.map((host) => {
+          const tier = host.dockerTier ? (tierLabels[host.dockerTier] ?? tierLabels.read) : null
+          const result = pings[host.agentId]
+          return <Group key={host.agentId} justify="space-between" wrap="nowrap" align="flex-start">
+            <div>
+              <Group gap="xs"><Text fw={600} size="sm">{host.name}</Text><Badge color={hostStateColors[host.state] ?? 'gray'} variant="light">{hostStateLabels[host.state] ?? host.state}</Badge>
+                {tier && <Badge color={tier.color} variant="outline" title={tier.hint}>{tier.label}</Badge>}
+                {host.state === 'ok' && <Text size="xs" c="dimmed">{host.containers.length} container{host.containers.length === 1 ? '' : 's'}{host.truncated ? ' (list truncated)' : ''}</Text>}</Group>
+              {host.message && host.state !== 'ok' && <Text size="xs" c="dimmed" mt={2}>{host.message}</Text>}
+            </div>
+            {host.state !== 'offline' && <Group gap="xs" wrap="nowrap">
+              {result?.state === 'ok' && <Text size="xs" c="green">Replied in {result.roundTripMillis} ms</Text>}
+              {result?.state === 'error' && <Text size="xs" c="red">{result.message}</Text>}
+              <Button size="xs" variant="light" loading={result?.state === 'running'} onClick={() => void ping(host.agentId)}>Test connection</Button>
+            </Group>}
+          </Group>
+        })}</Stack>}
     </Card>
+
+    {rows.length > 0 && <Card withBorder radius="md" padding="lg" mt="lg">
+      <Group gap="sm" mb="md" align="flex-end">
+        <TextInput label="Search" placeholder="Name, image, project or host" value={search} onChange={(event) => { setSearch(event.currentTarget.value); setPage(1) }} style={{ flex: '1 1 220px' }} />
+        <Select label="Host" placeholder="All hosts" clearable value={hostId} onChange={(value) => { setHostId(value); setPage(1) }} data={(hosts ?? []).filter((host) => host.containers.length > 0).map((host) => ({ value: host.agentId, label: host.name }))} />
+        <Select label="State" placeholder="Any state" clearable value={state} onChange={(value) => { setState(value); setPage(1) }} data={states.map((value) => ({ value, label: `${value} (${counts[value]})` }))} />
+        <Switch label="Group by Compose project" checked={grouped} onChange={(event) => { setGrouped(event.currentTarget.checked); setPage(1) }} mb={6} />
+      </Group>
+      {filtered.length === 0 ? <Text c="dimmed">No containers match these filters.</Text>
+        : grouped ? <Stack gap="lg">{groupRows(shown.items).map((group) => <div key={group.key}>
+          <Group gap="xs" mb={4}><Text fw={700} size="sm">{group.title}</Text><Text size="xs" c="dimmed">on {group.subtitle}</Text><Badge variant="light" color="gray">{group.rows.length}</Badge></Group>
+          <Table.ScrollContainer minWidth={560}><Table highlightOnHover verticalSpacing="xs">{head(false)}<Table.Tbody>{group.rows.map((row) => renderRow(row, false))}</Table.Tbody></Table></Table.ScrollContainer></div>)}</Stack>
+        : <Table.ScrollContainer minWidth={640}><Table highlightOnHover verticalSpacing="xs">{head(true)}<Table.Tbody>{shown.items.map((row) => renderRow(row, true))}</Table.Tbody></Table></Table.ScrollContainer>}
+      <Group justify="space-between" mt="md">
+        <Text size="xs" c="dimmed">{filtered.length} of {rows.length} containers</Text>
+        {shown.pages > 1 && <Pagination total={shown.pages} value={shown.page} onChange={setPage} size="sm" />}
+      </Group>
+    </Card>}
   </>
 }

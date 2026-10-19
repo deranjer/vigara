@@ -21,6 +21,7 @@ import (
 	"github.com/deranjer/vigara/apps/api/internal/alerts"
 	"github.com/deranjer/vigara/apps/api/internal/audit"
 	"github.com/deranjer/vigara/apps/api/internal/channel"
+	"github.com/deranjer/vigara/apps/api/internal/containers"
 	"github.com/deranjer/vigara/apps/api/internal/androidbackup"
 	"github.com/deranjer/vigara/apps/api/internal/auth"
 	"github.com/deranjer/vigara/apps/api/internal/backups"
@@ -107,6 +108,23 @@ func main() {
 	channelHub := channel.NewHub(channel.Options{AuthenticateAgent: agentHandler.AuthenticateAgentRequest, Capabilities: agentHandler.AgentCapabilities})
 	channelMux := http.NewServeMux()
 	channelHub.RegisterAPI(channelMux, authService)
+	containersMux := http.NewServeMux()
+	containers.RegisterAPI(containersMux, containers.Config{Hub: channelHub, Authz: authService, Audit: auditRecorder, Names: func(ctx context.Context) (map[string]string, error) {
+		rows, err := database.Pool.Query(ctx, `SELECT ai.id::text, d.display_name FROM agent_identities ai JOIN devices d ON d.id = ai.device_id WHERE ai.revoked_at IS NULL`)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		names := map[string]string{}
+		for rows.Next() {
+			var id, name string
+			if err := rows.Scan(&id, &name); err != nil {
+				return nil, err
+			}
+			names[id] = name
+		}
+		return names, rows.Err()
+	}})
 	adminMux := http.NewServeMux()
 	authService.RegisterAdmin(adminMux, auditRecorder)
 	androidBackupMux := http.NewServeMux()
@@ -148,6 +166,8 @@ func main() {
 	router.Handle("/api/agent/channel", http.HandlerFunc(channelHub.ServeAgent))
 	router.Handle("/api/agent/*", agentMux)
 	router.Handle("/api/channel/*", channelMux)
+	router.Handle("/api/containers", containersMux)
+	router.Handle("/api/containers/*", containersMux)
 	router.Handle("/api/users", adminMux)
 	router.Handle("/api/users/*", adminMux)
 	router.Handle("/api/audit", adminMux)

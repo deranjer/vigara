@@ -8,7 +8,7 @@ The first account created during setup is an administrator. Administrators can a
 | Manage containers, images, networks, and volumes | no | yes | yes |
 | Open terminals in containers | no | yes | yes |
 | Deploy stacks | no | no | yes |
-| Reveal secret values | no | no | yes |
+| Reveal secret values (such as container environment values) | no | no | yes |
 | Manage hosts, enrollment, and backups | no | no | yes |
 | Manage users and read the audit log | no | no | yes |
 

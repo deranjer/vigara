@@ -16,6 +16,8 @@ import (
 
 	dockercollector "github.com/deranjer/vigara/apps/agent/internal/collector/docker"
 	agentchannel "github.com/deranjer/vigara/apps/agent/internal/channel"
+	"github.com/deranjer/vigara/apps/agent/internal/dockerapi"
+	"github.com/deranjer/vigara/apps/agent/internal/dockerchannel"
 	agentruntime "github.com/deranjer/vigara/apps/agent/internal/runtime"
 	"github.com/deranjer/vigara/internal/composeadoption"
 	"github.com/deranjer/vigara/internal/serverurl"
@@ -159,9 +161,24 @@ func runAgent(client *agentruntime.Client, logger *slog.Logger) error {
 	return runAsService(func(ctx context.Context) error {
 		logger.Info("agent service started", "agentId", client.State.AgentID)
 		live := agentchannel.NewClient(client.State.ServerURL, client.State.Credential, agentruntime.AgentVersion, client.State.AllowInsecurePrivateHTTP, client.Capabilities, logger)
+		registerDocker(live, logger)
 		go live.Run(ctx)
 		return client.Run(ctx)
 	})
+}
+
+// registerDocker offers the Docker read methods over the live channel, but only when
+// the local operator enabled Docker collection with a valid endpoint.
+func registerDocker(live *agentchannel.Client, logger *slog.Logger) {
+	if !strings.EqualFold(strings.TrimSpace(os.Getenv("VIGIRA_DOCKER_ENABLED")), "true") {
+		return
+	}
+	api, err := dockerapi.New(strings.TrimSpace(os.Getenv("VIGIRA_DOCKER_HOST")), nil)
+	if err != nil {
+		logger.Warn("Docker live views are unavailable: the Docker endpoint configuration is invalid")
+		return
+	}
+	dockerchannel.Register(live, api)
 }
 
 func interruptContext() (context.Context, context.CancelFunc) {
