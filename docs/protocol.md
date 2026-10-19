@@ -107,3 +107,23 @@ background work or write outside their declared scope.
 
 These contracts describe the planned boundary; they do not claim that transport,
 enrollment, persistence, scheduling, or runtime isolation has been implemented.
+
+## Live channel
+
+The poll loop above is too slow for logs, terminals, and live container views, so each agent also keeps one persistent WebSocket open to the server. The agent always dials out, to `/api/agent/channel` on the same server URL it already uses (`wss` for HTTPS, `ws` for the private-network HTTP option). The server never connects to an agent. Polling continues unchanged for backups and as a fallback, and an older server that lacks the endpoint simply leaves the live features unavailable while the agent retries occasionally.
+
+The agent authenticates with its bearer credential. Both sides then exchange JSON text messages shaped as `ChannelFrame` in `internal/protocol/channel.go`, at most 1 MiB each:
+
+1. The agent sends `hello` with the channel version, its agent version, and its capabilities.
+2. The server checks the version, looks up the capabilities it stored for that agent (the agent's own claim cannot raise them), and answers `welcome`.
+3. The server sends `call` frames and receives one `result` each, or sends `stream_open` and receives ordered `stream_data` chunks of at most 32 KiB followed by `stream_end`. `cancel` abandons either.
+
+Rules that keep this safe:
+
+- A method must be listed in the protocol's method table together with the Docker tier it needs. Both server and agent refuse unknown methods and methods above the agent's tier, so the host's local setting is the final authority.
+- Requests carry a deadline that the agent enforces. At most 32 requests (calls plus streams) are in flight per agent, and 64 on the agent side.
+- A stream consumer that falls more than 256 chunks behind is cut off with a `slow_consumer` error instead of growing memory.
+- Errors are structured with a code and a message; agents report only a generic message for unexpected failures so host details do not reach the server.
+- A newer connection from the same agent replaces the older one, and the server pings each connection every 20 seconds.
+
+The only methods so far are `channel.ping` and `channel.info`; Docker methods arrive with the container management phases. The Containers page lists connected agents and can test a connection through `GET /api/channel/agents` and `POST /api/channel/agents/{id}/ping`.

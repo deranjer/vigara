@@ -3,8 +3,10 @@ import ReactDOM from 'react-dom/client'
 import { useEffect, useState, type FormEvent } from 'react'
 import { Alert, AppShell, Badge, Burger, Avatar, Button, Group, MantineProvider, NavLink, PasswordInput, ScrollArea, Text, TextInput, Title, ActionIcon, useMantineColorScheme } from '@mantine/core'
 import { useDisclosure, useMediaQuery } from '@mantine/hooks'
-import { IconChartLine, IconDeviceDesktop, IconHistory, IconLogout, IconMoon, IconSun } from '@tabler/icons-react'
+import { IconBox, IconChartLine, IconDeviceDesktop, IconHistory, IconLogout, IconMoon, IconSun } from '@tabler/icons-react'
+import { Containers } from './containers'
 import { Devices } from './devices'
+import { defaultRoute, formatRoute, parseRoute, sameRoute, type Route, type Section } from './route'
 import { compareSemver } from './semver'
 import '@mantine/core/styles.css'
 import '@mantine/charts/styles.css'
@@ -41,12 +43,26 @@ function App() {
   const [busy, setBusy] = useState(false)
   const mobile = useMediaQuery('(max-width: 47.99em)')
   const [navOpen, nav] = useDisclosure(true)
-  const [section, setSection] = useState<'devices' | 'monitoring' | 'backups'>('devices')
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null)
+  const [route, setRoute] = useState<Route>(() => parseRoute(window.location.hash))
+  const section = route.section
+  const selectedId = route.id
   const { colorScheme, toggleColorScheme } = useMantineColorScheme()
 
   useEffect(() => { document.documentElement.dataset.mantineColorScheme = colorScheme }, [colorScheme])
-  useEffect(() => { window.scrollTo({ top: 0, left: 0, behavior: 'instant' }) }, [section, selectedDeviceId])
+  useEffect(() => { window.scrollTo({ top: 0, left: 0, behavior: 'instant' }) }, [section, selectedId])
+  useEffect(() => {
+    const onHashChange = () => setRoute(parseRoute(window.location.hash))
+    window.addEventListener('hashchange', onHashChange)
+    return () => window.removeEventListener('hashchange', onHashChange)
+  }, [])
+
+  // The address bar is the source of truth, so every page and selection can be deep-linked and the
+  // browser's back button works. Assigning the hash fires hashchange, which updates the route.
+  function go(next: Route) {
+    if (sameRoute(next, route) && window.location.hash === formatRoute(next)) return
+    window.location.hash = formatRoute(next)
+    setRoute(next)
+  }
 
   async function loadView() {
     try {
@@ -121,17 +137,15 @@ function App() {
     try {
       await request('/api/auth/logout', undefined, 'POST')
       setUser(null)
-      setSelectedDeviceId(null)
-      setSection('devices')
+      go(defaultRoute)
       setView('login')
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not log out.')
     } finally { setBusy(false) }
   }
 
-  function navigate(next: 'devices' | 'monitoring' | 'backups') {
-    setSection(next)
-    setSelectedDeviceId(null)
+  function navigate(next: Section) {
+    go({ section: next, id: null })
     if (mobile) nav.close()
   }
 
@@ -143,6 +157,7 @@ function App() {
           <Text size="xs" fw={700} c="dimmed" tt="uppercase" px="sm" py="xs">Workspace</Text>
           <NavLink component="button" label="Devices" leftSection={<IconDeviceDesktop size={18}/>} active={section === 'devices'} onClick={() => navigate('devices')} />
           <NavLink component="button" label="Monitoring" leftSection={<IconChartLine size={18}/>} active={section === 'monitoring'} onClick={() => navigate('monitoring')} />
+          <NavLink component="button" label="Containers" leftSection={<IconBox size={18}/>} active={section === 'containers'} onClick={() => navigate('containers')} />
           <NavLink component="button" label="Backup history" leftSection={<IconHistory size={18}/>} active={section === 'backups'} onClick={() => navigate('backups')} />
         </ScrollArea>
         <div className="sidebar-footer">
@@ -181,7 +196,7 @@ function App() {
             <Button type="submit" loading={busy}>Log in</Button>
           </form>
         </section>}
-        {view === 'dashboard' && <>{error && <Alert color="red" mb="md" withCloseButton onClose={() => setError('')}>{error}</Alert>}<Devices key={user?.id} section={section} selectedId={selectedDeviceId} onSelect={(id) => { setSelectedDeviceId(id); if (id) setSection('devices') }} /></>}
+        {view === 'dashboard' && <>{error && <Alert color="red" mb="md" withCloseButton onClose={() => setError('')}>{error}</Alert>}{section === 'containers' ? <Containers key={user?.id} selectedId={selectedId} onSelect={(id) => go({ section: 'containers', id })} /> : <Devices key={user?.id} section={section} selectedId={selectedId} onSelect={(id) => go({ section: id ? 'devices' : section, id })} />}</>}
       </AppShell.Main>
     </AppShell>
   </>

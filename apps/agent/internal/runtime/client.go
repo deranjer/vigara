@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/deranjer/vigara/apps/agent/internal/collector"
@@ -35,7 +36,15 @@ type Client struct {
 	State     State
 	HTTP      *http.Client
 	Collector *collector.Collector
+	// tiersSuppressed stops offering Docker management tiers after the server
+	// rejected them as outside the enrollment scope, so monitoring keeps working.
+	tiersSuppressed atomic.Bool
 }
+
+// httpStatusError is returned when the server answers with a non-success status.
+type httpStatusError struct{ status int }
+
+func (e *httpStatusError) Error() string { return fmt.Sprintf("server returned HTTP %d", e.status) }
 
 // TelemetryDeliveryError reports a rejected telemetry batch after Cycle has
 // still completed the normal poll. The snapshots remain queued for retry.
@@ -116,7 +125,18 @@ func (c *Client) Cycle(ctx context.Context) (time.Duration, error) {
 		request.KnownConfigVersion = c.State.Configuration.Version
 	}
 	var response protocol.AgentResponse
-	if err := c.post(ctx, c.State.ServerURL, "/api/agent/poll", c.State.Credential, request, &response); err != nil {
+	err := c.post(ctx, c.State.ServerURL, "/api/agent/poll", c.State.Credential, request, &response)
+	var rejected *httpStatusError
+	if err != nil && errors.As(err, &rejected) && rejected.status == http.StatusForbidden && len(dockerTierCapabilities()) > 0 && !c.tiersSuppressed.Load() {
+		// The server only rejects a report that exceeds the enrollment scope. Keep monitoring
+		// working by dropping the Docker tiers, and say clearly how to enable them.
+		slog.Warn("the server does not allow this agent's Docker management tiers; they are disabled until the device is re-enrolled with that access (or VIGIRA_DOCKER_MODE is unset)")
+		c.tiersSuppressed.Store(true)
+		request.Capabilities = c.capabilities()
+		response = protocol.AgentResponse{}
+		err = c.post(ctx, c.State.ServerURL, "/api/agent/poll", c.State.Credential, request, &response)
+	}
+	if err != nil {
 		return 0, fmt.Errorf("poll server: %w", err)
 	}
 	if response.ProtocolVersion != protocol.CurrentVersion {
@@ -194,10 +214,17 @@ func recoverInterruptedBackup(state *State) error {
 	return nil
 }
 
+// Capabilities reports what this agent offers, including the Docker tiers the
+// local operator enabled.
+func (c *Client) Capabilities() []string { return c.capabilities() }
+
 func (c *Client) capabilities() []string {
 	capabilities := []string{}
 	if resticCapabilityEnabled(c.State.ResticProfiles) {
 		capabilities = append(capabilities, resticCapability)
+	}
+	if c.tiersSuppressed.Load() {
+		return capabilities
 	}
 	return append(capabilities, dockerTierCapabilities()...)
 }
@@ -558,7 +585,7 @@ func (c *Client) post(ctx context.Context, base, path, credential string, body, 
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("server returned HTTP %d", response.StatusCode)
+		return &httpStatusError{status: response.StatusCode}
 	}
 	if output != nil {
 		decoder := json.NewDecoder(io.LimitReader(response.Body, 1<<20))

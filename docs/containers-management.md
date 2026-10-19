@@ -1,6 +1,6 @@
 # Container management plan
 
-Status: **planned**. This document records the design direction for a dedicated Containers area in the web UI. The long-term goal is to replace Portainer's viewing and management features (details, logs, stats, console, lifecycle actions, images, networks, volumes) and to deploy Compose stacks from the web UI. Nothing here is implemented yet; the [Docker inventory module](docker.md) remains read-only today.
+Status: **P0 foundations implemented; later phases planned**. This document records the design direction for a dedicated Containers area in the web UI. The long-term goal is to replace Portainer's viewing and management features (details, logs, stats, console, lifecycle actions, images, networks, volumes) and to deploy Compose stacks from the web UI. The [Docker inventory module](docker.md) remains read-only today. The P0 foundations (live channel, Docker tiers, roles and audit, deep-linkable routing, and a Containers page that lists connected hosts) are in place; see [users and roles](users-and-roles.md) and the live channel section of the [protocol](protocol.md).
 
 ## Decisions
 
@@ -57,7 +57,7 @@ Replace the raw REST calls with the official Docker client library. It supports 
 
 Each phase is independently shippable. P1 does not depend on the write tiers.
 
-### P0: Foundations
+### P0: Foundations (implemented)
 
 - WebSocket channel between server, agent, and browser, with an RPC and stream message format.
 - Capability tiers and local configuration on the agent.

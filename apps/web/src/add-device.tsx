@@ -5,6 +5,15 @@ type ServerOption = { url: string; secure: boolean }
 type Availability = { serverUrl: string; serverUrls: ServerOption[]; allowInsecureHttp: boolean; targets: string[] }
 type Props = { opened: boolean; onClose: () => void }
 
+// The ceiling the server will accept for this device's Docker access. The host's own operator must
+// still opt in locally (VIGIRA_DOCKER_MODE); the server never grants more than the enrollment allows.
+const dockerCeilings: Record<string, string[]> = {
+  read: [],
+  manage: ['docker.manage'],
+  exec: ['docker.manage', 'docker.exec'],
+  deploy: ['docker.manage', 'docker.exec', 'docker.deploy'],
+}
+
 export function AddDevice({ opened, onClose }: Props) {
   const [availability, setAvailability] = useState<Availability>({ serverUrl: '', serverUrls: [], allowInsecureHttp: false, targets: [] })
   const [target, setTarget] = useState<string | null>(null)
@@ -15,6 +24,7 @@ export function AddDevice({ opened, onClose }: Props) {
   const [session, setSession] = useState('')
   const [status, setStatus] = useState('')
   const [backupFeature, setBackupFeature] = useState(false)
+  const [dockerCeiling, setDockerCeiling] = useState<string | null>('read')
 
   const selectedOption = availability.serverUrls.find((option) => option.url === serverUrl)
 
@@ -45,7 +55,7 @@ export function AddDevice({ opened, onClose }: Props) {
   async function createBundle() {
     setBusy(true); setError('')
     try {
-      const response = await fetch('/api/agent-downloads', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target, serverUrl, name, features: backupFeature ? ['restic.backup'] : [] }) })
+      const response = await fetch('/api/agent-downloads', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target, serverUrl, name, features: [...(backupFeature ? ['restic.backup'] : []), ...(dockerCeilings[dockerCeiling ?? 'read'] ?? [])] }) })
       if (!response.ok) throw new Error((await response.text()).slice(0, 300) || 'Could not prepare the bundle.')
       const sessionId = response.headers.get('X-Vigira-Session-ID') ?? ''
       const blob = await response.blob()
@@ -65,7 +75,7 @@ export function AddDevice({ opened, onClose }: Props) {
   }
 
   function close() {
-    if (['enrolled', 'canceled', 'expired'].includes(status)) { setSession(''); setStatus(''); setName(''); setBackupFeature(false) }
+    if (['enrolled', 'canceled', 'expired'].includes(status)) { setSession(''); setStatus(''); setName(''); setBackupFeature(false); setDockerCeiling('read') }
     onClose()
   }
 
@@ -84,6 +94,14 @@ export function AddDevice({ opened, onClose }: Props) {
       {availability.targets.length === 0 && <Alert color="yellow">Agent bundles are unavailable. The server operator must provision verified release artifacts.</Alert>}
       <TextInput label="Device name" value={name} onChange={(event) => setName(event.currentTarget.value)} maxLength={120} required />
       <Checkbox checked={backupFeature} onChange={(event) => setBackupFeature(event.currentTarget.checked)} label="Allow Restic backup jobs" description="This sets the server-side capability limit only. The Restic module and repository credentials must be configured locally on the device." />
+      <Select label="Container management allowed for this device" value={dockerCeiling} onChange={setDockerCeiling} allowDeselect={false}
+        description="The most access this server will accept from the device. The device's own operator must also enable it locally; read-only viewing needs no setting."
+        data={[
+          { value: 'read', label: 'View only' },
+          { value: 'manage', label: 'Manage containers, images, networks and volumes' },
+          { value: 'exec', label: 'Manage and open terminals in containers' },
+          { value: 'deploy', label: 'Manage, terminals and deploy stacks' },
+        ]} />
       <Text size="sm" c="dimmed">Telemetry and inventory are included by the standard agent. Bundle selection never installs or enables privileged local modules.</Text>
       {status && <Alert color={status === 'enrolled' ? 'green' : status === 'waiting' ? 'blue' : 'gray'} title={`Enrollment ${status}`}>{status === 'waiting' ? <>Extract the bundle on the device and run <code>{target?.startsWith('linux-') ? 'sh install.sh' : 'install.ps1'}</code> as an administrator. This one-use enrollment expires after 30 minutes.</> : status === 'enrolled' ? 'The device has enrolled and will appear in the inventory.' : status === 'canceled' ? 'The enrollment was canceled.' : 'The enrollment expired.'}</Alert>}
       <Group justify="space-between">

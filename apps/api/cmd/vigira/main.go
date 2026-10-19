@@ -19,6 +19,8 @@ import (
 	webassets "github.com/deranjer/vigara/apps/api"
 	"github.com/deranjer/vigara/apps/api/internal/agent"
 	"github.com/deranjer/vigara/apps/api/internal/alerts"
+	"github.com/deranjer/vigara/apps/api/internal/audit"
+	"github.com/deranjer/vigara/apps/api/internal/channel"
 	"github.com/deranjer/vigara/apps/api/internal/androidbackup"
 	"github.com/deranjer/vigara/apps/api/internal/auth"
 	"github.com/deranjer/vigara/apps/api/internal/backups"
@@ -101,6 +103,12 @@ func main() {
 		logger.Warn("plain HTTP is allowed for agents on private-network addresses; agent credentials and telemetry are unencrypted on the wire")
 	}
 	agentHandler.Register(agentMux)
+	auditRecorder := audit.NewRecorder(database.Pool)
+	channelHub := channel.NewHub(channel.Options{AuthenticateAgent: agentHandler.AuthenticateAgentRequest, Capabilities: agentHandler.AgentCapabilities})
+	channelMux := http.NewServeMux()
+	channelHub.RegisterAPI(channelMux, authService)
+	adminMux := http.NewServeMux()
+	authService.RegisterAdmin(adminMux, auditRecorder)
 	androidBackupMux := http.NewServeMux()
 	androidbackup.NewHandler(database.Pool, authService, cfg.AndroidBackupRoot, cfg.AndroidBackupMaxFileBytes, cfg.AndroidBackupMaxTotalBytes).Register(agentMux, androidBackupMux)
 	telemetryMux := http.NewServeMux()
@@ -124,6 +132,7 @@ func main() {
 	}
 	router.Use(auth.NewAttemptLimiter().Middleware)
 	router.Use(authService.SessionMiddleware)
+	router.Use(authService.WriteGuard)
 	router.Get("/api/version", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"version": version, "revision": revision})
@@ -136,7 +145,12 @@ func main() {
 		out.Body.Status = "ok"
 		return out, nil
 	})
+	router.Handle("/api/agent/channel", http.HandlerFunc(channelHub.ServeAgent))
 	router.Handle("/api/agent/*", agentMux)
+	router.Handle("/api/channel/*", channelMux)
+	router.Handle("/api/users", adminMux)
+	router.Handle("/api/users/*", adminMux)
+	router.Handle("/api/audit", adminMux)
 	router.Handle("/api/agent/telemetry", telemetryMux)
 	router.Handle("/api/agent/backups/status", alertsMux)
 	router.Handle("/api/backups/android/*", androidBackupMux)

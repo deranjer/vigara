@@ -54,3 +54,18 @@ The module requires Docker Engine API v1.44 (Docker Engine 25 or newer). This al
 
 The implementation follows Docker's [Engine API reference](https://docs.docker.com/reference/api/engine/) and its
 [v1.44 API version history](https://docs.docker.com/reference/api/engine/version-history/).
+
+## Management tiers
+
+Collection stays read-only. Management features use separate tiers that the host's own operator enables locally, in addition to `VIGIRA_DOCKER_ENABLED=true`:
+
+| `VIGIRA_DOCKER_MODE` | Capabilities offered | Allows |
+|---|---|---|
+| unset or `read` | none | Today's collection, plus read-only views |
+| `manage` | `docker.manage` | Lifecycle actions, image pulls, and network and volume maintenance |
+| `exec` | `docker.manage`, `docker.exec` | Everything in `manage`, plus terminals inside containers |
+| `deploy` | all three | Everything in `exec`, plus Compose stack deployment |
+
+A tier takes effect only when both sides agree. The agent offers it because its operator set `VIGIRA_DOCKER_MODE`; the server accepts it because the device's enrollment scope includes the matching capability. Choose the scope in the **Add device** dialog ("Container management allowed for this device") or list the capabilities when creating an enrollment token. A report that exceeds the enrollment scope is rejected by the server. In that case the agent logs a warning, stops offering the tiers, and keeps monitoring; re-enroll with the needed access to enable them. An unrecognized `VIGIRA_DOCKER_MODE` offers nothing.
+
+These tiers gate the features described in the [container management plan](containers-management.md). Management features are not available yet; the tiers and the live channel are the foundation they build on. Because Docker socket access is effectively root on the host, grant the highest tier only where you need it.

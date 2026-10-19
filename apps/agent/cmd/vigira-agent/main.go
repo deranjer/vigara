@@ -15,6 +15,7 @@ import (
 	"syscall"
 
 	dockercollector "github.com/deranjer/vigara/apps/agent/internal/collector/docker"
+	agentchannel "github.com/deranjer/vigara/apps/agent/internal/channel"
 	agentruntime "github.com/deranjer/vigara/apps/agent/internal/runtime"
 	"github.com/deranjer/vigara/internal/composeadoption"
 	"github.com/deranjer/vigara/internal/serverurl"
@@ -157,6 +158,8 @@ func hostname() string {
 func runAgent(client *agentruntime.Client, logger *slog.Logger) error {
 	return runAsService(func(ctx context.Context) error {
 		logger.Info("agent service started", "agentId", client.State.AgentID)
+		live := agentchannel.NewClient(client.State.ServerURL, client.State.Credential, agentruntime.AgentVersion, client.State.AllowInsecurePrivateHTTP, client.Capabilities, logger)
+		go live.Run(ctx)
 		return client.Run(ctx)
 	})
 }

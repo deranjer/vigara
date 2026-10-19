@@ -293,3 +293,46 @@ func TestDockerTierCapabilitiesRequireLocalOptIn(t *testing.T) {
 		}
 	}
 }
+
+func TestDockerTiersAreDroppedWhenTheServerRejectsThemAsOutOfScope(t *testing.T) {
+	t.Setenv("VIGIRA_DOCKER_ENABLED", "true")
+	t.Setenv("VIGIRA_DOCKER_MODE", "manage")
+	var polls [][]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/agent/poll":
+			var request protocol.AgentRequest
+			_ = json.NewDecoder(r.Body).Decode(&request)
+			polls = append(polls, request.Capabilities)
+			if len(request.Capabilities) > 0 {
+				http.Error(w, "agent capability exceeds enrollment scope", http.StatusForbidden)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(protocol.AgentResponse{ProtocolVersion: protocol.CurrentVersion, PollAfterSeconds: 30})
+		default:
+			w.WriteHeader(http.StatusAccepted)
+		}
+	}))
+	defer server.Close()
+	c, err := NewClient(filepath.Join(t.TempDir(), "state", "agent.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.State.ServerURL, c.State.AgentID, c.State.Credential = server.URL, "agent-1", "a-private-credential"
+	if _, err := c.Cycle(context.Background()); err != nil {
+		t.Fatalf("first cycle: %v", err)
+	}
+	if len(polls) != 2 || len(polls[0]) != 1 || polls[0][0] != "docker.manage" || len(polls[1]) != 0 {
+		t.Fatalf("polls = %v, want one attempt with docker.manage then one without", polls)
+	}
+	if len(c.Capabilities()) != 0 {
+		t.Fatalf("capabilities after rejection = %v", c.Capabilities())
+	}
+	polls = nil
+	if _, err := c.Cycle(context.Background()); err != nil {
+		t.Fatalf("second cycle: %v", err)
+	}
+	if len(polls) != 1 || len(polls[0]) != 0 {
+		t.Fatalf("later polls = %v, want a single poll without tiers", polls)
+	}
+}
