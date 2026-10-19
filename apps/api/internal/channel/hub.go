@@ -117,7 +117,31 @@ type agentConn struct {
 }
 
 func (c *agentConn) info() AgentInfo {
-	return AgentInfo{AgentID: c.id, DockerTier: c.tier, AgentVersion: c.version, ConnectedAt: c.connectedAt}
+	return AgentInfo{AgentID: c.id, DockerTier: c.currentTier(), AgentVersion: c.version, ConnectedAt: c.connectedAt}
+}
+
+func (c *agentConn) currentTier() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.tier
+}
+
+// refreshTier re-reads the capabilities the server accepted for this agent. They
+// change after the channel opens, for example when an operator enables management
+// locally and the agent's next poll reports it, so the tier cached at connect time
+// can go stale.
+func (c *agentConn) refreshTier() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	capabilities, err := c.hub.opts.Capabilities(ctx, c.id)
+	if err != nil {
+		return c.currentTier()
+	}
+	tier := protocol.DockerTier(capabilities)
+	c.mu.Lock()
+	c.tier = tier
+	c.mu.Unlock()
+	return tier
 }
 
 func (c *agentConn) write(ctx context.Context, frame protocol.ChannelFrame) error {
@@ -175,7 +199,13 @@ func (h *Hub) authorizeMethod(c *agentConn, method string) error {
 	if !known {
 		return &protocol.ChannelError{Code: protocol.ErrCodeUnknownMethod, Message: "unknown method " + method}
 	}
-	return protocol.CheckChannelTier(tier, c.tier)
+	err := protocol.CheckChannelTier(tier, c.currentTier())
+	if err != nil {
+		// The cached tier may be stale; judge the request against the current one.
+		c.refreshTier()
+		err = protocol.CheckChannelTier(tier, c.currentTier())
+	}
+	return err
 }
 
 func deadlineMillis(ctx context.Context) int64 {
@@ -400,6 +430,7 @@ func (c *agentConn) pingLoop(ctx context.Context) {
 		case <-c.done:
 			return
 		case <-ticker.C:
+			c.refreshTier()
 			pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			err := c.ws.Ping(pingCtx)
 			cancel()
