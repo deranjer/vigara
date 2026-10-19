@@ -17,6 +17,7 @@ import (
 	dockercollector "github.com/deranjer/vigara/apps/agent/internal/collector/docker"
 	agentruntime "github.com/deranjer/vigara/apps/agent/internal/runtime"
 	"github.com/deranjer/vigara/internal/composeadoption"
+	"github.com/deranjer/vigara/internal/serverurl"
 )
 
 func main() {
@@ -42,13 +43,21 @@ func execute(args []string, logger *slog.Logger) error {
 			return err
 		}
 		flags := flag.NewFlagSet("enroll", flag.ContinueOnError)
-		server := flags.String("server", "", "Vigira server HTTPS URL")
+		server := flags.String("server", "", "Vigira server URL (HTTPS, or loopback HTTP)")
 		name := flags.String("name", hostname(), "device display name")
+		insecure := flags.Bool("allow-insecure-private-http", false, "allow plain HTTP to a private-network or Tailscale server address (credentials and telemetry are unencrypted)")
 		if err := flags.Parse(rest[1:]); err != nil {
 			return err
 		}
 		if *server == "" {
 			return fmt.Errorf("enroll requires --server")
+		}
+		client.State.AllowInsecurePrivateHTTP = *insecure
+		if err := serverurl.Validate(*server, *insecure); err != nil {
+			return err
+		}
+		if *insecure && !serverurl.IsSecure(*server) {
+			logger.Warn("server connection is not encrypted; use only on a trusted private network or VPN", "server", *server)
 		}
 		logger.Info("enter one-time enrollment token")
 		line, err := bufio.NewReader(os.Stdin).ReadString('\n')

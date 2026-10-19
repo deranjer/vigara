@@ -28,8 +28,11 @@ const maxRequestBytes = 1 << 20
 type Handler struct {
 	pool       *pgxpool.Pool
 	auth       *auth.Service
-	publicURL  string
 	releaseDir string
+	// serverURLs are the validated, operator-approved URLs for agent bundles; the
+	// first is the default. allowInsecureHTTP records the explicit plain-HTTP opt-in.
+	serverURLs        []string
+	allowInsecureHTTP bool
 }
 
 func NewHandler(pool *pgxpool.Pool, authService *auth.Service) *Handler {

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"strings"
 	"syscall"
 	"time"
 
@@ -91,7 +92,14 @@ func main() {
 	backups.NewHandler(database.Pool, authService).Register(backupMux)
 	agentMux := http.NewServeMux()
 	agentHandler := agent.NewHandler(database.Pool, authService)
-	agentHandler.ConfigureDownloads(os.Getenv("VIGIRA_PUBLIC_URL"), os.Getenv("VIGIRA_AGENT_RELEASE_DIR"))
+	agentHandler.ConfigureDownloads("", os.Getenv("VIGIRA_AGENT_RELEASE_DIR"))
+	allowInsecureAgentHTTP := os.Getenv("VIGIRA_ALLOW_INSECURE_AGENT_HTTP") == "true"
+	for _, rejected := range agentHandler.ConfigureServerURLs(os.Getenv("VIGIRA_PUBLIC_URL"), splitList(os.Getenv("VIGIRA_PUBLIC_URLS")), allowInsecureAgentHTTP) {
+		logger.Warn("ignoring agent server URL", "reason", rejected.Error())
+	}
+	if allowInsecureAgentHTTP {
+		logger.Warn("plain HTTP is allowed for agents on private-network addresses; agent credentials and telemetry are unencrypted on the wire")
+	}
 	agentHandler.Register(agentMux)
 	androidBackupMux := http.NewServeMux()
 	androidbackup.NewHandler(database.Pool, authService, cfg.AndroidBackupRoot, cfg.AndroidBackupMaxFileBytes, cfg.AndroidBackupMaxTotalBytes).Register(agentMux, androidBackupMux)
@@ -138,6 +146,8 @@ func main() {
 	router.Handle("/api/devices/{deviceID}/maintenance", alertsMux)
 	router.Handle("/api/devices/{deviceID}/maintenance/{windowID}", alertsMux)
 	router.Handle("/api/agents/*", agentMux)
+	router.Handle("/api/agent-downloads", agentMux)
+	router.Handle("/api/agent-downloads/*", agentMux)
 	router.Handle("/api/devices/*", agentMux)
 	router.Handle("/api/inventory/*", inventoryMux)
 	auth.RegisterAPI(api, authService, cfg.SecureSessionCookie)
@@ -168,4 +178,15 @@ func main() {
 		logger.Error("server failed", "error", err)
 		os.Exit(1)
 	}
+}
+
+// splitList parses a comma-separated environment value, ignoring blanks.
+func splitList(value string) []string {
+	var items []string
+	for _, item := range strings.Split(value, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			items = append(items, item)
+		}
+	}
+	return items
 }
