@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -348,4 +349,49 @@ func TestVersionMismatchAndInFlightLimit(t *testing.T) {
 	if err := hub.Call(bg, agentA, protocol.MethodPing, nil, nil); !errors.As(err, &channelErr) || channelErr.Code != protocol.ErrCodeBusy {
 		t.Fatalf("third concurrent request = %v", err)
 	}
+}
+
+func TestTierIsRefreshedWhenTheStoredCapabilitiesChange(t *testing.T) {
+	// The channel can open before an agent's next poll reports a newly enabled tier, so
+	// the tier cached at connect time must not stay authoritative.
+	var stored atomic.Value
+	stored.Store([]string{})
+	hub, server := testHub(t, map[string][]string{agentA: nil, agentB: nil}, func(o *Options) {
+		o.Capabilities = func(context.Context, string) ([]string, error) { return stored.Load().([]string), nil }
+		o.PingInterval = 40 * time.Millisecond
+	})
+	manager := dialAgent(t, server, agentA, protocol.ChannelVersion)
+	dialAgent(t, server, agentB, protocol.ChannelVersion)
+	waitOnline(t, hub, agentA)
+	waitOnline(t, hub, agentB)
+	ctx, cancel := callCtx()
+	defer cancel()
+
+	var channelErr *protocol.ChannelError
+	if err := hub.Call(ctx, agentA, "test.manage", nil, nil); !errors.As(err, &channelErr) || channelErr.Code != protocol.ErrCodeTierInsufficient {
+		t.Fatalf("before the tier is enabled: %v", err)
+	}
+	if info, _ := hub.Agent(agentA); info.DockerTier != protocol.DockerModeRead {
+		t.Fatalf("tier = %q", info.DockerTier)
+	}
+
+	stored.Store([]string{"docker.manage"})
+	// A request that needs more than the cached tier is judged against the current one.
+	go func() {
+		call := manager.read()
+		manager.send(protocol.ChannelFrame{Type: protocol.FrameResult, ID: call.ID, Result: json.RawMessage(`{}`)})
+	}()
+	if err := hub.Call(ctx, agentA, "test.manage", nil, nil); err != nil {
+		t.Fatalf("after the tier is enabled: %v", err)
+	}
+	// And the periodic refresh updates what the fleet view reports, even with no requests.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if info, _ := hub.Agent(agentB); info.DockerTier == protocol.DockerModeManage {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	info, _ := hub.Agent(agentB)
+	t.Fatalf("the reported tier never caught up: %q", info.DockerTier)
 }
