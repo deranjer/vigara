@@ -6,7 +6,7 @@ import { useDisclosure, useMediaQuery } from '@mantine/hooks'
 import { IconBox, IconChartLine, IconDeviceDesktop, IconHistory, IconLogout, IconMoon, IconSun } from '@tabler/icons-react'
 import { Containers } from './containers'
 import { Devices } from './devices'
-import { defaultRoute, formatRoute, parseRoute, sameRoute, type Route, type Section } from './route'
+import { defaultRoute, formatRoute, parseRoute, route as routeOf, sameRoute, type Route, type Section } from './route'
 import { compareSemver } from './semver'
 import '@mantine/core/styles.css'
 import '@mantine/charts/styles.css'
@@ -145,7 +145,7 @@ function App() {
   }
 
   function navigate(next: Section) {
-    go({ section: next, id: null })
+    go(routeOf(next))
     if (mobile) nav.close()
   }
 
@@ -196,7 +196,7 @@ function App() {
             <Button type="submit" loading={busy}>Log in</Button>
           </form>
         </section>}
-        {view === 'dashboard' && <>{error && <Alert color="red" mb="md" withCloseButton onClose={() => setError('')}>{error}</Alert>}{section === 'containers' ? <Containers key={user?.id} selectedId={selectedId} onSelect={(id) => go({ section: 'containers', id })} /> : <Devices key={user?.id} section={section} selectedId={selectedId} onSelect={(id) => go({ section: id ? 'devices' : section, id })} />}</>}
+        {view === 'dashboard' && <>{error && <Alert color="red" mb="md" withCloseButton onClose={() => setError('')}>{error}</Alert>}{section === 'containers' ? <Containers key={user?.id} route={route} role={user?.role ?? ''} onNavigate={go} /> : <Devices key={user?.id} section={section} selectedId={selectedId} onSelect={(id) => go(routeOf(id ? 'devices' : section, id))} />}</>}
       </AppShell.Main>
     </AppShell>
   </>

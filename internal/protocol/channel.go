@@ -35,6 +35,8 @@ const (
 	ErrCodeSlowConsumer     = "slow_consumer"
 	ErrCodeInternal         = "internal"
 	ErrCodeBusy             = "busy"
+	ErrCodeNotFound         = "not_found"
+	ErrCodeDockerDown       = "docker_unavailable"
 )
 
 // ChannelError is a structured failure. Messages must not contain secrets.

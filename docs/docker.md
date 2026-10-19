@@ -69,3 +69,18 @@ Collection stays read-only. Management features use separate tiers that the host
 A tier takes effect only when both sides agree. The agent offers it because its operator set `VIGIRA_DOCKER_MODE`; the server accepts it because the device's enrollment scope includes the matching capability. Choose the scope in the **Add device** dialog ("Container management allowed for this device") or list the capabilities when creating an enrollment token. A report that exceeds the enrollment scope is rejected by the server. In that case the agent logs a warning, stops offering the tiers, and keeps monitoring; re-enroll with the needed access to enable them. An unrecognized `VIGIRA_DOCKER_MODE` offers nothing.
 
 These tiers gate the features described in the [container management plan](containers-management.md). Management features are not available yet; the tiers and the live channel are the foundation they build on. Because Docker socket access is effectively root on the host, grant the highest tier only where you need it.
+
+## Live container views
+
+With Docker collection enabled, the agent also answers read-only requests from the server over the [live channel](protocol.md#live-channel), which power the **Containers** page. They need no management tier and issue only `GET` requests to the same configured endpoint:
+
+| Method | Returns |
+|---|---|
+| `docker.list` | Every container, running or not, with its Compose project and service (up to 2000 per host; the 32-container limit above applies only to telemetry snapshots) |
+| `docker.inspect` | A curated view of one container: state, command, ports, mounts, networks, limits, labels, and environment variable names |
+| `docker.logs` | A stream of log lines (stdout and stderr), following if asked, from the last 100 to 5000 lines |
+| `docker.stats` | A stream of CPU, memory, network, disk, and process readings, about one per second |
+
+A host that has not set `VIGIRA_DOCKER_ENABLED=true` does not register these methods, and the Containers page reports that Docker is not enabled there. Container references are validated as plain Docker names or IDs before any request is made, responses are size-limited, and log lines over 16 KiB are cut and marked.
+
+Environment variable **values** are not sent unless an administrator asks to reveal them; that request is recorded in the [audit log](users-and-roles.md#audit-log) as `container.env.reveal`. Command arguments, labels, and mounts are shown, so avoid putting secrets there.

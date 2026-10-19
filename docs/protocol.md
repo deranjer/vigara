@@ -127,3 +127,7 @@ Rules that keep this safe:
 - A newer connection from the same agent replaces the older one, and the server pings each connection every 20 seconds.
 
 The only methods so far are `channel.ping` and `channel.info`; Docker methods arrive with the container management phases. The Containers page lists connected agents and can test a connection through `GET /api/channel/agents` and `POST /api/channel/agents/{id}/ping`.
+
+### Docker read methods
+
+These methods and their types live in `internal/protocol/dockerchannel.go`. `docker.list` and `docker.inspect` are calls. `docker.logs` and `docker.stats` are streams whose chunks are newline-delimited JSON (`DockerLogLine` and `DockerStatsSample`); the agent never splits a record across chunks. The server relays each chunk to the browser unchanged over a same-origin WebSocket at `/api/containers/{agentId}/{container}/logs` or `/stats`, then sends a final `{"end":true}` message, with `code` and `message` when the stream failed. Closing the page cancels the agent's stream. Because the browser WebSocket upgrade is a `GET`, the server refuses it for a user without the container read permission and for any cross-origin page.

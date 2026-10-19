@@ -1,6 +1,6 @@
 # Container management plan
 
-Status: **P0 foundations implemented; later phases planned**. This document records the design direction for a dedicated Containers area in the web UI. The long-term goal is to replace Portainer's viewing and management features (details, logs, stats, console, lifecycle actions, images, networks, volumes) and to deploy Compose stacks from the web UI. The [Docker inventory module](docker.md) remains read-only today. The P0 foundations (live channel, Docker tiers, roles and audit, deep-linkable routing, and a Containers page that lists connected hosts) are in place; see [users and roles](users-and-roles.md) and the live channel section of the [protocol](protocol.md).
+Status: **P0 foundations and P1 (read-only Containers page) implemented; later phases planned**. This document records the design direction for a dedicated Containers area in the web UI. The long-term goal is to replace Portainer's viewing and management features (details, logs, stats, console, lifecycle actions, images, networks, volumes) and to deploy Compose stacks from the web UI. The [Docker inventory module](docker.md) remains read-only today. The P0 foundations (live channel, Docker tiers, roles and audit, deep-linkable routing, and a Containers page that lists connected hosts) are in place; see [users and roles](users-and-roles.md) and the live channel section of the [protocol](protocol.md).
 
 ## Decisions
 
@@ -64,7 +64,7 @@ Each phase is independently shippable. P1 does not depend on the write tiers.
 - Audit table and role model; migrate the `role` constraint to allow the three roles.
 - Web routing so containers and hosts can be deep-linked.
 
-### P1: Containers page (read-only)
+### P1: Containers page (read-only) (implemented)
 
 - A **Containers** sidebar item listing containers across all enrolled hosts, with search, host and state filters, and grouping by Compose project.
 - Pagination in place of the 32-container cap.

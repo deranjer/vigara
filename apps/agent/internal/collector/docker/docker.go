@@ -119,6 +119,10 @@ func (c *Collector) Execute(ctx context.Context, job modules.JobContext) (module
 
 var _ modules.Module = (*Collector)(nil)
 
+// Endpoint validates a configured Docker host and returns the base URL and, for a
+// unix socket, its path. Other Docker clients in the agent share these rules.
+func Endpoint(host string) (baseURL, socket string, err error) { return endpoint(host) }
+
 func endpoint(host string) (string, string, error) {
 	if strings.HasPrefix(host, "unix://") {
 		path := strings.TrimPrefix(host, "unix://")
