@@ -2,7 +2,7 @@ export type DockerPort = { ip?: string; privatePort: number; publicPort?: number
 export type ContainerInfo = { id: string; name: string; image: string; state: string; status: string; created: number; ports?: DockerPort[]; project?: string; service?: string }
 export type HostState = 'ok' | 'offline' | 'unavailable' | 'error'
 export type HostEntry = { agentId: string; name: string; state: HostState; message?: string; dockerTier?: string; containers: ContainerInfo[]; truncated?: boolean }
-export type FleetRow = ContainerInfo & { hostId: string; hostName: string }
+export type FleetRow = ContainerInfo & { hostId: string; hostName: string; hostTier?: string }
 
 export type LogLine = { s: 'o' | 'e'; t?: string; m: string; x?: boolean }
 export type StatsSample = { t: string; cpu: number; cpuCores: number; memUsed: number; memLimit: number; memPct: number; netRx: number; netTx: number; netRxBps?: number; netTxBps?: number; blkRead: number; blkWrite: number; pids: number }
@@ -26,7 +26,7 @@ export function formatRate(bytesPerSecond: number | undefined): string {
 
 /** Flattens every healthy host's containers into rows that remember where they run. */
 export function fleetRows(hosts: HostEntry[]): FleetRow[] {
-  return hosts.flatMap((host) => host.containers.map((container) => ({ ...container, hostId: host.agentId, hostName: host.name })))
+  return hosts.flatMap((host) => host.containers.map((container) => ({ ...container, hostId: host.agentId, hostName: host.name, hostTier: host.dockerTier })))
 }
 
 export type FleetFilter = { search: string; hostId: string | null; state: string | null }
@@ -122,4 +122,76 @@ export function logsToText(lines: LogLine[]): string {
 export function containerName(rows: FleetRow[], hostId: string, id: string): string | null {
   const match = rows.find((row) => row.hostId === hostId && (row.id === id || row.name === id))
   return match ? match.name : null
+}
+
+export type ActionName = 'start' | 'stop' | 'restart' | 'pause' | 'unpause' | 'kill' | 'remove'
+
+export const actionLabels: Record<ActionName | 'recreate', string> = {
+  start: 'Start', stop: 'Stop', restart: 'Restart', pause: 'Pause', unpause: 'Resume', kill: 'Kill', remove: 'Remove', recreate: 'Recreate',
+}
+export const actionPast: Record<ActionName, string> = { start: 'started', stop: 'stopped', restart: 'restarted', pause: 'paused', unpause: 'resumed', kill: 'killed', remove: 'removed' }
+
+/** The lifecycle actions that make sense for a container in `state`, most useful first. */
+export function actionsFor(state: string): ActionName[] {
+  switch (state) {
+    case 'running': return ['stop', 'restart', 'pause', 'kill', 'remove']
+    case 'paused': return ['unpause', 'stop', 'kill', 'remove']
+    case 'restarting': return ['stop', 'kill', 'remove']
+    default: return ['start', 'remove']
+  }
+}
+
+const tierRank: Record<string, number> = { read: 0, manage: 1, exec: 2, deploy: 3 }
+
+/** Changing containers needs an operator or admin role and a host that allows management. */
+export function canManage(role: string, hostTier: string | undefined): boolean {
+  return (role === 'operator' || role === 'admin') && (tierRank[hostTier ?? 'read'] ?? 0) >= tierRank.manage
+}
+
+/** Why management is unavailable, or null when it is available. */
+export function manageBlocker(role: string, hostTier: string | undefined): string | null {
+  if (role !== 'operator' && role !== 'admin') return 'Your account can view containers but not change them.'
+  if ((tierRank[hostTier ?? 'read'] ?? 0) < tierRank.manage) return 'Container management is not enabled for this host. Set VIGIRA_DOCKER_MODE=manage on its agent and allow it when the device is enrolled.'
+  return null
+}
+
+/** Actions that destroy or interrupt work and so ask for confirmation. */
+export function needsConfirmation(action: ActionName | 'recreate'): boolean {
+  return action === 'kill' || action === 'remove' || action === 'recreate'
+}
+
+export type RecreateStep = { step: string; message?: string; layer?: string; current?: number; total?: number; result?: RecreateResult }
+export type RecreateResult = { id: string; name: string; previousImageId?: string; imageId?: string; imageChanged: boolean; started: boolean; rolledBack?: boolean }
+
+/** Splits a streamed NDJSON response into complete records, keeping a trailing partial line for the next read. */
+export function drainRecords<T>(buffer: string): { records: T[]; rest: string } {
+  const lines = buffer.split('\n')
+  const rest = lines.pop() ?? ''
+  const records: T[] = []
+  for (const line of lines) {
+    if (!line.trim()) continue
+    try { records.push(JSON.parse(line) as T) } catch { /* Skip a malformed line. */ }
+  }
+  return { records, rest }
+}
+
+export type BulkOutcome = { row: FleetRow; ok: boolean; message: string }
+
+/** Runs `task` over `items` with at most `limit` running at once, preserving input order in the results. */
+export async function runLimited<T, R>(items: T[], limit: number, task: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length)
+  let next = 0
+  const worker = async () => {
+    while (next < items.length) {
+      const index = next
+      next += 1
+      results[index] = await task(items[index])
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(Math.max(1, limit), items.length) }, worker))
+  return results
+}
+
+export function shortImageId(id: string | undefined): string {
+  return id ? id.replace(/^sha256:/, '').slice(0, 12) : '–'
 }

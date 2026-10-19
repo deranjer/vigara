@@ -1,6 +1,6 @@
 # Container management plan
 
-Status: **P0 foundations and P1 (read-only Containers page) implemented; later phases planned**. This document records the design direction for a dedicated Containers area in the web UI. The long-term goal is to replace Portainer's viewing and management features (details, logs, stats, console, lifecycle actions, images, networks, volumes) and to deploy Compose stacks from the web UI. The [Docker inventory module](docker.md) remains read-only today. The P0 foundations (live channel, Docker tiers, roles and audit, deep-linkable routing, and a Containers page that lists connected hosts) are in place; see [users and roles](users-and-roles.md) and the live channel section of the [protocol](protocol.md).
+Status: **P0 foundations, P1 (read-only Containers page), and P2 (lifecycle actions) implemented; later phases planned**. This document records the design direction for a dedicated Containers area in the web UI. The long-term goal is to replace Portainer's viewing and management features (details, logs, stats, console, lifecycle actions, images, networks, volumes) and to deploy Compose stacks from the web UI. The [Docker inventory module](docker.md) remains read-only today. The P0 foundations (live channel, Docker tiers, roles and audit, deep-linkable routing, and a Containers page that lists connected hosts) are in place; see [users and roles](users-and-roles.md) and the live channel section of the [protocol](protocol.md).
 
 ## Decisions
 
@@ -71,7 +71,7 @@ Each phase is independently shippable. P1 does not depend on the write tiers.
 - Detail view with live inspect, streaming logs (tail, follow, search, download), and live CPU, memory, network, and disk stats.
 - Compose project grouping from the existing Compose observation, which resolves the "Compose stack details are not yet available" notice.
 
-### P2: Lifecycle actions
+### P2: Lifecycle actions (implemented)
 
 - Start, stop, restart, pause, unpause, kill, and remove, including bulk selection.
 - Pull and recreate, with image digest shown before and after.

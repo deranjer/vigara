@@ -49,7 +49,7 @@ func (p *peer) recv() protocol.ChannelFrame {
 
 // startAgent connects a real channel client, with the Docker methods registered
 // against the given fake Engine, to a fake server and returns the server's end.
-func startAgent(t *testing.T, engine http.Handler) *peer {
+func startAgent(t *testing.T, engine http.Handler, capabilities ...string) *peer {
 	t.Helper()
 	docker := httptest.NewServer(engine)
 	t.Cleanup(docker.Close)
@@ -73,8 +73,9 @@ func startAgent(t *testing.T, engine http.Handler) *peer {
 		<-r.Context().Done()
 	}))
 	t.Cleanup(server.Close)
-	client := channel.NewClient(server.URL, "credential", "1.0.0", true, func() []string { return nil }, slog.New(slog.NewTextHandler(testWriter{t}, nil)))
+	client := channel.NewClient(server.URL, "credential", "1.0.0", true, func() []string { return capabilities }, slog.New(slog.NewTextHandler(testWriter{t}, nil)))
 	Register(client, api)
+	RegisterManage(client, api) // registered everywhere here so the tier gate itself is what is tested
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { client.Run(ctx); close(done) }()
@@ -202,3 +203,98 @@ func TestDockerMethodsAreUnknownUntilRegistered(t *testing.T) {
 type testWriter struct{ t *testing.T }
 
 func (w testWriter) Write(p []byte) (int, error) { w.t.Log(strings.TrimSpace(string(p))); return len(p), nil }
+
+const runningInspect = `{"Id":"abc","Name":"/web","Image":"sha256:old","State":{"Running":true},"Config":{"Image":"app:1"},"HostConfig":{"NetworkMode":"bridge"},"NetworkSettings":{"Networks":{}}}`
+
+func manageEngine(t *testing.T) (http.Handler, *[]string) {
+	var calls []string
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+strings.TrimPrefix(r.URL.Path, "/v1.44"))
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/web/json"):
+			_, _ = w.Write([]byte(runningInspect))
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/gone/json"):
+			http.NotFound(w, r)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/web/restart"):
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodDelete && strings.HasSuffix(r.URL.Path, "/web"):
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"message":"You cannot remove a running container. Stop the container before attempting removal or force remove"}`))
+		case r.URL.Path == "/v1.44/images/create":
+			_, _ = w.Write([]byte(`{"error":"pull access denied for app, repository does not exist"}` + "\n"))
+		default:
+			t.Errorf("unexpected Docker request %s %s", r.Method, r.URL.RequestURI())
+			http.NotFound(w, r)
+		}
+	}), &calls
+}
+
+func TestManageMethodsAreRefusedBelowTheManageTier(t *testing.T) {
+	engine, calls := manageEngine(t)
+	for _, caps := range [][]string{nil, {}} {
+		p := startAgent(t, engine, caps...)
+		p.send(protocol.ChannelFrame{Type: protocol.FrameCall, ID: "1", Method: protocol.MethodDockerAction, Params: json.RawMessage(`{"id":"web","action":"restart"}`)})
+		if reply := p.recv(); reply.Error == nil || reply.Error.Code != protocol.ErrCodeTierInsufficient {
+			t.Fatalf("restart on a read-only host = %+v", reply)
+		}
+		p.send(protocol.ChannelFrame{Type: protocol.FrameStreamOpen, ID: "2", Method: protocol.MethodDockerRecreate, Params: json.RawMessage(`{"id":"web"}`)})
+		if end := p.recv(); end.Type != protocol.FrameStreamEnd || end.Error == nil || end.Error.Code != protocol.ErrCodeTierInsufficient {
+			t.Fatalf("recreate on a read-only host = %+v", end)
+		}
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("a refused action still reached Docker: %v", *calls)
+	}
+}
+
+func TestManageActionsRunAtTheManageTier(t *testing.T) {
+	engine, calls := manageEngine(t)
+	p := startAgent(t, engine, "docker.manage")
+	send := func(id, params string) protocol.ChannelFrame {
+		p.send(protocol.ChannelFrame{Type: protocol.FrameCall, ID: id, Method: protocol.MethodDockerAction, Params: json.RawMessage(params)})
+		return p.recv()
+	}
+	var result protocol.DockerActionResult
+	reply := send("1", `{"id":"web","action":"restart"}`)
+	if reply.Error != nil || json.Unmarshal(reply.Result, &result) != nil || !result.Changed || result.Name != "web" || result.Action != "restart" {
+		t.Fatalf("restart reply = %+v", reply)
+	}
+	if reply = send("2", `{"id":"web","action":"remove"}`); reply.Error == nil || reply.Error.Code != protocol.ErrCodeConflict || !strings.Contains(reply.Error.Message, "running container") {
+		t.Fatalf("remove of a running container = %+v", reply)
+	}
+	if reply = send("3", `{"id":"gone","action":"restart"}`); reply.Error == nil || reply.Error.Code != protocol.ErrCodeNotFound {
+		t.Fatalf("missing container = %+v", reply)
+	}
+	for _, bad := range []string{`{"id":"web","action":"exec"}`, `{"id":"../x","action":"restart"}`, `{"id":"web","action":"restart","extra":1}`, `{}`} {
+		if reply = send("4", bad); reply.Error == nil || reply.Error.Code != protocol.ErrCodeBadRequest {
+			t.Errorf("%s = %+v, want bad_request", bad, reply)
+		}
+	}
+	for _, call := range *calls {
+		if strings.HasPrefix(call, "POST /containers/../") {
+			t.Errorf("a path escape reached Docker: %s", call)
+		}
+	}
+}
+
+func TestRecreateStreamsProgressAndReportsFailures(t *testing.T) {
+	engine, _ := manageEngine(t)
+	p := startAgent(t, engine, "docker.manage")
+	p.send(protocol.ChannelFrame{Type: protocol.FrameStreamOpen, ID: "r", Method: protocol.MethodDockerRecreate, Params: json.RawMessage(`{"id":"web","pull":true}`)})
+	var progress strings.Builder
+	for {
+		frame := p.recv()
+		if frame.Type == protocol.FrameStreamData {
+			progress.Write(frame.Data)
+			continue
+		}
+		if frame.Type != protocol.FrameStreamEnd || frame.Error == nil || frame.Error.Code != protocol.ErrCodeRecreateFailed ||
+			!strings.Contains(frame.Error.Message, "the original container was not changed") || !strings.Contains(frame.Error.Message, "pull access denied") {
+			t.Fatalf("stream end = %+v", frame)
+		}
+		break
+	}
+	if !strings.Contains(progress.String(), `"step":"pull"`) || strings.Contains(progress.String(), `"step":"done"`) {
+		t.Fatalf("progress = %q", progress.String())
+	}
+}

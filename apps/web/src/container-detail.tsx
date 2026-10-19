@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { LineChart } from '@mantine/charts'
 import { Alert, Badge, Button, Card, Checkbox, Code, Group, Loader, Select, SimpleGrid, Stack, Switch, Table, Tabs, Text, TextInput, Title } from '@mantine/core'
+import { ActionBar } from './container-actions'
 import { appendBounded, filterLogLines, formatBytes, formatRate, logsToText, portSummary, stateColors, type DockerPort, type HostEntry, type LogLine, type StatsSample } from './container-utils'
 import { route as routeOf, type Route } from './route'
 import { useStream } from './use-stream'
@@ -16,7 +17,7 @@ type InspectResult = {
   capAdd?: string[]; capDrop?: string[]; logDriver?: string; restartCount: number
 }
 
-type Props = { hostId: string; reference: string; tab: string; hosts: HostEntry[] | null; role: string; onNavigate: (route: Route) => void }
+type Props = { hostId: string; reference: string; tab: string; hosts: HostEntry[] | null; role: string; onNavigate: (route: Route) => void; refreshFleet: () => void }
 
 const logLimit = 5000
 const sampleLimit = 120
@@ -31,7 +32,7 @@ async function fetchInspect(hostId: string, reference: string, revealEnv: boolea
 const when = (value?: string) => (value ? new Date(value).toLocaleString() : '–')
 const field = (label: string, value: ReactNode) => <div key={label}><Text size="xs" c="dimmed" fw={600} tt="uppercase">{label}</Text><Text size="sm" style={{ wordBreak: 'break-word' }}>{value === undefined || value === null || value === '' ? '–' : value}</Text></div>
 
-export function ContainerDetail({ hostId, reference, tab, hosts, role, onNavigate }: Props) {
+export function ContainerDetail({ hostId, reference, tab, hosts, role, onNavigate, refreshFleet }: Props) {
   const [inspect, setInspect] = useState<InspectResult | null>(null)
   const [error, setError] = useState('')
   const [revealing, setRevealing] = useState(false)
@@ -63,6 +64,10 @@ export function ContainerDetail({ hostId, reference, tab, hosts, role, onNavigat
     <Group gap="sm" mt={4} align="center"><Title order={1}>{title}</Title>{inspect && <Badge size="lg" color={stateColors[inspect.state.status] ?? 'gray'} variant="light">{inspect.state.status}</Badge>}
       {inspect?.state.health && <Badge color={inspect.state.health === 'healthy' ? 'green' : 'orange'} variant="outline">{inspect.state.health}</Badge>}</Group>
     {inspect && <Text c="dimmed" mt={6} style={{ wordBreak: 'break-all' }}>{inspect.image}</Text>}
+    {inspect && <ActionBar hostId={hostId} reference={reference} name={title} state={inspect.state.status} project={inspect.labels?.['com.docker.compose.project']} role={role} hostTier={host?.dockerTier}
+      onChanged={() => { void load(false); refreshFleet() }}
+      onRemoved={() => { refreshFleet(); onNavigate(routeOf('containers')) }}
+      onRecreated={(newName) => { refreshFleet(); if (newName !== reference) onNavigate(routeOf('containers', hostId, newName, tab)); else void load(false) }} />}
     {error && <Alert color="red" mt="md" title="This container could not be loaded">{error} <Button variant="subtle" size="xs" onClick={() => void load(false)}>Try again</Button></Alert>}
     {!inspect && !error && <Group mt="lg"><Loader size="sm" /><Text c="dimmed">Loading…</Text></Group>}
 
