@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/deranjer/vigara/internal/protocol"
@@ -27,22 +28,48 @@ const (
 // exec-start request to a raw two-way byte stream, so output arrives through Read
 // and keystrokes go out through Write.
 type ExecSession struct {
-	client *Client
-	execID string
-	conn   net.Conn
-	reader *bufio.Reader
+	client      *Client
+	execID      string
+	containerID string
+	user        string
+	conn        net.Conn
+	reader      *bufio.Reader
+
+	// Docker does not stop an exec'd process when its client disconnects, so the shell
+	// announces its own PID (see shellCommand) and Close signals it. pid stays zero when
+	// the announcement was not seen, and ended is set once the shell has exited by itself.
+	mu      sync.Mutex
+	pid     int
+	scanned bool
+	pending []byte
+	ended   bool
 }
 
+// pidAnnouncement is how the shell reports its process ID inside the container: a
+// private terminal escape sequence that terminals ignore and Read strips.
+const (
+	pidPrefix = "\x1b]777;vigara-pid="
+	pidSuffix = "\x07"
+	// A shell prints its announcement first, so waiting for more than this many bytes
+	// means there is none and the output is passed through untouched.
+	pidScanLimit = 256
+)
+
+// announcePID prints the shell's process ID as a private escape sequence. The shell
+// then replaces itself with the real one using exec, so the PID stays the same.
+const announcePID = `printf '\033]777;vigara-pid=%s\007' "$$"; `
+
 // shellCommand returns the command a terminal runs for the chosen shell. "auto"
-// prefers bash and falls back to sh, because many images only ship sh.
+// prefers bash and falls back to sh, because many images only ship sh. Every choice
+// first announces its PID so the agent can hang the shell up when the terminal closes.
 func shellCommand(shell string) []string {
 	switch shell {
 	case protocol.ShellBash:
-		return []string{"/bin/bash"}
+		return []string{"/bin/sh", "-c", announcePID + "exec /bin/bash"}
 	case protocol.ShellSh:
-		return []string{"/bin/sh"}
+		return []string{"/bin/sh", "-c", announcePID + "exec /bin/sh"}
 	}
-	return []string{"/bin/sh", "-c", "command -v bash >/dev/null 2>&1 && exec bash || exec sh"}
+	return []string{"/bin/sh", "-c", announcePID + "command -v bash >/dev/null 2>&1 && exec bash || exec sh"}
 }
 
 // StartExec opens a terminal in a running container. The container reference and
@@ -86,7 +113,7 @@ func (c *Client) StartExec(ctx context.Context, p protocol.DockerExecParams) (*E
 	if err != nil {
 		return nil, err
 	}
-	return &ExecSession{client: c, execID: created.ID, conn: conn, reader: reader}, nil
+	return &ExecSession{client: c, execID: created.ID, containerID: p.ID, user: p.User, conn: conn, reader: reader}, nil
 }
 
 // hijack sends an upgrade request and returns the raw connection and a reader that
@@ -134,14 +161,147 @@ func (c *Client) hijack(ctx context.Context, path string, payload any) (net.Conn
 	return conn, reader, nil
 }
 
-// Read returns terminal output.
-func (s *ExecSession) Read(p []byte) (int, error) { return s.reader.Read(p) }
+// Read returns terminal output. The shell's PID announcement, which arrives first,
+// is consumed here and never reaches the caller.
+func (s *ExecSession) Read(p []byte) (int, error) {
+	s.mu.Lock()
+	scanned := s.scanned
+	s.mu.Unlock()
+	if scanned {
+		n, err := s.drain(p)
+		if errors.Is(err, io.EOF) {
+			s.markEnded()
+		}
+		return n, err
+	}
+	return s.readAnnouncement(p)
+}
+
+// drain hands out output held back while looking for the announcement, then reads on.
+func (s *ExecSession) drain(p []byte) (int, error) {
+	s.mu.Lock()
+	if len(s.pending) > 0 {
+		n := copy(p, s.pending)
+		s.pending = s.pending[n:]
+		s.mu.Unlock()
+		return n, nil
+	}
+	s.mu.Unlock()
+	return s.reader.Read(p)
+}
+
+// readAnnouncement reads the first output, removes the PID announcement if present,
+// and releases whatever else arrived with it. It keeps reading only while the output
+// could still turn out to contain a partly received announcement.
+func (s *ExecSession) readAnnouncement(p []byte) (int, error) {
+	buffer := make([]byte, 4096)
+	for {
+		n, readErr := s.reader.Read(buffer)
+		s.mu.Lock()
+		s.pending = append(s.pending, buffer[:n]...)
+		done := s.extractAnnouncement() || readErr != nil
+		if done {
+			s.scanned = true
+		}
+		held := len(s.pending)
+		s.mu.Unlock()
+		if !done {
+			continue
+		}
+		if held > 0 {
+			// Data first; a read error, if any, is reported again by the next Read.
+			return s.drain(p)
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				s.markEnded()
+			}
+			return 0, readErr
+		}
+		return s.drain(p) // the announcement was the whole read; carry on with ordinary output
+	}
+}
+
+// extractAnnouncement looks for the PID announcement in the held-back output and
+// removes it. It reports whether scanning is finished, which is when the
+// announcement was found, or cannot be coming. The caller holds s.mu.
+func (s *ExecSession) extractAnnouncement() bool {
+	data := s.pending
+	start := bytes.Index(data, []byte(pidPrefix))
+	if start < 0 {
+		// Nothing yet. Keep waiting only while the output is still a possible beginning of it.
+		return !(len(data) < len(pidPrefix) && bytes.HasPrefix([]byte(pidPrefix), data))
+	}
+	end := bytes.Index(data[start:], []byte(pidSuffix))
+	if end < 0 {
+		return len(data)-start >= pidScanLimit // an unfinished announcement: wait, up to a limit
+	}
+	if pid, err := strconv.Atoi(string(data[start+len(pidPrefix) : start+end])); err == nil && pid > 1 {
+		s.pid = pid
+	}
+	s.pending = append(append([]byte(nil), data[:start]...), data[start+end+len(pidSuffix):]...)
+	return true
+}
+
+func (s *ExecSession) markEnded() {
+	s.mu.Lock()
+	s.ended = true
+	s.mu.Unlock()
+}
 
 // Write sends keystrokes to the terminal.
 func (s *ExecSession) Write(p []byte) (int, error) { return s.conn.Write(p) }
 
-// Close ends the terminal. Closing the connection hangs up the shell's terminal.
-func (s *ExecSession) Close() error { return s.conn.Close() }
+// Close ends the terminal: it drops the connection and, unless the shell already
+// exited on its own, hangs the shell up, because Docker leaves the process running
+// when its client disconnects.
+func (s *ExecSession) Close() error {
+	err := s.conn.Close()
+	s.mu.Lock()
+	pid, ended := s.pid, s.ended
+	s.pid = 0
+	s.mu.Unlock()
+	if pid > 1 && !ended {
+		s.hangUp(pid)
+	}
+	return err
+}
+
+// hangUp signals the shell from a second, detached exec: SIGHUP first, which makes a
+// shell and its foreground jobs exit as they would when a terminal closes, then SIGKILL
+// a moment later for a shell that ignores it. It runs as the same user as the terminal.
+func (s *ExecSession) hangUp(pid int) {
+	ctx, cancel := context.WithTimeout(context.Background(), execSetupTimeout)
+	defer cancel()
+	script := fmt.Sprintf("kill -HUP %d 2>/dev/null; sleep 1; kill -KILL %d 2>/dev/null; exit 0", pid, pid)
+	create := map[string]any{"AttachStdin": false, "AttachStdout": false, "AttachStderr": false, "Tty": false, "Cmd": []string{"/bin/sh", "-c", script}}
+	if s.user != "" {
+		create["User"] = s.user
+	}
+	body, err := json.Marshal(create)
+	if err != nil {
+		return
+	}
+	resp, err := s.client.do(ctx, http.MethodPost, containerPath(s.containerID, "/exec"), nil, body)
+	if err != nil {
+		return
+	}
+	var created struct {
+		ID string `json:"Id"`
+	}
+	decodeErr := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&created)
+	resp.Body.Close()
+	if decodeErr != nil || created.ID == "" {
+		return
+	}
+	start, err := json.Marshal(map[string]any{"Detach": true, "Tty": false})
+	if err != nil {
+		return
+	}
+	if resp, err := s.client.do(ctx, http.MethodPost, "/exec/"+url.PathEscape(created.ID)+"/start", nil, start); err == nil {
+		resp.Body.Close()
+	}
+}
 
 // Resize changes the terminal size, clamped to the supported range.
 func (s *ExecSession) Resize(ctx context.Context, cols, rows uint16) error {
