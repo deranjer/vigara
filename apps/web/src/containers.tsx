@@ -38,7 +38,8 @@ export function Containers({ route, role, onNavigate }: Props) {
   }, [refresh])
 
   if (route.id && route.sub) {
-    return <ContainerDetail hostId={route.id} reference={route.sub} tab={route.tab ?? 'overview'} hosts={hosts} role={role} onNavigate={onNavigate} refreshFleet={() => void refresh()} />
+    // Keyed so moving to another container starts with fresh state: no stale details, banners, or open dialogs.
+    return <ContainerDetail key={`${route.id}/${route.sub}`} hostId={route.id} reference={route.sub} tab={route.tab ?? 'overview'} hosts={hosts} role={role} onNavigate={onNavigate} refreshFleet={() => void refresh()} />
   }
   return <Fleet hosts={hosts} error={error} role={role} refresh={refresh} onNavigate={onNavigate} />
 }
