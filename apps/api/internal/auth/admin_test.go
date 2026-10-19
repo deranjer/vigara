@@ -163,6 +163,7 @@ func TestWriteGuardBlocksNonAdminWritesOnLegacyRoutes(t *testing.T) {
 		{http.MethodPost, "/api/auth/logout", operator.Token, http.StatusNoContent},
 		{http.MethodPost, "/api/channel/anything", operator.Token, http.StatusNoContent},
 		{http.MethodPost, "/api/containers/agent/web/actions", operator.Token, http.StatusNoContent},
+		{http.MethodPost, "/api/docker/agent/images/remove", operator.Token, http.StatusNoContent},
 		{http.MethodDelete, "/api/containersx", operator.Token, http.StatusForbidden},
 		{http.MethodPost, "/api/agent/poll", "", http.StatusNoContent},
 		{http.MethodPost, "/api/agents/enrollment-tokens", "", http.StatusNoContent},
@@ -172,7 +173,7 @@ func TestWriteGuardBlocksNonAdminWritesOnLegacyRoutes(t *testing.T) {
 			t.Errorf("%s %s (token set: %v) returned %d, want %d", tc.method, tc.path, tc.token != "", rec.Code, tc.want)
 		}
 	}
-	if reached != 8 {
-		t.Errorf("guarded handler ran %d times, want 8", reached)
+	if reached != 9 {
+		t.Errorf("guarded handler ran %d times, want 9", reached)
 	}
 }

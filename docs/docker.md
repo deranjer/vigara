@@ -113,3 +113,21 @@ Limits and records:
 - Opening and closing a terminal are recorded in the [audit log](users-and-roles.md#audit-log) as `container.exec.open` and `container.exec.close`, with the shell, user, duration, byte counts, and why it ended. What you type and what appears is never recorded, so avoid typing secrets only if you do not trust the terminal's own history inside the container.
 - A refused attempt, such as a viewer trying to open a terminal, is audited as denied.
 - Paste size is bounded: a message can be up to 1 MiB and is delivered to the host in pieces of at most 64 KiB.
+
+## Images, networks, and volumes
+
+The **Images**, **Networks**, and **Volumes** pages list what is on a host, with the containers that use each item, and let operators and administrators pull, remove, and prune. Listing and inspecting need only read access; pulling, removing, and pruning need the `manage` tier.
+
+What "used by" means: it is worked out from the host's container list, so a stopped container still counts. Docker will not remove an image, network, or volume that a container refers to, even a stopped one, and the pages show that reason instead of letting you try.
+
+| Page | Shows | Can do |
+|---|---|---|
+| Images | Tags, size, age, and users; untagged "dangling" images are flagged | Pull by name, remove by ID, prune |
+| Networks | Driver, scope, subnets, attached containers; built-in networks (`bridge`, `host`, `none`) are marked | Remove, prune |
+| Volumes | Size when Docker reports it, whether it is anonymous, mount point, and users | Remove, prune |
+
+**Prune always previews first.** The dialog lists exactly what would be removed and how much space it frees, computed the same way Docker decides: an image is unused when no container refers to it (by default only untagged ones are removed, with an option for tagged ones too); a network is unused when nothing is attached, and built-in networks are never removed; a volume is unused when no container mounts it (by default only anonymous ones, with an option for named volumes). Only then can you confirm. Between the preview and the confirmation the host's state can change, so the result reports what was actually removed.
+
+**Volumes hold data.** Removing or pruning one deletes its contents permanently, and Vigara does not back volumes up. Removing a volume requires typing its name, and pruning volumes requires typing a confirmation such as `delete 3 volumes`. Images, networks, and the built-in networks need no typing because nothing is lost that cannot be recreated.
+
+An image's details show its environment variable **names** only, not their values, because images sometimes carry defaults that are secrets. Image names accepted for a pull are checked on both the server and the agent; an image ID cannot be pulled. Pulls use no registry credentials, so private registries are not supported yet. Pulling, removing, and pruning are recorded in the [audit log](users-and-roles.md#audit-log) as `image.pull`, `image.remove`, `image.prune`, `network.remove`, `network.prune`, `volume.remove`, and `volume.prune`. A preview changes nothing and is not recorded.
