@@ -15,14 +15,16 @@ const ChannelPath = "/api/agent/channel"
 
 // Frame types.
 const (
-	FrameHello      = "hello"       // agent -> server, first frame
-	FrameWelcome    = "welcome"     // server -> agent, accepts the hello
-	FrameCall       = "call"        // server -> agent, one request expecting one result
-	FrameResult     = "result"      // agent -> server, answers a call
-	FrameStreamOpen = "stream_open" // server -> agent, starts a stream
-	FrameStreamData = "stream_data" // agent -> server, one ordered chunk
-	FrameStreamEnd  = "stream_end"  // agent -> server, the stream finished (Error set on failure)
-	FrameCancel     = "cancel"      // server -> agent, abandon a call or stream
+	FrameHello         = "hello"          // agent -> server, first frame
+	FrameWelcome       = "welcome"        // server -> agent, accepts the hello
+	FrameCall          = "call"           // server -> agent, one request expecting one result
+	FrameResult        = "result"         // agent -> server, answers a call
+	FrameStreamOpen    = "stream_open"    // server -> agent, starts a stream
+	FrameStreamData    = "stream_data"    // agent -> server, one ordered chunk
+	FrameStreamEnd     = "stream_end"     // agent -> server, the stream finished (Error set on failure)
+	FrameCancel        = "cancel"         // server -> agent, abandon a call or stream
+	FrameStreamInput   = "stream_input"   // server -> agent, bytes for an interactive stream (keystrokes)
+	FrameStreamControl = "stream_control" // server -> agent, a control message for an interactive stream (resize)
 )
 
 // Error codes carried in ChannelError.

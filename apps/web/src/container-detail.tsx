@@ -4,6 +4,7 @@ import { Alert, Badge, Button, Card, Checkbox, Code, Group, Loader, Select, Simp
 import { ActionBar } from './container-actions'
 import { appendBounded, filterLogLines, formatBytes, formatRate, logsToText, portSummary, stateColors, type DockerPort, type HostEntry, type LogLine, type StatsSample } from './container-utils'
 import { route as routeOf, type Route } from './route'
+import { TerminalPanel } from './terminal-panel'
 import { useStream } from './use-stream'
 
 type InspectResult = {
@@ -72,10 +73,11 @@ export function ContainerDetail({ hostId, reference, tab, hosts, role, onNavigat
     {!inspect && !error && <Group mt="lg"><Loader size="sm" /><Text c="dimmed">Loading…</Text></Group>}
 
     {inspect && <Tabs value={tab} onChange={goTab} mt="lg" keepMounted={false}>
-      <Tabs.List><Tabs.Tab value="overview">Overview</Tabs.Tab><Tabs.Tab value="logs">Logs</Tabs.Tab><Tabs.Tab value="stats">Stats</Tabs.Tab><Tabs.Tab value="inspect">Inspect</Tabs.Tab></Tabs.List>
+      <Tabs.List><Tabs.Tab value="overview">Overview</Tabs.Tab><Tabs.Tab value="logs">Logs</Tabs.Tab><Tabs.Tab value="stats">Stats</Tabs.Tab><Tabs.Tab value="terminal">Terminal</Tabs.Tab><Tabs.Tab value="inspect">Inspect</Tabs.Tab></Tabs.List>
       <Tabs.Panel value="overview" pt="md"><Overview inspect={inspect} admin={role === 'admin'} revealing={revealing} onReveal={reveal} /></Tabs.Panel>
       <Tabs.Panel value="logs" pt="md"><LogsPanel hostId={hostId} reference={reference} name={title} /></Tabs.Panel>
       <Tabs.Panel value="stats" pt="md"><StatsPanel hostId={hostId} reference={reference} running={running} /></Tabs.Panel>
+      <Tabs.Panel value="terminal" pt="md"><TerminalPanel hostId={hostId} reference={reference} name={title} running={running} role={role} hostTier={host?.dockerTier} /></Tabs.Panel>
       <Tabs.Panel value="inspect" pt="md"><Card withBorder radius="md" padding="md"><Text size="sm" c="dimmed" mb="xs">Environment values are {inspect.envRevealed ? 'shown' : 'hidden unless revealed on the Overview tab'}.</Text><Code block style={{ maxHeight: 560, overflow: 'auto' }}>{JSON.stringify(inspect, null, 2)}</Code></Card></Tabs.Panel>
     </Tabs>}
   </>

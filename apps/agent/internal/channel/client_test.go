@@ -96,7 +96,7 @@ func recv(t *testing.T, ws *websocket.Conn) protocol.ChannelFrame {
 
 var testTiers = map[string]string{
 	protocol.MethodPing: "", protocol.MethodInfo: "", "test.manage": protocol.DockerModeManage,
-	"test.fail": "", "test.panic": "", "test.stream": "", "test.noimpl": "",
+	"test.fail": "", "test.panic": "", "test.stream": "", "test.noimpl": "", "test.term": "", "test.term.exec": protocol.DockerModeExec,
 }
 
 func startClient(t *testing.T, serverURL string, caps []string, tune ...func(*Client)) (*Client, context.CancelFunc) {
@@ -306,5 +306,119 @@ func TestRefusesPlainHTTPToAPublicHost(t *testing.T) {
 	c := NewClient("http://vigira.example", "credential", "1", true, nil, quiet)
 	if _, err := c.session(context.Background()); err == nil || !strings.Contains(err.Error(), "HTTPS") {
 		t.Fatalf("session error = %v", err)
+	}
+}
+
+func TestInteractiveStreamsReceiveInputAndControlInOrder(t *testing.T) {
+	server := newFakeServer(t)
+	var gotControl []string
+	startClient(t, server.URL, nil, func(c *Client) {
+		c.Interactive["test.term"] = func(ctx context.Context, params json.RawMessage, stream *StreamIO) error {
+			if err := stream.Send([]byte("ready:" + string(params))); err != nil {
+				return err
+			}
+			for {
+				select {
+				case data, ok := <-stream.Input:
+					if !ok {
+						return nil
+					}
+					if string(data) == "exit" {
+						return &protocol.ChannelError{Code: protocol.ErrCodeExecExit, Message: "The shell exited with status 3."}
+					}
+					if err := stream.Send(append([]byte("echo:"), data...)); err != nil {
+						return err
+					}
+				case control, ok := <-stream.Control:
+					if ok {
+						gotControl = append(gotControl, string(control))
+					}
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+		}
+	})
+	ws := server.next(t)
+	defer ws.CloseNow()
+
+	send(t, ws, protocol.ChannelFrame{Type: protocol.FrameStreamOpen, ID: "term", Method: "test.term", Params: json.RawMessage(`{"cols":80}`)})
+	if frame := recv(t, ws); string(frame.Data) != `ready:{"cols":80}` {
+		t.Fatalf("first frame = %+v", frame)
+	}
+	send(t, ws, protocol.ChannelFrame{Type: protocol.FrameStreamControl, ID: "term", Params: json.RawMessage(`{"type":"resize","cols":120,"rows":40}`)})
+	for _, key := range []string{"l", "s", "\r"} {
+		send(t, ws, protocol.ChannelFrame{Type: protocol.FrameStreamInput, ID: "term", Data: []byte(key)})
+	}
+	var echoed string
+	for i := 0; i < 3; i++ {
+		echoed += string(recv(t, ws).Data)
+	}
+	if echoed != "echo:lecho:secho:\r" {
+		t.Fatalf("echoed = %q (input must arrive in order)", echoed)
+	}
+	send(t, ws, protocol.ChannelFrame{Type: protocol.FrameStreamInput, ID: "term", Data: []byte("exit")})
+	end := recv(t, ws)
+	if end.Type != protocol.FrameStreamEnd || end.Error == nil || end.Error.Code != protocol.ErrCodeExecExit || !strings.Contains(end.Error.Message, "status 3") {
+		t.Fatalf("end = %+v", end)
+	}
+	if len(gotControl) != 1 || !strings.Contains(gotControl[0], `"cols":120`) {
+		t.Fatalf("control messages = %v", gotControl)
+	}
+	// Input for a stream that already ended, or never existed, is ignored and harmless.
+	send(t, ws, protocol.ChannelFrame{Type: protocol.FrameStreamInput, ID: "term", Data: []byte("late")})
+	send(t, ws, protocol.ChannelFrame{Type: protocol.FrameStreamInput, ID: "nobody", Data: []byte("x")})
+	send(t, ws, protocol.ChannelFrame{Type: protocol.FrameStreamControl, ID: "nobody", Params: json.RawMessage(`{}`)})
+	send(t, ws, protocol.ChannelFrame{Type: protocol.FrameCall, ID: "p", Method: protocol.MethodPing})
+	if reply := recv(t, ws); reply.ID != "p" || reply.Error != nil {
+		t.Fatalf("the agent stopped answering after stray input: %+v", reply)
+	}
+}
+
+func TestAnInteractiveStreamThatCannotKeepUpIsCancelledNotCorrupted(t *testing.T) {
+	server := newFakeServer(t)
+	stopped := make(chan error, 1)
+	release := make(chan struct{})
+	startClient(t, server.URL, nil, func(c *Client) {
+		c.Interactive["test.term"] = func(ctx context.Context, _ json.RawMessage, stream *StreamIO) error {
+			<-release // the handler is stuck and never drains its input
+			<-ctx.Done()
+			stopped <- ctx.Err()
+			return ctx.Err()
+		}
+	})
+	ws := server.next(t)
+	defer ws.CloseNow()
+	defer close(release)
+	send(t, ws, protocol.ChannelFrame{Type: protocol.FrameStreamOpen, ID: "term", Method: "test.term"})
+	for i := 0; i < inputBuffer+20; i++ {
+		send(t, ws, protocol.ChannelFrame{Type: protocol.FrameStreamInput, ID: "term", Data: []byte("x")})
+	}
+	release <- struct{}{}
+	select {
+	case err := <-stopped:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("handler context ended with %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("an overwhelmed interactive stream was not cancelled")
+	}
+}
+
+func TestInteractiveMethodsAreRefusedBelowTheirTierAndWhenUnregistered(t *testing.T) {
+	server := newFakeServer(t)
+	called := false
+	startClient(t, server.URL, nil, func(c *Client) {
+		c.Interactive["test.term.exec"] = func(context.Context, json.RawMessage, *StreamIO) error { called = true; return nil }
+	})
+	ws := server.next(t)
+	defer ws.CloseNow()
+	send(t, ws, protocol.ChannelFrame{Type: protocol.FrameStreamOpen, ID: "a", Method: "test.term.exec"})
+	if end := recv(t, ws); end.Type != protocol.FrameStreamEnd || end.Error == nil || end.Error.Code != protocol.ErrCodeTierInsufficient || called {
+		t.Fatalf("exec-tier stream on a host without the tier = %+v (called %v)", end, called)
+	}
+	send(t, ws, protocol.ChannelFrame{Type: protocol.FrameStreamOpen, ID: "b", Method: "test.term"})
+	if end := recv(t, ws); end.Error == nil || end.Error.Code != protocol.ErrCodeUnknownMethod {
+		t.Fatalf("unregistered interactive method = %+v", end)
 	}
 }

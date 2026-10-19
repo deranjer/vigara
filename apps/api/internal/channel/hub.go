@@ -506,3 +506,38 @@ func clip(value string, limit int) string {
 	}
 	return value
 }
+
+// ErrStreamClosed means the stream has ended, so nothing more can be sent to it.
+var ErrStreamClosed = errors.New("the stream has ended")
+
+func (s *Stream) isClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
+}
+
+// Send delivers bytes, such as keystrokes, to an interactive stream on the agent.
+// Chunks larger than protocol.MaxExecInput are refused so one paste cannot flood
+// the channel.
+func (s *Stream) Send(ctx context.Context, data []byte) error {
+	if len(data) > protocol.MaxExecInput {
+		return &protocol.ChannelError{Code: protocol.ErrCodeBadRequest, Message: "that input is too large"}
+	}
+	if s.isClosed() {
+		return ErrStreamClosed
+	}
+	return s.conn.write(ctx, protocol.ChannelFrame{Type: protocol.FrameStreamInput, ID: s.id, Data: data})
+}
+
+// Control delivers a control message, such as a terminal resize, to an interactive
+// stream on the agent.
+func (s *Stream) Control(ctx context.Context, message any) error {
+	encoded, err := json.Marshal(message)
+	if err != nil {
+		return &protocol.ChannelError{Code: protocol.ErrCodeBadRequest, Message: "the control message cannot be encoded"}
+	}
+	if s.isClosed() {
+		return ErrStreamClosed
+	}
+	return s.conn.write(ctx, protocol.ChannelFrame{Type: protocol.FrameStreamControl, ID: s.id, Params: encoded})
+}

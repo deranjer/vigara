@@ -52,6 +52,8 @@ var containerRef = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 type Client struct {
 	base string
 	http *http.Client
+	// dial opens a raw connection to the Docker endpoint for requests that upgrade to a stream.
+	dial func(ctx context.Context) (net.Conn, error)
 }
 
 // New connects to host (unix:///path or a loopback http:// IP), exactly as the
@@ -72,7 +74,18 @@ func New(host string, httpClient *http.Client) (*Client, error) {
 		}
 		httpClient = &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	}
-	return &Client{base: base, http: httpClient}, nil
+	c := &Client{base: base, http: httpClient}
+	if socket != "" {
+		c.dial = func(ctx context.Context) (net.Conn, error) {
+			return (&net.Dialer{Timeout: 3 * time.Second}).DialContext(ctx, "unix", socket)
+		}
+	} else {
+		address := strings.TrimPrefix(strings.TrimRight(base, "/"), "http://")
+		c.dial = func(ctx context.Context) (net.Conn, error) {
+			return (&net.Dialer{Timeout: 3 * time.Second}).DialContext(ctx, "tcp", address)
+		}
+	}
+	return c, nil
 }
 
 // APIError is a refusal from the Docker Engine: Status is its HTTP status and

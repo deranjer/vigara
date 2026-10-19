@@ -184,6 +184,10 @@ func registerDocker(live *agentchannel.Client, logger *slog.Logger) {
 		dockerchannel.RegisterManage(live, api)
 		logger.Info("container management is enabled on this host", "tier", protocol.DockerTier(live.Capabilities()))
 	}
+	if protocol.DockerTierRank(protocol.DockerTier(live.Capabilities())) >= protocol.DockerTierRank(protocol.DockerModeExec) {
+		dockerchannel.RegisterExec(live, api)
+		logger.Info("container terminals are enabled on this host")
+	}
 }
 
 func interruptContext() (context.Context, context.CancelFunc) {

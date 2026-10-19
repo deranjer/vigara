@@ -8,6 +8,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 
@@ -119,4 +121,91 @@ func clip(value string, limit int) string {
 		return value[:limit]
 	}
 	return value
+}
+
+// RegisterExec adds the interactive terminal. Call it only when the local operator
+// enabled the exec tier; the channel also refuses the method below that tier.
+func RegisterExec(c *channel.Client, api *dockerapi.Client) {
+	c.Interactive[protocol.MethodDockerExec] = func(ctx context.Context, raw json.RawMessage, stream *channel.StreamIO) error {
+		var params protocol.DockerExecParams
+		if err := decode(raw, &params); err != nil {
+			return err
+		}
+		session, err := api.StartExec(ctx, params)
+		if err != nil {
+			return mapExecError(err)
+		}
+		defer session.Close()
+
+		// Terminal output flows to the server until the shell closes its side.
+		finished := make(chan error, 1)
+		go func() {
+			buffer := make([]byte, 16<<10)
+			for {
+				n, readErr := session.Read(buffer)
+				if n > 0 {
+					if sendErr := stream.Send(buffer[:n]); sendErr != nil {
+						finished <- sendErr
+						return
+					}
+				}
+				if readErr != nil {
+					if errors.Is(readErr, io.EOF) || errors.Is(readErr, net.ErrClosed) {
+						readErr = nil
+					}
+					finished <- readErr
+					return
+				}
+			}
+		}()
+
+		input, control := stream.Input, stream.Control
+		for {
+			select {
+			case data, open := <-input:
+				if !open {
+					return nil // the server cancelled the stream
+				}
+				// A failed write means the shell is already gone; the output side reports the end.
+				_, _ = session.Write(data)
+			case message, open := <-control:
+				if !open {
+					control = nil
+					continue
+				}
+				var request protocol.ExecControl
+				if json.Unmarshal(message, &request) == nil && request.Type == protocol.ControlResize {
+					_ = session.Resize(ctx, request.Cols, request.Rows)
+				}
+			case err := <-finished:
+				if err != nil {
+					return err
+				}
+				code, codeErr := session.ExitCode(context.WithoutCancel(ctx))
+				switch {
+				case codeErr != nil || code == 0:
+					return nil
+				case code == 126 || code == 127:
+					return &protocol.ChannelError{Code: protocol.ErrCodeExecExit, Message: fmt.Sprintf("The shell could not be started in this container (status %d). The image may not include a shell.", code)}
+				}
+				return &protocol.ChannelError{Code: protocol.ErrCodeExecExit, Message: fmt.Sprintf("The shell exited with status %d.", code)}
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}
+}
+
+// mapExecError is mapError, but keeps Docker's explanation when it cannot start a
+// terminal, since "no such file" for the shell is exactly what the user needs to see.
+func mapExecError(err error) error {
+	var apiErr *dockerapi.APIError
+	if errors.As(err, &apiErr) && apiErr.Status != http.StatusNotFound && apiErr.Status != http.StatusConflict {
+		message := apiErr.Message
+		if message == "" {
+			message = "Docker could not start a terminal in this container"
+		}
+		return &protocol.ChannelError{Code: protocol.ErrCodeExecFailed, Message: clip(message, 300)}
+	}
+	return mapError(err)
 }

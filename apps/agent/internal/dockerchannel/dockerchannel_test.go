@@ -3,6 +3,7 @@ package dockerchannel
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -76,6 +77,7 @@ func startAgent(t *testing.T, engine http.Handler, capabilities ...string) *peer
 	client := channel.NewClient(server.URL, "credential", "1.0.0", true, func() []string { return capabilities }, slog.New(slog.NewTextHandler(testWriter{t}, nil)))
 	Register(client, api)
 	RegisterManage(client, api) // registered everywhere here so the tier gate itself is what is tested
+	RegisterExec(client, api)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { client.Run(ctx); close(done) }()
@@ -296,5 +298,136 @@ func TestRecreateStreamsProgressAndReportsFailures(t *testing.T) {
 	}
 	if !strings.Contains(progress.String(), `"step":"pull"`) || strings.Contains(progress.String(), `"step":"done"`) {
 		t.Fatalf("progress = %q", progress.String())
+	}
+}
+
+// execEngine is a Docker Engine with exec: a hijacked connection acting as a tiny shell.
+type execEngine struct {
+	t        *testing.T
+	resizes  chan string
+	exitCode int
+	failExec bool
+}
+
+func (e *execEngine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/v1.44")
+	switch {
+	case r.Method == http.MethodPost && path == "/containers/web/exec":
+		if e.failExec {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"message":"OCI runtime exec failed: exec: \"/bin/sh\": no such file or directory"}`))
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"Id":"exec1"}`))
+	case r.Method == http.MethodPost && path == "/containers/stopped/exec":
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"message":"Container is not running"}`))
+	case r.Method == http.MethodPost && path == "/exec/exec1/start":
+		conn, rw, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			e.t.Errorf("hijack: %v", err)
+			return
+		}
+		defer conn.Close()
+		_, _ = rw.WriteString("HTTP/1.1 101 UPGRADED\r\nContent-Type: application/vnd.docker.raw-stream\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n$ ")
+		_ = rw.Flush()
+		buf := make([]byte, 512)
+		for {
+			n, err := conn.Read(buf)
+			if n > 0 {
+				if strings.HasPrefix(string(buf[:n]), "exit") {
+					_, _ = conn.Write([]byte("bye\r\n"))
+					return
+				}
+				_, _ = conn.Write(append([]byte("got:"), buf[:n]...))
+			}
+			if err != nil {
+				return
+			}
+		}
+	case r.Method == http.MethodPost && path == "/exec/exec1/resize":
+		e.resizes <- "w=" + r.URL.Query().Get("w") + " h=" + r.URL.Query().Get("h")
+	case r.Method == http.MethodGet && path == "/exec/exec1/json":
+		_, _ = w.Write([]byte(`{"Running":false,"ExitCode":` + strconvItoa(e.exitCode) + `}`))
+	default:
+		e.t.Errorf("unexpected request %s %s", r.Method, r.URL.RequestURI())
+		http.NotFound(w, r)
+	}
+}
+
+func strconvItoa(n int) string { return fmt.Sprintf("%d", n) }
+
+func readOutput(t *testing.T, p *peer, want string) string {
+	t.Helper()
+	var out strings.Builder
+	for !strings.Contains(out.String(), want) {
+		frame := p.recv()
+		if frame.Type == protocol.FrameStreamEnd {
+			t.Fatalf("stream ended before %q: %+v (output %q)", want, frame.Error, out.String())
+		}
+		out.Write(frame.Data)
+	}
+	return out.String()
+}
+
+func TestTerminalRelaysKeystrokesResizesAndTheExitStatus(t *testing.T) {
+	engine := &execEngine{t: t, resizes: make(chan string, 4), exitCode: 2}
+	p := startAgent(t, engine, "docker.manage", "docker.exec")
+	p.send(protocol.ChannelFrame{Type: protocol.FrameStreamOpen, ID: "t", Method: protocol.MethodDockerExec, Params: json.RawMessage(`{"id":"web","cols":100,"rows":30}`)})
+	readOutput(t, p, "$ ")
+
+	p.send(protocol.ChannelFrame{Type: protocol.FrameStreamInput, ID: "t", Data: []byte("ls\r")})
+	readOutput(t, p, "got:ls\r")
+	p.send(protocol.ChannelFrame{Type: protocol.FrameStreamControl, ID: "t", Params: json.RawMessage(`{"type":"resize","cols":150,"rows":40}`)})
+	select {
+	case got := <-engine.resizes:
+		if got != "w=150 h=40" {
+			t.Fatalf("resize = %q", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the resize never reached Docker")
+	}
+	// Unknown control messages are ignored rather than breaking the terminal.
+	p.send(protocol.ChannelFrame{Type: protocol.FrameStreamControl, ID: "t", Params: json.RawMessage(`{"type":"reboot"}`)})
+	p.send(protocol.ChannelFrame{Type: protocol.FrameStreamControl, ID: "t", Params: json.RawMessage(`"a string, not a control object"`)})
+
+	p.send(protocol.ChannelFrame{Type: protocol.FrameStreamInput, ID: "t", Data: []byte("exit\r")})
+	readOutput(t, p, "bye")
+	end := p.recv()
+	if end.Type != protocol.FrameStreamEnd || end.Error == nil || end.Error.Code != protocol.ErrCodeExecExit || !strings.Contains(end.Error.Message, "status 2") {
+		t.Fatalf("end = %+v", end)
+	}
+}
+
+func TestTerminalNeedsTheExecTierAndReportsWhyItCannotStart(t *testing.T) {
+	engine := &execEngine{t: t, resizes: make(chan string, 4)}
+	// A host at the manage tier must not open terminals, even though the handler is registered.
+	p := startAgent(t, engine, "docker.manage")
+	p.send(protocol.ChannelFrame{Type: protocol.FrameStreamOpen, ID: "t", Method: protocol.MethodDockerExec, Params: json.RawMessage(`{"id":"web"}`)})
+	if end := p.recv(); end.Type != protocol.FrameStreamEnd || end.Error == nil || end.Error.Code != protocol.ErrCodeTierInsufficient {
+		t.Fatalf("manage-tier terminal = %+v", end)
+	}
+
+	engine2 := &execEngine{t: t, resizes: make(chan string, 4)}
+	q := startAgent(t, engine2, "docker.manage", "docker.exec")
+	for id, tc := range map[string]struct {
+		params string
+		code   string
+	}{
+		"a": {`{"id":"stopped"}`, protocol.ErrCodeConflict},
+		"b": {`{"id":"web","shell":"zsh"}`, protocol.ErrCodeBadRequest},
+		"c": {`{"id":"web","user":"root;id"}`, protocol.ErrCodeBadRequest},
+		"d": {`{"id":"web","extra":true}`, protocol.ErrCodeBadRequest},
+	} {
+		q.send(protocol.ChannelFrame{Type: protocol.FrameStreamOpen, ID: id, Method: protocol.MethodDockerExec, Params: json.RawMessage(tc.params)})
+		if end := q.recv(); end.Type != protocol.FrameStreamEnd || end.Error == nil || end.Error.Code != tc.code {
+			t.Errorf("%s = %+v, want %s", tc.params, end, tc.code)
+		}
+	}
+	engine2.failExec = true
+	q.send(protocol.ChannelFrame{Type: protocol.FrameStreamOpen, ID: "e", Method: protocol.MethodDockerExec, Params: json.RawMessage(`{"id":"web"}`)})
+	if end := q.recv(); end.Error == nil || end.Error.Code != protocol.ErrCodeExecFailed || !strings.Contains(end.Error.Message, "no such file") {
+		t.Fatalf("a missing shell must be explained: %+v", end)
 	}
 }
