@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,6 +19,9 @@ import (
 	webassets "github.com/deranjer/vigara/apps/api"
 	"github.com/deranjer/vigara/apps/api/internal/agent"
 	"github.com/deranjer/vigara/apps/api/internal/alerts"
+	"github.com/deranjer/vigara/apps/api/internal/audit"
+	"github.com/deranjer/vigara/apps/api/internal/channel"
+	"github.com/deranjer/vigara/apps/api/internal/containers"
 	"github.com/deranjer/vigara/apps/api/internal/androidbackup"
 	"github.com/deranjer/vigara/apps/api/internal/auth"
 	"github.com/deranjer/vigara/apps/api/internal/backups"
@@ -91,8 +95,38 @@ func main() {
 	backups.NewHandler(database.Pool, authService).Register(backupMux)
 	agentMux := http.NewServeMux()
 	agentHandler := agent.NewHandler(database.Pool, authService)
-	agentHandler.ConfigureDownloads(os.Getenv("VIGIRA_PUBLIC_URL"), os.Getenv("VIGIRA_AGENT_RELEASE_DIR"))
+	agentHandler.ConfigureDownloads("", os.Getenv("VIGIRA_AGENT_RELEASE_DIR"))
+	allowInsecureAgentHTTP := os.Getenv("VIGIRA_ALLOW_INSECURE_AGENT_HTTP") == "true"
+	for _, rejected := range agentHandler.ConfigureServerURLs(os.Getenv("VIGIRA_PUBLIC_URL"), splitList(os.Getenv("VIGIRA_PUBLIC_URLS")), allowInsecureAgentHTTP) {
+		logger.Warn("ignoring agent server URL", "reason", rejected.Error())
+	}
+	if allowInsecureAgentHTTP {
+		logger.Warn("plain HTTP is allowed for agents on private-network addresses; agent credentials and telemetry are unencrypted on the wire")
+	}
 	agentHandler.Register(agentMux)
+	auditRecorder := audit.NewRecorder(database.Pool)
+	channelHub := channel.NewHub(channel.Options{AuthenticateAgent: agentHandler.AuthenticateAgentRequest, Capabilities: agentHandler.AgentCapabilities})
+	channelMux := http.NewServeMux()
+	channelHub.RegisterAPI(channelMux, authService)
+	containersMux := http.NewServeMux()
+	containers.RegisterAPI(containersMux, containers.Config{Hub: channelHub, Authz: authService, Audit: auditRecorder, Names: func(ctx context.Context) (map[string]string, error) {
+		rows, err := database.Pool.Query(ctx, `SELECT ai.id::text, d.display_name FROM agent_identities ai JOIN devices d ON d.id = ai.device_id WHERE ai.revoked_at IS NULL`)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		names := map[string]string{}
+		for rows.Next() {
+			var id, name string
+			if err := rows.Scan(&id, &name); err != nil {
+				return nil, err
+			}
+			names[id] = name
+		}
+		return names, rows.Err()
+	}})
+	adminMux := http.NewServeMux()
+	authService.RegisterAdmin(adminMux, auditRecorder)
 	androidBackupMux := http.NewServeMux()
 	androidbackup.NewHandler(database.Pool, authService, cfg.AndroidBackupRoot, cfg.AndroidBackupMaxFileBytes, cfg.AndroidBackupMaxTotalBytes).Register(agentMux, androidBackupMux)
 	telemetryMux := http.NewServeMux()
@@ -116,6 +150,7 @@ func main() {
 	}
 	router.Use(auth.NewAttemptLimiter().Middleware)
 	router.Use(authService.SessionMiddleware)
+	router.Use(authService.WriteGuard)
 	router.Get("/api/version", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"version": version, "revision": revision})
@@ -128,7 +163,15 @@ func main() {
 		out.Body.Status = "ok"
 		return out, nil
 	})
+	router.Handle("/api/agent/channel", http.HandlerFunc(channelHub.ServeAgent))
 	router.Handle("/api/agent/*", agentMux)
+	router.Handle("/api/channel/*", channelMux)
+	router.Handle("/api/containers", containersMux)
+	router.Handle("/api/containers/*", containersMux)
+	router.Handle("/api/docker/*", containersMux)
+	router.Handle("/api/users", adminMux)
+	router.Handle("/api/users/*", adminMux)
+	router.Handle("/api/audit", adminMux)
 	router.Handle("/api/agent/telemetry", telemetryMux)
 	router.Handle("/api/agent/backups/status", alertsMux)
 	router.Handle("/api/backups/android/*", androidBackupMux)
@@ -138,6 +181,8 @@ func main() {
 	router.Handle("/api/devices/{deviceID}/maintenance", alertsMux)
 	router.Handle("/api/devices/{deviceID}/maintenance/{windowID}", alertsMux)
 	router.Handle("/api/agents/*", agentMux)
+	router.Handle("/api/agent-downloads", agentMux)
+	router.Handle("/api/agent-downloads/*", agentMux)
 	router.Handle("/api/devices/*", agentMux)
 	router.Handle("/api/inventory/*", inventoryMux)
 	auth.RegisterAPI(api, authService, cfg.SecureSessionCookie)
@@ -168,4 +213,15 @@ func main() {
 		logger.Error("server failed", "error", err)
 		os.Exit(1)
 	}
+}
+
+// splitList parses a comma-separated environment value, ignoring blanks.
+func splitList(value string) []string {
+	var items []string
+	for _, item := range strings.Split(value, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			items = append(items, item)
+		}
+	}
+	return items
 }

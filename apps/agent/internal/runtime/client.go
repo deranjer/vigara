@@ -11,18 +11,20 @@ import (
 	"io"
 	"log/slog"
 	"math/rand/v2"
-	"net"
 	"net/http"
+	"os"
 	"net/url"
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/deranjer/vigara/apps/agent/internal/collector"
 	"github.com/deranjer/vigara/internal/modules"
 	"github.com/deranjer/vigara/internal/protocol"
 	"github.com/deranjer/vigara/internal/restic"
+	"github.com/deranjer/vigara/internal/serverurl"
 )
 
 var AgentVersion = "0.1.0"
@@ -34,7 +36,15 @@ type Client struct {
 	State     State
 	HTTP      *http.Client
 	Collector *collector.Collector
+	// tiersSuppressed stops offering Docker management tiers after the server
+	// rejected them as outside the enrollment scope, so monitoring keeps working.
+	tiersSuppressed atomic.Bool
 }
+
+// httpStatusError is returned when the server answers with a non-success status.
+type httpStatusError struct{ status int }
+
+func (e *httpStatusError) Error() string { return fmt.Sprintf("server returned HTTP %d", e.status) }
 
 // TelemetryDeliveryError reports a rejected telemetry batch after Cycle has
 // still completed the normal poll. The snapshots remain queued for retry.
@@ -52,7 +62,7 @@ func NewClient(statePath string) (*Client, error) {
 }
 
 func (c *Client) Enroll(ctx context.Context, serverURL, token, name string) error {
-	if err := validateServerURL(serverURL); err != nil {
+	if err := validateServerURL(serverURL, c.State.AllowInsecurePrivateHTTP); err != nil {
 		return err
 	}
 	capability := protocol.CapabilityReport{ProtocolVersion: protocol.CurrentVersion, Platform: runtime.GOOS, Architecture: runtime.GOARCH, AgentVersion: AgentVersion, Capabilities: c.capabilities()}
@@ -115,7 +125,18 @@ func (c *Client) Cycle(ctx context.Context) (time.Duration, error) {
 		request.KnownConfigVersion = c.State.Configuration.Version
 	}
 	var response protocol.AgentResponse
-	if err := c.post(ctx, c.State.ServerURL, "/api/agent/poll", c.State.Credential, request, &response); err != nil {
+	err := c.post(ctx, c.State.ServerURL, "/api/agent/poll", c.State.Credential, request, &response)
+	var rejected *httpStatusError
+	if err != nil && errors.As(err, &rejected) && rejected.status == http.StatusForbidden && len(dockerTierCapabilities()) > 0 && !c.tiersSuppressed.Load() {
+		// The server only rejects a report that exceeds the enrollment scope. Keep monitoring
+		// working by dropping the Docker tiers, and say clearly how to enable them.
+		slog.Warn("the server does not allow this agent's Docker management tiers; they are disabled until the device is re-enrolled with that access (or VIGIRA_DOCKER_MODE is unset)")
+		c.tiersSuppressed.Store(true)
+		request.Capabilities = c.capabilities()
+		response = protocol.AgentResponse{}
+		err = c.post(ctx, c.State.ServerURL, "/api/agent/poll", c.State.Credential, request, &response)
+	}
+	if err != nil {
 		return 0, fmt.Errorf("poll server: %w", err)
 	}
 	if response.ProtocolVersion != protocol.CurrentVersion {
@@ -193,11 +214,34 @@ func recoverInterruptedBackup(state *State) error {
 	return nil
 }
 
+// Capabilities reports what this agent offers, including the Docker tiers the
+// local operator enabled.
+func (c *Client) Capabilities() []string { return c.capabilities() }
+
 func (c *Client) capabilities() []string {
+	capabilities := []string{}
 	if resticCapabilityEnabled(c.State.ResticProfiles) {
-		return []string{resticCapability}
+		capabilities = append(capabilities, resticCapability)
 	}
-	return []string{}
+	if c.tiersSuppressed.Load() {
+		return capabilities
+	}
+	return append(capabilities, dockerTierCapabilities()...)
+}
+
+// dockerTierCapabilities returns the Docker management tiers the local operator
+// has enabled. They apply only when Docker collection itself is enabled, and an
+// invalid VIGIRA_DOCKER_MODE offers nothing rather than guessing.
+func dockerTierCapabilities() []string {
+	if !strings.EqualFold(strings.TrimSpace(os.Getenv("VIGIRA_DOCKER_ENABLED")), "true") {
+		return nil
+	}
+	capabilities, err := protocol.DockerTierCapabilities(os.Getenv("VIGIRA_DOCKER_MODE"))
+	if err != nil {
+		slog.Warn("ignoring invalid Docker mode; no management capability is offered", "error", err)
+		return nil
+	}
+	return capabilities
 }
 
 func (c *Client) executeJob(parent context.Context, job protocol.Job, resultID string, progressCallbacks ...func(restic.Progress) error) (result protocol.JobResult) {
@@ -516,7 +560,7 @@ func (c *Client) collectTelemetry(ctx context.Context) error {
 }
 
 func (c *Client) post(ctx context.Context, base, path, credential string, body, output any) error {
-	if err := validateServerURL(base); err != nil {
+	if err := validateServerURL(base, c.State.AllowInsecurePrivateHTTP); err != nil {
 		return err
 	}
 	endpoint, err := url.JoinPath(strings.TrimRight(base, "/"), path)
@@ -541,7 +585,7 @@ func (c *Client) post(ctx context.Context, base, path, credential string, body, 
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("server returned HTTP %d", response.StatusCode)
+		return &httpStatusError{status: response.StatusCode}
 	}
 	if output != nil {
 		decoder := json.NewDecoder(io.LimitReader(response.Body, 1<<20))
@@ -552,19 +596,8 @@ func (c *Client) post(ctx context.Context, base, path, credential string, body, 
 	return nil
 }
 
-func validateServerURL(raw string) error {
-	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return fmt.Errorf("server URL must be an origin without user info, query, or fragment")
-	}
-	if u.Scheme == "https" {
-		return nil
-	}
-	host := u.Hostname()
-	if u.Scheme == "http" && (host == "localhost" || net.ParseIP(host) != nil && net.ParseIP(host).IsLoopback()) {
-		return nil
-	}
-	return fmt.Errorf("server URL must use HTTPS")
+func validateServerURL(raw string, allowInsecurePrivateHTTP bool) error {
+	return serverurl.Validate(raw, allowInsecurePrivateHTTP)
 }
 
 func randomID() (string, error) {

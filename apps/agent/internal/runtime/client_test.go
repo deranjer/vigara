@@ -164,14 +164,54 @@ func TestRejectedTelemetryDoesNotBlockNormalPoll(t *testing.T) {
 
 func TestServerURLRequiresHTTPSOutsideLoopback(t *testing.T) {
 	for _, raw := range []string{"http://vigira.example", "https://user:pass@vigira.example", "https://vigira.example/path?token=x"} {
-		if err := validateServerURL(raw); err == nil {
+		if err := validateServerURL(raw, false); err == nil {
 			t.Errorf("accepted unsafe server URL %q", raw)
 		}
 	}
 	for _, raw := range []string{"https://vigira.example", "http://127.0.0.1:8080", "http://localhost:8080"} {
-		if err := validateServerURL(raw); err != nil {
+		if err := validateServerURL(raw, false); err != nil {
 			t.Errorf("rejected valid server URL %q: %v", raw, err)
 		}
+	}
+}
+
+func TestPrivateHTTPRequiresExplicitOptIn(t *testing.T) {
+	for _, raw := range []string{"http://192.168.1.97:8080", "http://100.101.102.103:8080", "http://nas.local:8080"} {
+		if err := validateServerURL(raw, false); err == nil {
+			t.Errorf("accepted private HTTP URL %q without opt-in", raw)
+		}
+		if err := validateServerURL(raw, true); err != nil {
+			t.Errorf("rejected private HTTP URL %q with opt-in: %v", raw, err)
+		}
+	}
+	for _, raw := range []string{"http://vigira.example", "http://8.8.8.8:8080"} {
+		if err := validateServerURL(raw, true); err == nil {
+			t.Errorf("opt-in allowed plain HTTP to public host %q", raw)
+		}
+	}
+}
+
+func TestPrivateHTTPOptInIsPersistedAndUsedByPolls(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "agent.json")
+	c, err := NewClient(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.State.AllowInsecurePrivateHTTP = true
+	c.State.ServerURL, c.State.AgentID, c.State.Credential = "http://192.168.1.97:8080", "agent", "credential"
+	if err := Save(path, c.State); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := NewClient(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reloaded.State.AllowInsecurePrivateHTTP {
+		t.Fatal("opt-in was not persisted")
+	}
+	reloaded.State.AllowInsecurePrivateHTTP = false
+	if err := reloaded.post(context.Background(), reloaded.State.ServerURL, "/api/agent/poll", "credential", map[string]string{}, nil); err == nil || !strings.Contains(err.Error(), "HTTPS") {
+		t.Fatalf("poll without opt-in error = %v", err)
 	}
 }
 
@@ -225,5 +265,74 @@ func TestAgentResponseAcceptsAdditiveOptionalFields(t *testing.T) {
 	}
 	if delay < 30*time.Second {
 		t.Fatalf("poll delay = %s, want at least 30 seconds", delay)
+	}
+}
+
+func TestDockerTierCapabilitiesRequireLocalOptIn(t *testing.T) {
+	c, err := NewClient(filepath.Join(t.TempDir(), "state", "agent.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		enabled, mode string
+		want          []string
+	}{
+		{"", "deploy", nil},
+		{"true", "", nil},
+		{"true", "read", nil},
+		{"true", "manage", []string{"docker.manage"}},
+		{"true", "exec", []string{"docker.manage", "docker.exec"}},
+		{"true", "deploy", []string{"docker.manage", "docker.exec", "docker.deploy"}},
+		{"true", "bogus", nil},
+	} {
+		t.Setenv("VIGIRA_DOCKER_ENABLED", tc.enabled)
+		t.Setenv("VIGIRA_DOCKER_MODE", tc.mode)
+		got := c.capabilities()
+		if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+			t.Errorf("enabled=%q mode=%q capabilities = %v, want %v", tc.enabled, tc.mode, got, tc.want)
+		}
+	}
+}
+
+func TestDockerTiersAreDroppedWhenTheServerRejectsThemAsOutOfScope(t *testing.T) {
+	t.Setenv("VIGIRA_DOCKER_ENABLED", "true")
+	t.Setenv("VIGIRA_DOCKER_MODE", "manage")
+	var polls [][]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/agent/poll":
+			var request protocol.AgentRequest
+			_ = json.NewDecoder(r.Body).Decode(&request)
+			polls = append(polls, request.Capabilities)
+			if len(request.Capabilities) > 0 {
+				http.Error(w, "agent capability exceeds enrollment scope", http.StatusForbidden)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(protocol.AgentResponse{ProtocolVersion: protocol.CurrentVersion, PollAfterSeconds: 30})
+		default:
+			w.WriteHeader(http.StatusAccepted)
+		}
+	}))
+	defer server.Close()
+	c, err := NewClient(filepath.Join(t.TempDir(), "state", "agent.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.State.ServerURL, c.State.AgentID, c.State.Credential = server.URL, "agent-1", "a-private-credential"
+	if _, err := c.Cycle(context.Background()); err != nil {
+		t.Fatalf("first cycle: %v", err)
+	}
+	if len(polls) != 2 || len(polls[0]) != 1 || polls[0][0] != "docker.manage" || len(polls[1]) != 0 {
+		t.Fatalf("polls = %v, want one attempt with docker.manage then one without", polls)
+	}
+	if len(c.Capabilities()) != 0 {
+		t.Fatalf("capabilities after rejection = %v", c.Capabilities())
+	}
+	polls = nil
+	if _, err := c.Cycle(context.Background()); err != nil {
+		t.Fatalf("second cycle: %v", err)
+	}
+	if len(polls) != 1 || len(polls[0]) != 0 {
+		t.Fatalf("later polls = %v, want a single poll without tiers", polls)
 	}
 }

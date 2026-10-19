@@ -611,3 +611,87 @@ func TestBackupProgressAcceptsPreparationCompatiblePhases(t *testing.T) {
 		t.Fatalf("stored progress=%+v err=%v", stored, err)
 	}
 }
+
+func TestDockerTierCapabilitiesAreBoundedByEnrollmentScope(t *testing.T) {
+	pool, sessions := agentTestService(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	admin, err := sessions.CreateFirstUser(ctx, "tier-admin", "Tier Admin", "correct horse battery staple", "correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandler(pool, sessions)
+	mux := http.NewServeMux()
+	handler.Register(mux)
+
+	create := httptest.NewRequest(http.MethodPost, "/api/agents/enrollment-tokens", bytes.NewBufferString(`{"capabilities":["docker.manage"],"expiresInHours":1}`))
+	create.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: admin.Token})
+	created := httptest.NewRecorder()
+	mux.ServeHTTP(created, create)
+	var token EnrollmentTokenResponse
+	if created.Code != http.StatusOK || json.Unmarshal(created.Body.Bytes(), &token) != nil {
+		t.Fatalf("create token returned %d: %s", created.Code, created.Body.String())
+	}
+	report := func(caps []string) protocol.CapabilityReport {
+		return protocol.CapabilityReport{ProtocolVersion: protocol.CurrentVersion, Platform: "linux", Architecture: "amd64", AgentVersion: "test", Capabilities: caps}
+	}
+	// An agent cannot enroll claiming a tier above its enrollment scope.
+	body, _ := json.Marshal(EnrollmentRequest{Token: token.Token, DisplayName: "tiered", Capability: report([]string{"docker.manage", "docker.exec"})})
+	over := httptest.NewRecorder()
+	mux.ServeHTTP(over, httptest.NewRequest(http.MethodPost, "/api/agent/enroll", bytes.NewReader(body)))
+	if over.Code != http.StatusForbidden {
+		t.Fatalf("enrollment above scope returned %d, want 403", over.Code)
+	}
+	body, _ = json.Marshal(EnrollmentRequest{Token: token.Token, DisplayName: "tiered", Capability: report([]string{"docker.manage"})})
+	enrolled := httptest.NewRecorder()
+	mux.ServeHTTP(enrolled, httptest.NewRequest(http.MethodPost, "/api/agent/enroll", bytes.NewReader(body)))
+	var identity EnrollmentResponse
+	if enrolled.Code != http.StatusOK || json.Unmarshal(enrolled.Body.Bytes(), &identity) != nil {
+		t.Fatalf("enrollment within scope returned %d: %s", enrolled.Code, enrolled.Body.String())
+	}
+
+	poll := func(caps []string) int {
+		raw, _ := json.Marshal(protocol.AgentRequest{ProtocolVersion: protocol.CurrentVersion, AgentID: identity.AgentID, AgentVersion: "test", Platform: "linux", Architecture: "amd64", Capabilities: caps})
+		r := httptest.NewRequest(http.MethodPost, "/api/agent/poll", bytes.NewReader(raw))
+		r.Header.Set("Authorization", "Bearer "+identity.Credential)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, r)
+		return w.Code
+	}
+	if code := poll([]string{"docker.manage", "docker.deploy"}); code != http.StatusForbidden {
+		t.Fatalf("poll above scope returned %d, want 403", code)
+	}
+	if code := poll([]string{"docker.manage"}); code != http.StatusOK {
+		t.Fatalf("poll within scope returned %d", code)
+	}
+
+	// The channel reads the stored capabilities, so the tier it grants is the scoped one.
+	request := httptest.NewRequest(http.MethodGet, "/api/agent/channel", nil)
+	request.Header.Set("Authorization", "Bearer "+identity.Credential)
+	agentID, err := handler.AuthenticateAgentRequest(request)
+	if err != nil || agentID != identity.AgentID {
+		t.Fatalf("AuthenticateAgentRequest = %q, %v", agentID, err)
+	}
+	caps, err := handler.AgentCapabilities(ctx, agentID)
+	if err != nil || protocol.DockerTier(caps) != protocol.DockerModeManage {
+		t.Fatalf("AgentCapabilities = %v, %v", caps, err)
+	}
+	bad := httptest.NewRequest(http.MethodGet, "/api/agent/channel", nil)
+	bad.Header.Set("Authorization", "Bearer not-a-real-credential")
+	if _, err := handler.AuthenticateAgentRequest(bad); err == nil {
+		t.Fatal("accepted an unknown credential")
+	}
+	if _, err := handler.AuthenticateAgentRequest(httptest.NewRequest(http.MethodGet, "/api/agent/channel", nil)); err == nil {
+		t.Fatal("accepted a request without a credential")
+	}
+
+	revoke := httptest.NewRequest(http.MethodPost, "/api/agents/"+identity.AgentID+"/revoke", nil)
+	revoke.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: admin.Token})
+	mux.ServeHTTP(httptest.NewRecorder(), revoke)
+	if _, err := handler.AuthenticateAgentRequest(request); err == nil {
+		t.Fatal("a revoked agent can still open the channel")
+	}
+	if _, err := handler.AgentCapabilities(ctx, agentID); err == nil {
+		t.Fatal("capabilities were returned for a revoked agent")
+	}
+}

@@ -107,3 +107,45 @@ background work or write outside their declared scope.
 
 These contracts describe the planned boundary; they do not claim that transport,
 enrollment, persistence, scheduling, or runtime isolation has been implemented.
+
+## Live channel
+
+The poll loop above is too slow for logs, terminals, and live container views, so each agent also keeps one persistent WebSocket open to the server. The agent always dials out, to `/api/agent/channel` on the same server URL it already uses (`wss` for HTTPS, `ws` for the private-network HTTP option). The server never connects to an agent. Polling continues unchanged for backups and as a fallback, and an older server that lacks the endpoint simply leaves the live features unavailable while the agent retries occasionally.
+
+The agent authenticates with its bearer credential. Both sides then exchange JSON text messages shaped as `ChannelFrame` in `internal/protocol/channel.go`, at most 1 MiB each:
+
+1. The agent sends `hello` with the channel version, its agent version, and its capabilities.
+2. The server checks the version, looks up the capabilities it stored for that agent (the agent's own claim cannot raise them), and answers `welcome`.
+3. The server sends `call` frames and receives one `result` each, or sends `stream_open` and receives ordered `stream_data` chunks of at most 32 KiB followed by `stream_end`. `cancel` abandons either.
+
+Rules that keep this safe:
+
+- A method must be listed in the protocol's method table together with the Docker tier it needs. Both server and agent refuse unknown methods and methods above the agent's tier, so the host's local setting is the final authority.
+- Requests carry a deadline that the agent enforces. At most 32 requests (calls plus streams) are in flight per agent, and 64 on the agent side.
+- A stream consumer that falls more than 256 chunks behind is cut off with a `slow_consumer` error instead of growing memory.
+- Errors are structured with a code and a message; agents report only a generic message for unexpected failures so host details do not reach the server.
+- A newer connection from the same agent replaces the older one, and the server pings each connection every 20 seconds.
+
+The only methods so far are `channel.ping` and `channel.info`; Docker methods arrive with the container management phases. The Containers page lists connected agents and can test a connection through `GET /api/channel/agents` and `POST /api/channel/agents/{id}/ping`.
+
+### Docker read methods
+
+These methods and their types live in `internal/protocol/dockerchannel.go`. `docker.list` and `docker.inspect` are calls. `docker.logs` and `docker.stats` are streams whose chunks are newline-delimited JSON (`DockerLogLine` and `DockerStatsSample`); the agent never splits a record across chunks. The server relays each chunk to the browser unchanged over a same-origin WebSocket at `/api/containers/{agentId}/{container}/logs` or `/stats`, then sends a final `{"end":true}` message, with `code` and `message` when the stream failed. Closing the page cancels the agent's stream. Because the browser WebSocket upgrade is a `GET`, the server refuses it for a user without the container read permission and for any cross-origin page.
+
+### Docker management methods
+
+`docker.action` (a call) and `docker.recreate` (a stream of newline-delimited `DockerRecreateEvent` records ending with a `done` record that carries the result) are defined in `internal/protocol/dockeractions.go` and need the `manage` tier. The server exposes them as `POST /api/containers/{agentId}/{container}/actions` and `POST /api/containers/{agentId}/{container}/recreate`, which stream progress as newline-delimited JSON over the HTTP response. The container always comes from the path; a request body that names one is rejected. Both routes require the container manage permission, and every attempt, including a refused one, is recorded in the audit log. If the browser disconnects during a recreate, the server cancels the agent's work as far as it can still be cancelled and records the outcome as unknown.
+
+### Interactive streams and terminals
+
+`docker.exec` is the first two-way stream. Besides the agent's `stream_data` and `stream_end`, the server can send two more frame types to an open interactive stream: `stream_input` (bytes, such as keystrokes) and `stream_control` (a JSON control message, such as `{"type":"resize","cols":120,"rows":40}`). An agent registers an interactive method with a handler that receives input and control through channels, which are closed when the stream ends. A stream whose handler cannot keep up with its input is cancelled rather than dropping keystrokes, and input for a stream that has ended is ignored.
+
+The method needs the `exec` tier, and parameters are validated by the shared `DockerExecParams.Normalize` on both ends. A non-zero shell exit status ends the stream with the error code `exec_exit`, and Docker failing to start a terminal with `exec_failed`; both carry a message that is safe to show.
+
+The browser reaches it through `GET /api/containers/{agentId}/{container}/exec`, a same-origin WebSocket. Binary messages carry keystrokes in and terminal output out. Text messages carry a resize in (`{"type":"resize","cols":120,"rows":40}`, clamped to 10 to 500) and a final `{"end":true,"code":"...","message":"..."}` out. Query parameters are `shell` (`sh` or `bash`, default automatic), `user`, `cols`, and `rows`. The server checks the container exec permission before upgrading, so an unauthorized request gets a plain HTTP error.
+
+### Docker resource methods
+
+`docker.images`, `docker.networks`, and `docker.volumes` list resources, and `docker.resource.inspect` returns a curated view of one. They need no tier. `docker.image.pull` (a stream of `DockerPullEvent` records), `docker.resource.remove`, and `docker.prune` need the `manage` tier. Types are in `internal/protocol/dockerresources.go`. A resource kind is `image`, `network`, or `volume`, and references are validated by the shared `ValidResourceRef` on the server and again on the agent before anything reaches Docker, so a path with dot or empty segments, spaces, or control characters is refused. A refusal from Docker such as "in use" or "pre-defined network" is passed back with Docker's own wording as the `conflict` error, and a failed pull as `pull_failed`.
+
+The browser reaches them under `/api/docker/{agentId}/...`: `GET .../{images|networks|volumes}` lists, `GET .../{kind}/inspect?ref=` inspects, `POST .../{kind}/remove` removes, `POST .../{kind}/prune` prunes (with `dryRun` to preview), and `POST .../images/pull` pulls with newline-delimited JSON progress. References travel in a query parameter or the body, not the path, because image names contain slashes.

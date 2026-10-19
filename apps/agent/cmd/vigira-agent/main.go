@@ -15,8 +15,13 @@ import (
 	"syscall"
 
 	dockercollector "github.com/deranjer/vigara/apps/agent/internal/collector/docker"
+	agentchannel "github.com/deranjer/vigara/apps/agent/internal/channel"
+	"github.com/deranjer/vigara/apps/agent/internal/dockerapi"
+	"github.com/deranjer/vigara/apps/agent/internal/dockerchannel"
 	agentruntime "github.com/deranjer/vigara/apps/agent/internal/runtime"
 	"github.com/deranjer/vigara/internal/composeadoption"
+	"github.com/deranjer/vigara/internal/protocol"
+	"github.com/deranjer/vigara/internal/serverurl"
 )
 
 func main() {
@@ -42,13 +47,21 @@ func execute(args []string, logger *slog.Logger) error {
 			return err
 		}
 		flags := flag.NewFlagSet("enroll", flag.ContinueOnError)
-		server := flags.String("server", "", "Vigira server HTTPS URL")
+		server := flags.String("server", "", "Vigira server URL (HTTPS, or loopback HTTP)")
 		name := flags.String("name", hostname(), "device display name")
+		insecure := flags.Bool("allow-insecure-private-http", false, "allow plain HTTP to a private-network or Tailscale server address (credentials and telemetry are unencrypted)")
 		if err := flags.Parse(rest[1:]); err != nil {
 			return err
 		}
 		if *server == "" {
 			return fmt.Errorf("enroll requires --server")
+		}
+		client.State.AllowInsecurePrivateHTTP = *insecure
+		if err := serverurl.Validate(*server, *insecure); err != nil {
+			return err
+		}
+		if *insecure && !serverurl.IsSecure(*server) {
+			logger.Warn("server connection is not encrypted; use only on a trusted private network or VPN", "server", *server)
 		}
 		logger.Info("enter one-time enrollment token")
 		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
@@ -148,8 +161,35 @@ func hostname() string {
 func runAgent(client *agentruntime.Client, logger *slog.Logger) error {
 	return runAsService(func(ctx context.Context) error {
 		logger.Info("agent service started", "agentId", client.State.AgentID)
+		live := agentchannel.NewClient(client.State.ServerURL, client.State.Credential, agentruntime.AgentVersion, client.State.AllowInsecurePrivateHTTP, client.Capabilities, logger)
+		registerDocker(live, logger)
+		go live.Run(ctx)
 		return client.Run(ctx)
 	})
+}
+
+// registerDocker offers the Docker read methods over the live channel, but only when
+// the local operator enabled Docker collection with a valid endpoint.
+func registerDocker(live *agentchannel.Client, logger *slog.Logger) {
+	if !strings.EqualFold(strings.TrimSpace(os.Getenv("VIGIRA_DOCKER_ENABLED")), "true") {
+		return
+	}
+	api, err := dockerapi.New(strings.TrimSpace(os.Getenv("VIGIRA_DOCKER_HOST")), nil)
+	if err != nil {
+		logger.Warn("Docker live views are unavailable: the Docker endpoint configuration is invalid")
+		return
+	}
+	dockerchannel.Register(live, api)
+	dockerchannel.RegisterResources(live, api)
+	if protocol.DockerTierRank(protocol.DockerTier(live.Capabilities())) >= protocol.DockerTierRank(protocol.DockerModeManage) {
+		dockerchannel.RegisterManage(live, api)
+		dockerchannel.RegisterResourceManagement(live, api)
+		logger.Info("container management is enabled on this host", "tier", protocol.DockerTier(live.Capabilities()))
+	}
+	if protocol.DockerTierRank(protocol.DockerTier(live.Capabilities())) >= protocol.DockerTierRank(protocol.DockerModeExec) {
+		dockerchannel.RegisterExec(live, api)
+		logger.Info("container terminals are enabled on this host")
+	}
 }
 
 func interruptContext() (context.Context, context.CancelFunc) {

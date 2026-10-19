@@ -29,7 +29,7 @@ CREATE TABLE users (
     username TEXT NOT NULL UNIQUE CHECK (username = lower(username)),
     display_name TEXT NOT NULL,
     password_hash TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'admin' CHECK (role IN ('admin')),
+    role TEXT NOT NULL DEFAULT 'admin' CHECK (role IN ('viewer', 'operator', 'admin')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

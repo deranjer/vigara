@@ -16,6 +16,11 @@ import (
 
 func testAuthService(t *testing.T) (*Service, *pgxpool.Pool) {
 	t.Helper()
+	return testAuthServiceWithMigrations(t, "000002_local_auth.up.sql")
+}
+
+func testAuthServiceWithMigrations(t *testing.T, names ...string) (*Service, *pgxpool.Pool) {
+	t.Helper()
 	url := os.Getenv("VIGIRA_TEST_DATABASE_URL")
 	if url == "" {
 		t.Skip("set VIGIRA_TEST_DATABASE_URL to run PostgreSQL integration tests")
@@ -48,12 +53,14 @@ func testAuthService(t *testing.T) (*Service, *pgxpool.Pool) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	migration, err := os.ReadFile("../../migrations/000002_local_auth.up.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, string(migration)); err != nil {
-		t.Fatal(err)
+	for _, name := range names {
+		migration, err := os.ReadFile("../../migrations/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, string(migration)); err != nil {
+			t.Fatalf("apply %s: %v", name, err)
+		}
 	}
 	return NewService(pool, db.New(pool)), pool
 }

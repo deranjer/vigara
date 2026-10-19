@@ -6,20 +6,68 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/deranjer/vigara/internal/protocol"
+	"github.com/deranjer/vigara/internal/serverurl"
 )
 
 // ConfigureDownloads sets operator-owned bundle provenance and the reachable
 // URL included in bootstrap files. Callers cannot select artifact paths or URLs.
 func (h *Handler) ConfigureDownloads(publicURL, releaseDir string) {
-	h.publicURL = strings.TrimRight(strings.TrimSpace(publicURL), "/")
+	h.ConfigureServerURLs(publicURL, nil, false)
 	h.releaseDir = releaseDir
+}
+
+// ConfigureServerURLs sets the operator-approved URLs that bundles may point
+// agents at: a primary URL (the default) plus optional alternates, for example a
+// LAN address and a Tailscale address. Plain HTTP is accepted only when
+// allowInsecureHTTP is set and the host is a private-network or Tailscale
+// address; anything else must be HTTPS. Entries that fail validation are
+// dropped and returned as errors so the caller can report them. Requests can
+// only select among these URLs and never supply their own.
+func (h *Handler) ConfigureServerURLs(primary string, extra []string, allowInsecureHTTP bool) []error {
+	h.allowInsecureHTTP = allowInsecureHTTP
+	h.serverURLs = nil
+	var rejected []error
+	seen := map[string]bool{}
+	for _, raw := range append([]string{primary}, extra...) {
+		raw = strings.TrimRight(strings.TrimSpace(raw), "/")
+		if raw == "" || seen[raw] {
+			continue
+		}
+		seen[raw] = true
+		if err := serverurl.Validate(raw, allowInsecureHTTP); err != nil {
+			rejected = append(rejected, fmt.Errorf("%s: %w", raw, err))
+			continue
+		}
+		h.serverURLs = append(h.serverURLs, raw)
+	}
+	return rejected
+}
+
+// selectServerURL returns the requested URL if the operator approved it, or the
+// primary configured URL when the request names none.
+func (h *Handler) selectServerURL(requested string) (string, bool) {
+	requested = strings.TrimRight(strings.TrimSpace(requested), "/")
+	if requested == "" {
+		if len(h.serverURLs) == 0 {
+			return "", false
+		}
+		return h.serverURLs[0], true
+	}
+	for _, candidate := range h.serverURLs {
+		if candidate == requested {
+			return candidate, true
+		}
+	}
+	return "", false
 }
 
 type releaseManifest struct {
@@ -32,7 +80,12 @@ type releaseManifest struct {
 
 var supportedDownloads = map[string]string{"windows-amd64": "vigira-agent-windows-amd64.exe", "linux-amd64": "vigira-agent-linux-amd64", "linux-arm64": "vigira-agent-linux-arm64"}
 
-var selectableFeatures = map[string]bool{"restic.backup": true}
+var selectableFeatures = map[string]bool{
+	"restic.backup":                 true,
+	protocol.CapabilityDockerManage: true,
+	protocol.CapabilityDockerExec:   true,
+	protocol.CapabilityDockerDeploy: true,
+}
 
 type boundedBundleWriter struct {
 	w         http.ResponseWriter
@@ -117,11 +170,24 @@ func (h *Handler) downloadAvailability(w http.ResponseWriter, r *http.Request) {
 			available = append(available, target)
 		}
 	}
-	writeJSON(w, map[string]any{"serverUrl": h.publicURL, "targets": available})
+	type serverOption struct {
+		URL    string `json:"url"`
+		Secure bool   `json:"secure"`
+	}
+	options := make([]serverOption, 0, len(h.serverURLs))
+	primary := ""
+	for i, candidate := range h.serverURLs {
+		if i == 0 {
+			primary = candidate
+		}
+		options = append(options, serverOption{URL: candidate, Secure: serverurl.IsSecure(candidate)})
+	}
+	writeJSON(w, map[string]any{"serverUrl": primary, "serverUrls": options, "allowInsecureHttp": h.allowInsecureHTTP, "targets": available})
 }
 
 type agentDownloadRequest struct {
-	Target   string   `json:"target"`
+	Target    string   `json:"target"`
+	ServerURL string   `json:"serverUrl"`
 	Name     string   `json:"name"`
 	Features []string `json:"features"`
 }
@@ -135,13 +201,17 @@ func (h *Handler) createAgentDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Name = strings.TrimSpace(req.Name)
-	if len(req.Name) == 0 || len(req.Name) > 120 || strings.ContainsAny(req.Name, "\\/\x00") || len(req.Features) > 128 || h.publicURL == "" {
-		http.Error(w, "invalid device request or public server URL is not configured", http.StatusBadRequest)
+	if len(req.Name) == 0 || len(req.Name) > 120 || strings.ContainsAny(req.Name, "\\/\x00") || len(req.Features) > 128 {
+		http.Error(w, "invalid device request", http.StatusBadRequest)
 		return
 	}
-	u, err := url.Parse(h.publicURL)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		http.Error(w, "downloads require a configured HTTPS server URL", http.StatusServiceUnavailable)
+	if len(h.serverURLs) == 0 {
+		http.Error(w, "downloads require a configured server URL (HTTPS, or HTTP on a private network when explicitly allowed)", http.StatusServiceUnavailable)
+		return
+	}
+	serverURL, ok := h.selectServerURL(req.ServerURL)
+	if !ok {
+		http.Error(w, "server URL is not one of the configured URLs", http.StatusBadRequest)
 		return
 	}
 	artifact, version, err := h.verifiedArtifact(req.Target)
@@ -193,7 +263,7 @@ func (h *Handler) createAgentDownload(w http.ResponseWriter, r *http.Request) {
 		_, e = f.Write(data)
 		return e
 	}
-	bootstrap, _ := json.Marshal(map[string]any{"serverUrl": h.publicURL, "token": token, "name": req.Name, "sessionId": sessionID})
+	bootstrap, _ := json.Marshal(map[string]any{"serverUrl": serverURL, "insecureHttp": !serverurl.IsSecure(serverURL), "token": token, "name": req.Name, "sessionId": sessionID})
 	binaryName := "vigira-agent"
 	if strings.HasPrefix(req.Target, "windows-") {
 		binaryName = "vigira-agent.exe"
@@ -255,12 +325,18 @@ CONFIG="$BASE/bootstrap.json"
 SERVER=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["serverUrl"])' "$CONFIG")
 NAME=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["name"])' "$CONFIG")
 TOKEN=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["token"])' "$CONFIG")
+INSECURE=$(python3 -c 'import json,sys; print("1" if json.load(open(sys.argv[1])).get("insecureHttp") else "")' "$CONFIG")
+INSECURE_FLAG=""
+if [ -n "$INSECURE" ]; then
+  INSECURE_FLAG="--allow-insecure-private-http"
+  echo "WARNING: this server is reached over plain HTTP. Agent credentials and telemetry are not encrypted; use only on a trusted private network or VPN." >&2
+fi
 getent group vigira-agent >/dev/null || sudo groupadd --system vigira-agent
 id -u vigira-agent >/dev/null 2>&1 || sudo useradd --system --gid vigira-agent --home-dir /var/lib/vigira-agent --shell /usr/sbin/nologin vigira-agent
 sudo install -d -o vigira-agent -g vigira-agent -m 0700 /var/lib/vigira-agent
-printf '%s\n' "$TOKEN" | sudo -u vigira-agent "$BASE/vigira-agent" --config /var/lib/vigira-agent/agent.json enroll --server "$SERVER" --name "$NAME"
-rm -f -- "$CONFIG"
 sudo install -m 0755 "$BASE/vigira-agent" /usr/local/bin/vigira-agent
+printf '%s\n' "$TOKEN" | sudo -u vigira-agent /usr/local/bin/vigira-agent --config /var/lib/vigira-agent/agent.json enroll --server "$SERVER" --name "$NAME" $INSECURE_FLAG
+rm -f -- "$CONFIG"
 sudo install -m 0644 "$BASE/vigira-agent.service" /etc/systemd/system/vigira-agent.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now vigira-agent.service
@@ -293,11 +369,16 @@ $ErrorActionPreference = 'Stop'
 $base = Split-Path -Parent $MyInvocation.MyCommand.Path
 $bootstrap = Get-Content -Raw (Join-Path $base 'bootstrap.json') | ConvertFrom-Json
 $token = $bootstrap.token
+$extraArgs = @()
+if ($bootstrap.insecureHttp) {
+  $extraArgs += '--allow-insecure-private-http'
+  Write-Warning 'This server is reached over plain HTTP. Agent credentials and telemetry are not encrypted; use only on a trusted private network or VPN.'
+}
 $stateDir = Join-Path $env:ProgramData 'Vigira'
 New-Item -ItemType Directory -Force $stateDir | Out-Null
 icacls.exe $stateDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
 $statePath = Join-Path $stateDir 'agent.json'
-$token | & (Join-Path $base 'vigira-agent.exe') --config $statePath enroll --server $bootstrap.serverUrl --name $bootstrap.name
+$token | & (Join-Path $base 'vigira-agent.exe') --config $statePath enroll --server $bootstrap.serverUrl --name $bootstrap.name @extraArgs
 if ($LASTEXITCODE -ne 0) { throw 'Enrollment failed; bootstrap file retained for retry.' }
 Remove-Item -LiteralPath (Join-Path $base 'bootstrap.json') -Force
 New-Item -ItemType Directory -Force "$env:ProgramFiles\Vigira" | Out-Null

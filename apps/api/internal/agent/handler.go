@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -28,8 +29,11 @@ const maxRequestBytes = 1 << 20
 type Handler struct {
 	pool       *pgxpool.Pool
 	auth       *auth.Service
-	publicURL  string
 	releaseDir string
+	// serverURLs are the validated, operator-approved URLs for agent bundles; the
+	// first is the default. allowInsecureHTTP records the explicit plain-HTTP opt-in.
+	serverURLs        []string
+	allowInsecureHTTP bool
 }
 
 func NewHandler(pool *pgxpool.Pool, authService *auth.Service) *Handler {
@@ -505,6 +509,35 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 func writeJSON(w http.ResponseWriter, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(value)
+}
+
+// AuthenticateAgentRequest resolves the agent behind a bearer credential without
+// writing a response, for endpoints such as the live channel that answer with
+// their own protocol.
+func (h *Handler) AuthenticateAgentRequest(r *http.Request) (string, error) {
+	header := strings.TrimSpace(r.Header.Get("Authorization"))
+	if !strings.HasPrefix(header, "Bearer ") || len(header) > 256 {
+		return "", errors.New("agent credential required")
+	}
+	var id string
+	err := h.pool.QueryRow(r.Context(), `SELECT id::text FROM agent_identities WHERE credential_hash=$1 AND revoked_at IS NULL`, hash(strings.TrimPrefix(header, "Bearer "))).Scan(&id)
+	if err != nil {
+		return "", errors.New("invalid or revoked agent credential")
+	}
+	return id, nil
+}
+
+// AgentCapabilities returns the capabilities the server accepted for an agent.
+func (h *Handler) AgentCapabilities(ctx context.Context, agentID string) ([]string, error) {
+	var raw []byte
+	if err := h.pool.QueryRow(ctx, `SELECT capabilities FROM agent_identities WHERE id=$1 AND revoked_at IS NULL`, agentID).Scan(&raw); err != nil {
+		return nil, err
+	}
+	var capabilities []string
+	if err := json.Unmarshal(raw, &capabilities); err != nil {
+		return nil, err
+	}
+	return capabilities, nil
 }
 
 func hash(value string) []byte { sum := sha256.Sum256([]byte(value)); return sum[:] }

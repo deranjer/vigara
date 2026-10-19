@@ -37,14 +37,17 @@ type PostgreSQLProfile struct {
 }
 
 type State struct {
-	ServerURL      string                       `json:"serverUrl"`
-	AgentID        string                       `json:"agentId"`
-	Credential     string                       `json:"credential"`
-	Configuration  *protocol.AgentConfiguration `json:"configuration,omitempty"`
-	ResticProfiles map[string]ResticProfile     `json:"resticProfiles,omitempty"`
-	Pending        []protocol.JobResult         `json:"pending,omitempty"`
-	Telemetry      []protocol.TelemetrySnapshot `json:"telemetryPending,omitempty"`
-	ActiveJob      *ExecutionJournal            `json:"activeBackup,omitempty"`
+	ServerURL string `json:"serverUrl"`
+	// AllowInsecurePrivateHTTP records the operator's choice, made at enrollment,
+	// to reach this server over plain HTTP on a private or Tailscale address.
+	AllowInsecurePrivateHTTP bool                         `json:"allowInsecurePrivateHttp,omitempty"`
+	AgentID                  string                       `json:"agentId"`
+	Credential               string                       `json:"credential"`
+	Configuration            *protocol.AgentConfiguration `json:"configuration,omitempty"`
+	ResticProfiles           map[string]ResticProfile     `json:"resticProfiles,omitempty"`
+	Pending                  []protocol.JobResult         `json:"pending,omitempty"`
+	Telemetry                []protocol.TelemetrySnapshot `json:"telemetryPending,omitempty"`
+	ActiveJob                *ExecutionJournal            `json:"activeBackup,omitempty"`
 }
 
 // ExecutionJournal is fsynced through Save before the backup subprocess starts.
