@@ -90,6 +90,7 @@ func RegisterAPI(mux *http.ServeMux, cfg Config) {
 	mux.HandleFunc("GET /api/containers/{agent}/{id}/logs", a.stream(protocol.MethodDockerLogs))
 	mux.HandleFunc("GET /api/containers/{agent}/{id}/stats", a.stream(protocol.MethodDockerStats))
 	mux.HandleFunc("GET /api/containers/{agent}/{id}/exec", a.exec)
+	a.registerResources(mux)
 	mux.HandleFunc("POST /api/containers/{agent}/{id}/actions", a.action)
 	mux.HandleFunc("POST /api/containers/{agent}/{id}/recreate", a.recreate)
 }
@@ -118,7 +119,7 @@ func describe(err error) (state, message string) {
 			return StateError, "That container no longer exists."
 		case protocol.ErrCodeTierInsufficient:
 			return StateError, "Container management is not enabled for this host. Enable it on the host (VIGIRA_DOCKER_MODE) and allow it in the device's enrollment."
-		case protocol.ErrCodeConflict, protocol.ErrCodeRecreateFailed:
+		case protocol.ErrCodeConflict, protocol.ErrCodeRecreateFailed, protocol.ErrCodePullFailed:
 			// Docker's own explanation, or which step failed and whether the original was restored.
 			return StateError, channelErr.Message
 		case protocol.ErrCodeBusy:
@@ -145,7 +146,7 @@ func statusFor(err error) int {
 			return http.StatusNotFound
 		case protocol.ErrCodeUnknownMethod, protocol.ErrCodeTierInsufficient, protocol.ErrCodeConflict:
 			return http.StatusConflict
-		case protocol.ErrCodeRecreateFailed:
+		case protocol.ErrCodeRecreateFailed, protocol.ErrCodePullFailed:
 			return http.StatusBadGateway
 		case protocol.ErrCodeBadRequest:
 			return http.StatusBadRequest

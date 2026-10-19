@@ -78,6 +78,8 @@ func startAgent(t *testing.T, engine http.Handler, capabilities ...string) *peer
 	Register(client, api)
 	RegisterManage(client, api) // registered everywhere here so the tier gate itself is what is tested
 	RegisterExec(client, api)
+	RegisterResources(client, api)
+	RegisterResourceManagement(client, api)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { client.Run(ctx); close(done) }()
@@ -429,5 +431,98 @@ func TestTerminalNeedsTheExecTierAndReportsWhyItCannotStart(t *testing.T) {
 	q.send(protocol.ChannelFrame{Type: protocol.FrameStreamOpen, ID: "e", Method: protocol.MethodDockerExec, Params: json.RawMessage(`{"id":"web"}`)})
 	if end := q.recv(); end.Error == nil || end.Error.Code != protocol.ErrCodeExecFailed || !strings.Contains(end.Error.Message, "no such file") {
 		t.Fatalf("a missing shell must be explained: %+v", end)
+	}
+}
+
+func resourceEngine(t *testing.T, calls *[]string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*calls = append(*calls, r.Method+" "+strings.TrimPrefix(r.URL.Path, "/v1.44"))
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1.44/containers/json":
+			_, _ = w.Write([]byte(`[{"Id":"c1","Names":["/web"],"ImageID":"sha256:a","Mounts":[],"NetworkSettings":{"Networks":{}}}]`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1.44/images/json":
+			_, _ = w.Write([]byte(`[{"Id":"sha256:a","RepoTags":["app:1"],"Created":5,"Size":10},{"Id":"sha256:b","RepoTags":null,"Created":4,"Size":20}]`))
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1.44/networks/bridge":
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"message":"bridge is a pre-defined network and cannot be removed"}`))
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1.44/volumes/gone":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message":"no such volume"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1.44/images/create":
+			_, _ = w.Write([]byte(`{"error":"pull access denied for private/app"}` + "\n"))
+		default:
+			t.Errorf("unexpected Docker request %s %s", r.Method, r.URL.RequestURI())
+			http.NotFound(w, r)
+		}
+	})
+}
+
+func TestResourceReadsWorkWithoutAnyTierAndManagementDoesNot(t *testing.T) {
+	var calls []string
+	p := startAgent(t, resourceEngine(t, &calls)) // a read-only host
+	p.send(protocol.ChannelFrame{Type: protocol.FrameCall, ID: "1", Method: protocol.MethodDockerImages})
+	reply := p.recv()
+	var images protocol.DockerImagesResult
+	if reply.Error != nil || json.Unmarshal(reply.Result, &images) != nil || len(images.Images) != 2 || len(images.Images[0].UsedBy) != 1 || !images.Images[1].Dangling {
+		t.Fatalf("images reply = %+v", reply)
+	}
+	before := len(calls)
+	for id, tc := range map[string]struct{ method, params string }{
+		"2": {protocol.MethodDockerResourceRemove, `{"kind":"image","id":"app:1"}`},
+		"3": {protocol.MethodDockerPrune, `{"kind":"volume","dryRun":true}`},
+	} {
+		p.send(protocol.ChannelFrame{Type: protocol.FrameCall, ID: id, Method: tc.method, Params: json.RawMessage(tc.params)})
+		if reply := p.recv(); reply.Error == nil || reply.Error.Code != protocol.ErrCodeTierInsufficient {
+			t.Fatalf("%s on a read-only host = %+v", tc.method, reply)
+		}
+	}
+	p.send(protocol.ChannelFrame{Type: protocol.FrameStreamOpen, ID: "4", Method: protocol.MethodDockerPull, Params: json.RawMessage(`{"ref":"redis:7"}`)})
+	if end := p.recv(); end.Type != protocol.FrameStreamEnd || end.Error == nil || end.Error.Code != protocol.ErrCodeTierInsufficient {
+		t.Fatalf("pull on a read-only host = %+v", end)
+	}
+	if len(calls) != before {
+		t.Fatalf("a refused method still reached Docker: %v", calls[before:])
+	}
+}
+
+func TestResourceErrorsKeepDockersExplanationAndRejectBadInput(t *testing.T) {
+	var calls []string
+	p := startAgent(t, resourceEngine(t, &calls), "docker.manage")
+	call := func(id, method, params string) protocol.ChannelFrame {
+		p.send(protocol.ChannelFrame{Type: protocol.FrameCall, ID: id, Method: method, Params: json.RawMessage(params)})
+		return p.recv()
+	}
+	if reply := call("1", protocol.MethodDockerResourceRemove, `{"kind":"network","id":"bridge"}`); reply.Error == nil || reply.Error.Code != protocol.ErrCodeConflict || !strings.Contains(reply.Error.Message, "pre-defined network") {
+		t.Fatalf("a refused network removal = %+v", reply)
+	}
+	if reply := call("2", protocol.MethodDockerResourceRemove, `{"kind":"volume","id":"gone"}`); reply.Error == nil || reply.Error.Code != protocol.ErrCodeNotFound || strings.Contains(reply.Error.Message, "container") {
+		t.Fatalf("a missing volume = %+v", reply)
+	}
+	for id, params := range map[string]string{"3": `{"kind":"image","id":"../x"}`, "4": `{"kind":"secret","id":"x"}`, "5": `{"kind":"volume","id":"a","extra":1}`, "6": `{}`} {
+		if reply := call(id, protocol.MethodDockerResourceRemove, params); reply.Error == nil || reply.Error.Code != protocol.ErrCodeBadRequest {
+			t.Errorf("%s = %+v, want bad_request", params, reply)
+		}
+	}
+	if reply := call("7", protocol.MethodDockerPrune, `{"kind":"container"}`); reply.Error == nil || reply.Error.Code != protocol.ErrCodeBadRequest {
+		t.Fatalf("pruning an unknown kind = %+v", reply)
+	}
+	p.send(protocol.ChannelFrame{Type: protocol.FrameStreamOpen, ID: "8", Method: protocol.MethodDockerPull, Params: json.RawMessage(`{"ref":"private/app:1"}`)})
+	for {
+		frame := p.recv()
+		if frame.Type == protocol.FrameStreamEnd {
+			if frame.Error == nil || frame.Error.Code != protocol.ErrCodePullFailed || !strings.Contains(frame.Error.Message, "pull access denied") {
+				t.Fatalf("a failed pull must say why: %+v", frame.Error)
+			}
+			break
+		}
+	}
+	p.send(protocol.ChannelFrame{Type: protocol.FrameStreamOpen, ID: "9", Method: protocol.MethodDockerPull, Params: json.RawMessage(`{"ref":"sha256:0123456789ab"}`)})
+	if end := p.recv(); end.Error == nil || end.Error.Code != protocol.ErrCodeBadRequest {
+		t.Fatalf("pulling by ID = %+v", end)
+	}
+	for _, call := range calls {
+		if strings.Contains(call, "..") {
+			t.Errorf("a path escape reached Docker: %s", call)
+		}
 	}
 }

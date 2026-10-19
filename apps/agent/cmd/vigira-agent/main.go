@@ -180,8 +180,10 @@ func registerDocker(live *agentchannel.Client, logger *slog.Logger) {
 		return
 	}
 	dockerchannel.Register(live, api)
+	dockerchannel.RegisterResources(live, api)
 	if protocol.DockerTierRank(protocol.DockerTier(live.Capabilities())) >= protocol.DockerTierRank(protocol.DockerModeManage) {
 		dockerchannel.RegisterManage(live, api)
+		dockerchannel.RegisterResourceManagement(live, api)
 		logger.Info("container management is enabled on this host", "tier", protocol.DockerTier(live.Capabilities()))
 	}
 	if protocol.DockerTierRank(protocol.DockerTier(live.Capabilities())) >= protocol.DockerTierRank(protocol.DockerModeExec) {

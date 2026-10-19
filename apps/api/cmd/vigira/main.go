@@ -168,6 +168,7 @@ func main() {
 	router.Handle("/api/channel/*", channelMux)
 	router.Handle("/api/containers", containersMux)
 	router.Handle("/api/containers/*", containersMux)
+	router.Handle("/api/docker/*", containersMux)
 	router.Handle("/api/users", adminMux)
 	router.Handle("/api/users/*", adminMux)
 	router.Handle("/api/audit", adminMux)

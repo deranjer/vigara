@@ -9,6 +9,9 @@ describe('route', () => {
     expect(parseRoute('#/containers/host-1/my_app.web-1')).toEqual(route('containers', 'host-1', 'my_app.web-1'))
     expect(parseRoute('#/containers/host-1/web/logs')).toEqual(route('containers', 'host-1', 'web', 'logs'))
     expect(parseRoute('#backups')).toEqual(route('backups'))
+    expect(parseRoute('#/images')).toEqual(route('images'))
+    expect(parseRoute('#/networks/host-1')).toEqual(route('networks', 'host-1'))
+    expect(parseRoute('#/volumes/host-1/ignored')).toEqual(route('volumes', 'host-1', 'ignored'))
   })
 
   it('falls back to the default for empty or unknown routes', () => {

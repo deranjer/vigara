@@ -209,3 +209,88 @@ func mapExecError(err error) error {
 	}
 	return mapError(err)
 }
+
+// RegisterResources adds the read methods for images, networks, and volumes.
+func RegisterResources(c *channel.Client, api *dockerapi.Client) {
+	c.Calls[protocol.MethodDockerImages] = func(ctx context.Context, _ json.RawMessage) (any, error) {
+		result, err := api.Images(ctx)
+		return result, mapResourceError(err)
+	}
+	c.Calls[protocol.MethodDockerNetworks] = func(ctx context.Context, _ json.RawMessage) (any, error) {
+		result, err := api.Networks(ctx)
+		return result, mapResourceError(err)
+	}
+	c.Calls[protocol.MethodDockerVolumes] = func(ctx context.Context, _ json.RawMessage) (any, error) {
+		result, err := api.Volumes(ctx)
+		return result, mapResourceError(err)
+	}
+	c.Calls[protocol.MethodDockerResourceInspect] = func(ctx context.Context, raw json.RawMessage) (any, error) {
+		var params protocol.DockerResourceParams
+		if err := decode(raw, &params); err != nil {
+			return nil, err
+		}
+		result, err := api.InspectResource(ctx, params.Kind, params.ID)
+		return result, mapResourceError(err)
+	}
+}
+
+// RegisterResourceManagement adds pulling, removing, and pruning. Call it only for a
+// host at the manage tier; the channel also refuses these methods below that tier.
+func RegisterResourceManagement(c *channel.Client, api *dockerapi.Client) {
+	c.Calls[protocol.MethodDockerResourceRemove] = func(ctx context.Context, raw json.RawMessage) (any, error) {
+		var params protocol.DockerResourceParams
+		if err := decode(raw, &params); err != nil {
+			return nil, err
+		}
+		result, err := api.RemoveResource(ctx, params)
+		return result, mapResourceError(err)
+	}
+	c.Calls[protocol.MethodDockerPrune] = func(ctx context.Context, raw json.RawMessage) (any, error) {
+		var params protocol.DockerPruneParams
+		if err := decode(raw, &params); err != nil {
+			return nil, err
+		}
+		result, err := api.Prune(ctx, params)
+		return result, mapResourceError(err)
+	}
+	c.Streams[protocol.MethodDockerPull] = func(ctx context.Context, raw json.RawMessage, send func([]byte) error) error {
+		var params protocol.DockerPullParams
+		if err := decode(raw, &params); err != nil {
+			return err
+		}
+		err := api.PullImage(ctx, params.Ref, func(event protocol.DockerPullEvent) {
+			if line, marshalErr := json.Marshal(event); marshalErr == nil {
+				_ = send(append(line, '\n'))
+			}
+		})
+		if err != nil && !errors.Is(err, dockerapi.ErrBadRequest) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			var network net.Error
+			if !errors.As(err, &network) {
+				return &protocol.ChannelError{Code: protocol.ErrCodePullFailed, Message: clip(err.Error(), 300)}
+			}
+		}
+		return mapResourceError(err)
+	}
+}
+
+// mapResourceError is mapError for images, networks, and volumes: Docker's refusals
+// (403 and 409, such as "in use" or "pre-defined network") keep Docker's own words,
+// and a missing resource is described as a resource, not a container.
+func mapResourceError(err error) error {
+	var apiErr *dockerapi.APIError
+	switch {
+	case err == nil:
+		return nil
+	case errors.As(err, &apiErr) && (apiErr.Status == http.StatusForbidden || apiErr.Status == http.StatusConflict):
+		message := apiErr.Message
+		if message == "" {
+			message = "Docker refused the request"
+		}
+		return &protocol.ChannelError{Code: protocol.ErrCodeConflict, Message: clip(message, 300)}
+	case errors.Is(err, dockerapi.ErrNotFound):
+		return &protocol.ChannelError{Code: protocol.ErrCodeNotFound, Message: "that resource no longer exists"}
+	case errors.Is(err, dockerapi.ErrBadRequest):
+		return &protocol.ChannelError{Code: protocol.ErrCodeBadRequest, Message: "the resource reference is invalid"}
+	}
+	return mapError(err)
+}

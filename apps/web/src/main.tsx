@@ -3,9 +3,10 @@ import ReactDOM from 'react-dom/client'
 import { useEffect, useState, type FormEvent } from 'react'
 import { Alert, AppShell, Badge, Burger, Avatar, Button, Group, MantineProvider, NavLink, PasswordInput, ScrollArea, Text, TextInput, Title, ActionIcon, useMantineColorScheme } from '@mantine/core'
 import { useDisclosure, useMediaQuery } from '@mantine/hooks'
-import { IconBox, IconChartLine, IconDeviceDesktop, IconHistory, IconLogout, IconMoon, IconSun } from '@tabler/icons-react'
+import { IconBox, IconChartLine, IconDatabase, IconNetwork, IconPhoto, IconDeviceDesktop, IconHistory, IconLogout, IconMoon, IconSun } from '@tabler/icons-react'
 import { Containers } from './containers'
 import { Devices } from './devices'
+import { Resources } from './resources'
 import { defaultRoute, formatRoute, parseRoute, route as routeOf, sameRoute, type Route, type Section } from './route'
 import { compareSemver } from './semver'
 import '@mantine/core/styles.css'
@@ -158,6 +159,9 @@ function App() {
           <NavLink component="button" label="Devices" leftSection={<IconDeviceDesktop size={18}/>} active={section === 'devices'} onClick={() => navigate('devices')} />
           <NavLink component="button" label="Monitoring" leftSection={<IconChartLine size={18}/>} active={section === 'monitoring'} onClick={() => navigate('monitoring')} />
           <NavLink component="button" label="Containers" leftSection={<IconBox size={18}/>} active={section === 'containers'} onClick={() => navigate('containers')} />
+          <NavLink component="button" label="Images" leftSection={<IconPhoto size={18}/>} active={section === 'images'} onClick={() => navigate('images')} />
+          <NavLink component="button" label="Networks" leftSection={<IconNetwork size={18}/>} active={section === 'networks'} onClick={() => navigate('networks')} />
+          <NavLink component="button" label="Volumes" leftSection={<IconDatabase size={18}/>} active={section === 'volumes'} onClick={() => navigate('volumes')} />
           <NavLink component="button" label="Backup history" leftSection={<IconHistory size={18}/>} active={section === 'backups'} onClick={() => navigate('backups')} />
         </ScrollArea>
         <div className="sidebar-footer">
@@ -196,7 +200,7 @@ function App() {
             <Button type="submit" loading={busy}>Log in</Button>
           </form>
         </section>}
-        {view === 'dashboard' && <>{error && <Alert color="red" mb="md" withCloseButton onClose={() => setError('')}>{error}</Alert>}{section === 'containers' ? <Containers key={user?.id} route={route} role={user?.role ?? ''} onNavigate={go} /> : <Devices key={user?.id} section={section} selectedId={selectedId} onSelect={(id) => go(routeOf(id ? 'devices' : section, id))} />}</>}
+        {view === 'dashboard' && <>{error && <Alert color="red" mb="md" withCloseButton onClose={() => setError('')}>{error}</Alert>}{section === 'images' || section === 'networks' || section === 'volumes' ? <Resources key={`${user?.id}/${section}`} kind={section === 'images' ? 'image' : section === 'networks' ? 'network' : 'volume'} route={route} role={user?.role ?? ''} onNavigate={go} /> : section === 'containers' ? <Containers key={user?.id} route={route} role={user?.role ?? ''} onNavigate={go} /> : <Devices key={user?.id} section={section} selectedId={selectedId} onSelect={(id) => go(routeOf(id ? 'devices' : section, id))} />}</>}
       </AppShell.Main>
     </AppShell>
   </>

@@ -22,12 +22,18 @@ const (
 // check first, so a user without the permission is refused and the attempt is
 // recorded instead of vanishing behind a bare 403.
 func (a *api) manager(w http.ResponseWriter, r *http.Request, action, agentID, containerID string) (auth.User, bool) {
+	return a.managerFor(w, r, action, "container", agentID, containerID)
+}
+
+// managerFor is manager for any kind of target, so a refused change to an image,
+// network, or volume is audited against that target.
+func (a *api) managerFor(w http.ResponseWriter, r *http.Request, action, targetKind, agentID, targetID string) (auth.User, bool) {
 	user, ok := a.Authz.Authorize(w, r, auth.PermContainersRead)
 	if !ok {
 		return auth.User{}, false
 	}
 	if !user.Can(auth.PermContainersManage) {
-		a.record(r.Context(), audit.Event{ActorID: user.ID, ActorName: user.Username, Action: action, TargetKind: "container", TargetID: containerID, AgentID: agentID, Outcome: audit.OutcomeDenied})
+		a.record(r.Context(), audit.Event{ActorID: user.ID, ActorName: user.Username, Action: action, TargetKind: targetKind, TargetID: targetID, AgentID: agentID, Outcome: audit.OutcomeDenied})
 		http.Error(w, "your role does not allow changing containers", http.StatusForbidden)
 		return auth.User{}, false
 	}
