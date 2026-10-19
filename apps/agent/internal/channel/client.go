@@ -27,6 +27,24 @@ type Handler func(ctx context.Context, params json.RawMessage) (any, error)
 // StreamHandler produces a stream by calling send for each chunk until it returns.
 type StreamHandler func(ctx context.Context, params json.RawMessage, send func([]byte) error) error
 
+// StreamIO is the two-way plumbing of an interactive stream such as a terminal.
+// Send writes output to the server. Input delivers the bytes the server sent
+// (keystrokes), and Control delivers control messages (such as a resize). Both
+// channels are closed when the stream ends.
+type StreamIO struct {
+	Send    func([]byte) error
+	Input   <-chan []byte
+	Control <-chan json.RawMessage
+}
+
+// InteractiveHandler serves a stream that also receives input from the server.
+type InteractiveHandler func(ctx context.Context, params json.RawMessage, stream *StreamIO) error
+
+const (
+	inputBuffer   = 256
+	controlBuffer = 16
+)
+
 const (
 	helloTimeout     = 10 * time.Second
 	writeTimeout     = 10 * time.Second
@@ -47,6 +65,7 @@ type Client struct {
 	Capabilities func() []string
 	Calls        map[string]Handler
 	Streams      map[string]StreamHandler
+	Interactive  map[string]InteractiveHandler
 	// MethodTier overrides the built-in method table; tests use it.
 	MethodTier func(method string) (tier string, known bool)
 	Logger     *slog.Logger
@@ -60,7 +79,7 @@ func NewClient(serverURL, credential, agentVersion string, allowInsecurePrivateH
 		logger = slog.Default()
 	}
 	c := &Client{ServerURL: serverURL, Credential: credential, AgentVersion: agentVersion, AllowInsecurePrivateHTTP: allowInsecurePrivateHTTP,
-		Capabilities: capabilities, Calls: map[string]Handler{}, Streams: map[string]StreamHandler{}, Logger: logger}
+		Capabilities: capabilities, Calls: map[string]Handler{}, Streams: map[string]StreamHandler{}, Interactive: map[string]InteractiveHandler{}, Logger: logger}
 	c.Calls[protocol.MethodPing] = func(context.Context, json.RawMessage) (any, error) {
 		return protocol.ChannelPingResult{Pong: true, AgentVersion: agentVersion}, nil
 	}
@@ -169,7 +188,7 @@ func (c *Client) session(ctx context.Context) (unsupported bool, err error) {
 		return false, fmt.Errorf("connect: %w", err)
 	}
 	ws.SetReadLimit(protocol.MaxChannelFrameBytes)
-	conn := &session{client: c, ws: ws, cancels: map[string]context.CancelFunc{}}
+	conn := &session{client: c, ws: ws, cancels: map[string]context.CancelFunc{}, inputs: map[string]*interactiveInput{}}
 	defer ws.CloseNow()
 
 	hello := protocol.ChannelFrame{Type: protocol.FrameHello, Version: protocol.ChannelVersion, AgentVersion: c.AgentVersion, Capabilities: c.capabilities()}
@@ -197,6 +216,7 @@ type session struct {
 
 	mu      sync.Mutex
 	cancels map[string]context.CancelFunc
+	inputs  map[string]*interactiveInput
 	active  int
 	wg      sync.WaitGroup
 }
@@ -248,6 +268,8 @@ func (s *session) serve(ctx context.Context) error {
 			if cancel != nil {
 				cancel()
 			}
+		case protocol.FrameStreamInput, protocol.FrameStreamControl:
+			s.deliverInput(frame)
 		}
 	}
 }
@@ -277,8 +299,10 @@ func (s *session) start(ctx context.Context, frame protocol.ChannelFrame) {
 	}
 	var call Handler
 	var stream StreamHandler
+	var interactive InteractiveHandler
 	if frame.Type == protocol.FrameStreamOpen {
-		if stream = c.Streams[frame.Method]; stream == nil {
+		interactive = c.Interactive[frame.Method]
+		if stream = c.Streams[frame.Method]; stream == nil && interactive == nil {
 			s.reject(ctx, frame, protocol.ErrCodeUnknownMethod, "method is not a stream")
 			return
 		}
@@ -297,6 +321,11 @@ func (s *session) start(ctx context.Context, frame protocol.ChannelFrame) {
 		jobCtx, cancel = context.WithTimeout(ctx, time.Duration(frame.DeadlineMillis)*time.Millisecond)
 	}
 	s.cancels[frame.ID] = cancel
+	var input *interactiveInput
+	if interactive != nil {
+		input = &interactiveInput{input: make(chan []byte, inputBuffer), control: make(chan json.RawMessage, controlBuffer)}
+		s.inputs[frame.ID] = input
+	}
 	s.active++
 	s.wg.Add(1)
 	s.mu.Unlock()
@@ -306,10 +335,15 @@ func (s *session) start(ctx context.Context, frame protocol.ChannelFrame) {
 			cancel()
 			s.mu.Lock()
 			delete(s.cancels, frame.ID)
+			delete(s.inputs, frame.ID)
 			s.active--
 			s.mu.Unlock()
 			s.wg.Done()
 		}()
+		if interactive != nil {
+			s.runInteractive(jobCtx, ctx, frame, interactive, input)
+			return
+		}
 		if stream != nil {
 			s.runStream(jobCtx, ctx, frame, stream)
 			return
@@ -386,6 +420,99 @@ func (s *session) runStream(jobCtx, connCtx context.Context, frame protocol.Chan
 			}
 		}()
 		if err := stream(jobCtx, frame.Params, send); err != nil && !(errors.Is(err, context.Canceled) && jobCtx.Err() != nil && connCtx.Err() == nil) {
+			s.client.Logger.Warn("channel stream failed", "method", frame.Method, "error", err.Error())
+			end.Error = failure(jobCtx, err)
+		}
+	}()
+	// A cancelled stream was already abandoned by the server; nothing is waiting for its end.
+	if end.Error != nil && end.Error.Code == protocol.ErrCodeCancelled {
+		return
+	}
+	_ = s.write(connCtx, end)
+}
+
+// interactiveInput carries what the server sends to a running interactive stream.
+type interactiveInput struct {
+	mu      sync.Mutex
+	closed  bool
+	input   chan []byte
+	control chan json.RawMessage
+}
+
+func (i *interactiveInput) close() {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if !i.closed {
+		i.closed = true
+		close(i.input)
+		close(i.control)
+	}
+}
+
+// deliverInput routes a keystroke or control frame to its stream. A stream whose
+// handler cannot keep up with its input is cancelled rather than losing keystrokes
+// silently; frames for streams that already ended are ignored.
+func (s *session) deliverInput(frame protocol.ChannelFrame) {
+	s.mu.Lock()
+	input := s.inputs[frame.ID]
+	cancel := s.cancels[frame.ID]
+	s.mu.Unlock()
+	if input == nil {
+		return
+	}
+	input.mu.Lock()
+	defer input.mu.Unlock()
+	if input.closed {
+		return
+	}
+	switch frame.Type {
+	case protocol.FrameStreamInput:
+		select {
+		case input.input <- append([]byte(nil), frame.Data...):
+		default:
+			if cancel != nil {
+				cancel()
+			}
+		}
+	case protocol.FrameStreamControl:
+		select {
+		case input.control <- append(json.RawMessage(nil), frame.Params...):
+		default: // a burst of resizes: the newest will follow, so dropping this one is harmless
+		}
+	}
+}
+
+func (s *session) runInteractive(jobCtx, connCtx context.Context, frame protocol.ChannelFrame, handler InteractiveHandler, input *interactiveInput) {
+	var seq uint64
+	stream := &StreamIO{
+		Input: input.input, Control: input.control,
+		Send: func(data []byte) error {
+			for len(data) > 0 {
+				chunk := data
+				if len(chunk) > protocol.MaxStreamChunkBytes {
+					chunk = chunk[:protocol.MaxStreamChunkBytes]
+				}
+				data = data[len(chunk):]
+				seq++
+				if err := jobCtx.Err(); err != nil {
+					return err
+				}
+				if err := s.write(jobCtx, protocol.ChannelFrame{Type: protocol.FrameStreamData, ID: frame.ID, Seq: seq, Data: chunk}); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}
+	end := protocol.ChannelFrame{Type: protocol.FrameStreamEnd, ID: frame.ID}
+	func() {
+		defer input.close()
+		defer func() {
+			if recover() != nil {
+				end.Error = &protocol.ChannelError{Code: protocol.ErrCodeInternal, Message: "the agent could not complete the request"}
+			}
+		}()
+		if err := handler(jobCtx, frame.Params, stream); err != nil && !(errors.Is(err, context.Canceled) && jobCtx.Err() != nil && connCtx.Err() == nil) {
 			s.client.Logger.Warn("channel stream failed", "method", frame.Method, "error", err.Error())
 			end.Error = failure(jobCtx, err)
 		}

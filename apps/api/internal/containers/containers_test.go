@@ -23,6 +23,7 @@ const (
 	agentPlain   = "22222222-2222-4222-8222-222222222222"
 	agentOffline = "33333333-3333-4333-8333-333333333333"
 	agentManage  = "44444444-4444-4444-8444-444444444444"
+	agentExec    = "55555555-5555-4555-8555-555555555555"
 )
 
 // fakeAuthz maps the "role" cookie to a user, enforcing the real permission table.
@@ -70,9 +71,12 @@ type agentEnd struct {
 	ws *websocket.Conn
 }
 
+// Terminal limits used by the fixture; tests that exercise them set shorter values first.
+var execIdle, execMax time.Duration
+
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	capabilities := map[string][]string{agentDocker: {}, agentPlain: {}, agentManage: {"docker.manage"}}
+	capabilities := map[string][]string{agentDocker: {}, agentPlain: {}, agentManage: {"docker.manage"}, agentExec: {"docker.manage", "docker.exec"}}
 	hub := channel.NewHub(channel.Options{
 		AuthenticateAgent: func(r *http.Request) (string, error) {
 			id := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -87,7 +91,7 @@ func newFixture(t *testing.T) *fixture {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/agent/channel", hub.ServeAgent)
 	captured := &captureAudit{}
-	RegisterAPI(mux, Config{Hub: hub, Authz: fakeAuthz{}, Audit: captured, Names: func(context.Context) (map[string]string, error) {
+	RegisterAPI(mux, Config{Hub: hub, Authz: fakeAuthz{}, Audit: captured, ExecIdle: execIdle, ExecMax: execMax, Names: func(context.Context) (map[string]string, error) {
 		return map[string]string{agentDocker: "nas", agentOffline: "attic"}, nil
 	}})
 	server := httptest.NewServer(mux)
@@ -104,6 +108,7 @@ func (f *fixture) connectAgent(id string) *agentEnd {
 		f.t.Fatal(err)
 	}
 	f.t.Cleanup(func() { ws.CloseNow() })
+	ws.SetReadLimit(protocol.MaxChannelFrameBytes)
 	a := &agentEnd{t: f.t, ws: ws}
 	a.send(protocol.ChannelFrame{Type: protocol.FrameHello, Version: protocol.ChannelVersion, AgentVersion: "t"})
 	if welcome := a.recv(); welcome.Type != protocol.FrameWelcome {

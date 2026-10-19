@@ -46,6 +46,10 @@ type Config struct {
 	// Names maps every enrolled agent's ID to its device name, so hosts that are
 	// offline can still be listed.
 	Names func(ctx context.Context) (map[string]string, error)
+	// ExecIdle closes a terminal that has had no keystrokes for this long, and ExecMax
+	// bounds how long any terminal may live. Zero values use the protocol defaults.
+	ExecIdle time.Duration
+	ExecMax  time.Duration
 }
 
 // Host states reported by the fleet list.
@@ -67,15 +71,25 @@ type Host struct {
 	Truncated  bool                           `json:"truncated,omitempty"`
 }
 
-type api struct{ Config }
+type api struct {
+	Config
+	terminals terminalCounts
+}
 
 // RegisterAPI mounts the routes under /api/containers/.
 func RegisterAPI(mux *http.ServeMux, cfg Config) {
-	a := &api{cfg}
+	if cfg.ExecIdle <= 0 {
+		cfg.ExecIdle = protocol.ExecIdleTimeout
+	}
+	if cfg.ExecMax <= 0 {
+		cfg.ExecMax = protocol.ExecMaxDuration
+	}
+	a := &api{Config: cfg}
 	mux.HandleFunc("GET /api/containers", a.fleet)
 	mux.HandleFunc("GET /api/containers/{agent}/{id}/inspect", a.inspect)
 	mux.HandleFunc("GET /api/containers/{agent}/{id}/logs", a.stream(protocol.MethodDockerLogs))
 	mux.HandleFunc("GET /api/containers/{agent}/{id}/stats", a.stream(protocol.MethodDockerStats))
+	mux.HandleFunc("GET /api/containers/{agent}/{id}/exec", a.exec)
 	mux.HandleFunc("POST /api/containers/{agent}/{id}/actions", a.action)
 	mux.HandleFunc("POST /api/containers/{agent}/{id}/recreate", a.recreate)
 }

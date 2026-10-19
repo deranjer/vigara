@@ -1,6 +1,6 @@
 # Container management plan
 
-Status: **P0 foundations, P1 (read-only Containers page), and P2 (lifecycle actions) implemented; later phases planned**. This document records the design direction for a dedicated Containers area in the web UI. The long-term goal is to replace Portainer's viewing and management features (details, logs, stats, console, lifecycle actions, images, networks, volumes) and to deploy Compose stacks from the web UI. The [Docker inventory module](docker.md) remains read-only today. The P0 foundations (live channel, Docker tiers, roles and audit, deep-linkable routing, and a Containers page that lists connected hosts) are in place; see [users and roles](users-and-roles.md) and the live channel section of the [protocol](protocol.md).
+Status: **P0 foundations, P1 (read-only Containers page), P2 (lifecycle actions), and P3 (terminals) implemented; later phases planned**. This document records the design direction for a dedicated Containers area in the web UI. The long-term goal is to replace Portainer's viewing and management features (details, logs, stats, console, lifecycle actions, images, networks, volumes) and to deploy Compose stacks from the web UI. The [Docker inventory module](docker.md) remains read-only today. The P0 foundations (live channel, Docker tiers, roles and audit, deep-linkable routing, and a Containers page that lists connected hosts) are in place; see [users and roles](users-and-roles.md) and the live channel section of the [protocol](protocol.md).
 
 ## Decisions
 
@@ -77,7 +77,7 @@ Each phase is independently shippable. P1 does not depend on the write tiers.
 - Pull and recreate, with image digest shown before and after.
 - Permission checks, confirmations, and audit entries for every action.
 
-### P3: Terminal
+### P3: Terminal (implemented)
 
 - Interactive exec using xterm.js over a PTY relay, with resize, shell selection, idle timeout, and per-agent opt-in.
 

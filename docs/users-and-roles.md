@@ -12,7 +12,7 @@ The first account created during setup is an administrator. Administrators can a
 | Manage hosts, enrollment, and backups | no | no | yes |
 | Manage users and read the audit log | no | no | yes |
 
-Operators and administrators can start, stop, restart, pause, resume, kill, remove, and recreate containers on hosts that allow management. Every one of these actions, and every refused attempt, is recorded in the audit log as `container.start`, `container.stop`, `container.restart`, `container.pause`, `container.unpause`, `container.kill`, `container.remove`, or `container.recreate`. Every state-changing request outside a few self-service routes (sign-in, setup, sign-out, agent and live-channel routes) requires the admin role, so a viewer or operator can never reach an administrative endpoint by accident.
+Operators and administrators can also open terminals in containers on hosts that allow them (see [Terminals](docker.md#terminals)). They can start, stop, restart, pause, resume, kill, remove, and recreate containers on hosts that allow management. Every one of these actions, and every refused attempt, is recorded in the audit log as `container.start`, `container.stop`, `container.restart`, `container.pause`, `container.unpause`, `container.kill`, `container.remove`, or `container.recreate`. Terminals are recorded as `container.exec.open` and `container.exec.close`. Every state-changing request outside a few self-service routes (sign-in, setup, sign-out, agent and live-channel routes) requires the admin role, so a viewer or operator can never reach an administrative endpoint by accident.
 
 ## Managing users
 

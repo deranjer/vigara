@@ -395,3 +395,43 @@ func TestTierIsRefreshedWhenTheStoredCapabilitiesChange(t *testing.T) {
 	info, _ := hub.Agent(agentB)
 	t.Fatalf("the reported tier never caught up: %q", info.DockerTier)
 }
+
+func TestStreamsCarryInputAndControlToTheAgent(t *testing.T) {
+	hub, server := testHub(t, map[string][]string{agentA: {}})
+	agent := dialAgent(t, server, agentA, protocol.ChannelVersion)
+	waitOnline(t, hub, agentA)
+	ctx, cancel := callCtx()
+	defer cancel()
+	stream, err := hub.OpenStream(ctx, agentA, "test.stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	open := agent.read()
+
+	if err := stream.Send(ctx, []byte("ls\r")); err != nil {
+		t.Fatal(err)
+	}
+	if frame := agent.read(); frame.Type != protocol.FrameStreamInput || frame.ID != open.ID || string(frame.Data) != "ls\r" {
+		t.Fatalf("input frame = %+v", frame)
+	}
+	if err := stream.Control(ctx, protocol.ExecControl{Type: protocol.ControlResize, Cols: 120, Rows: 40}); err != nil {
+		t.Fatal(err)
+	}
+	if frame := agent.read(); frame.Type != protocol.FrameStreamControl || frame.ID != open.ID || !strings.Contains(string(frame.Params), `"cols":120`) {
+		t.Fatalf("control frame = %+v", frame)
+	}
+	var channelErr *protocol.ChannelError
+	if err := stream.Send(ctx, make([]byte, protocol.MaxExecInput+1)); !errors.As(err, &channelErr) || channelErr.Code != protocol.ErrCodeBadRequest {
+		t.Fatalf("oversized input = %v", err)
+	}
+
+	agent.send(protocol.ChannelFrame{Type: protocol.FrameStreamEnd, ID: open.ID})
+	for range stream.C {
+	}
+	if err := stream.Send(ctx, []byte("late")); !errors.Is(err, ErrStreamClosed) {
+		t.Fatalf("send after the end = %v", err)
+	}
+	if err := stream.Control(ctx, protocol.ExecControl{Type: protocol.ControlResize}); !errors.Is(err, ErrStreamClosed) {
+		t.Fatalf("control after the end = %v", err)
+	}
+}
