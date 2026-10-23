@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/deranjer/vigara/apps/api/internal/telemetry"
+	"github.com/deranjer/vigara/internal/envcompat"
 	"github.com/deranjer/vigara/internal/protocol"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -96,6 +97,7 @@ var schemaNamePattern = regexp.MustCompile(`^vigira_metrics_bench_[a-f0-9]{16}$`
 var databaseMarkerPattern = regexp.MustCompile(`(^|[_-])(test|dev|bench)([_-]|$)`)
 
 func main() {
+	envcompat.ApplyAliases()
 	mode := flag.String("mode", "audit", "audit or synthetic")
 	timeout := flag.Duration("statement-timeout", 2*time.Second, "per-query timeout")
 	confirm := flag.Bool("confirm-synthetic", false, "allow synthetic mode to create and clean up its unique schema")

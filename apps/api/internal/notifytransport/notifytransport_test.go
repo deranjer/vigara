@@ -109,7 +109,7 @@ func TestGotifyRequestUsesApplicationTokenHeader(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Errorf("decode payload: %v", err)
 		}
-		if payload.Priority != 5 || payload.Title != "Vigira: firing" || !strings.Contains(payload.Message, "disk usage above threshold") || !strings.Contains(payload.Message, "event-42") {
+		if payload.Priority != 5 || payload.Title != "Vigara: firing" || !strings.Contains(payload.Message, "disk usage above threshold") || !strings.Contains(payload.Message, "event-42") {
 			t.Errorf("unexpected payload: %+v", payload)
 		}
 		w.Header().Set("Content-Type", "application/json")

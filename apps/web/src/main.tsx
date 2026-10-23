@@ -1,12 +1,15 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { useEffect, useState, type FormEvent } from 'react'
-import { Alert, AppShell, Badge, Burger, Avatar, Button, Group, MantineProvider, NavLink, PasswordInput, ScrollArea, Text, TextInput, Title, ActionIcon, useMantineColorScheme } from '@mantine/core'
+import { Alert, AppShell, Badge, Burger, Avatar, Button, Group, MantineProvider, NavLink, PasswordInput, ScrollArea, Text, TextInput, Title, ActionIcon, UnstyledButton, useMantineColorScheme } from '@mantine/core'
 import { useDisclosure, useMediaQuery } from '@mantine/hooks'
 import { IconBox, IconChartLine, IconDatabase, IconNetwork, IconPhoto, IconDeviceDesktop, IconHistory, IconLogout, IconMoon, IconSun } from '@tabler/icons-react'
 import { Containers } from './containers'
+import { Stacks } from './stacks'
 import { Devices } from './devices'
 import { Resources } from './resources'
+import { Account } from './account'
+import { PasswordWhitespaceWarning } from './password-warning'
 import { defaultRoute, formatRoute, parseRoute, route as routeOf, sameRoute, type Route, type Section } from './route'
 import { compareSemver } from './semver'
 import '@mantine/core/styles.css'
@@ -42,13 +45,19 @@ function App() {
   const [user, setUser] = useState<User | null>(null)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [setupPassword, setSetupPassword] = useState('')
   const mobile = useMediaQuery('(max-width: 47.99em)')
   const [navOpen, nav] = useDisclosure(true)
   const [route, setRoute] = useState<Route>(() => parseRoute(window.location.hash))
   const section = route.section
   const selectedId = route.id
+  const dockerSection = ['stacks', 'containers', 'images', 'networks', 'volumes'].includes(section)
+  const [dockerMenuOpen, setDockerMenuOpen] = useState(dockerSection)
   const { colorScheme, toggleColorScheme } = useMantineColorScheme()
 
+  useEffect(() => {
+    if (['stacks', 'containers', 'images', 'networks', 'volumes'].includes(section)) setDockerMenuOpen(true)
+  }, [section])
   useEffect(() => { document.documentElement.dataset.mantineColorScheme = colorScheme }, [colorScheme])
   useEffect(() => { window.scrollTo({ top: 0, left: 0, behavior: 'instant' }) }, [section, selectedId])
   useEffect(() => {
@@ -80,7 +89,7 @@ function App() {
         setView('login')
       }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not connect to Vigira.')
+      setError(cause instanceof Error ? cause.message : 'Could not connect to Vigara.')
       setView('error')
     }
   }
@@ -99,6 +108,7 @@ function App() {
         password: values.get('password'),
         confirmPassword: values.get('confirmPassword'),
       })
+      setSetupPassword('')
       setUser(result.user)
       setView('dashboard')
     } catch (cause) {
@@ -152,30 +162,36 @@ function App() {
 
   return <>
     <AppShell header={{ height: 64 }} navbar={{ width: 258, breakpoint: 'sm', collapsed: { desktop: view !== 'dashboard' || !navOpen, mobile: view !== 'dashboard' || !navOpen } }} padding="lg">
-      <AppShell.Header className="topbar"><Group><Burger opened={navOpen} onClick={nav.toggle} size="sm" aria-label="Toggle navigation" /><Text fw={700} size="lg">Vigara</Text><Badge color="gray" variant="light">Private home monitoring</Badge></Group><Group><ActionIcon variant="subtle" size="lg" aria-label={colorScheme === 'dark' ? 'Use light theme' : 'Use dark theme'} onClick={() => toggleColorScheme()}>{colorScheme === 'dark' ? <IconSun size={18}/> : <IconMoon size={18}/>}</ActionIcon></Group></AppShell.Header>
+      <AppShell.Header className="topbar"><Group><Burger opened={navOpen} onClick={nav.toggle} size="sm" aria-label="Toggle navigation" /><img className="brand-wordmark" src="/branding/vigara-wordmark.png" alt="Vigara" width={120} height={40} /><Badge color="gray" variant="light">Private home monitoring</Badge></Group><Group><ActionIcon variant="subtle" size="lg" aria-label={colorScheme === 'dark' ? 'Use light theme' : 'Use dark theme'} onClick={() => toggleColorScheme()}>{colorScheme === 'dark' ? <IconSun size={18}/> : <IconMoon size={18}/>}</ActionIcon></Group></AppShell.Header>
       {view === 'dashboard' && <AppShell.Navbar p="sm" className="sidebar">
         <ScrollArea>
           <Text size="xs" fw={700} c="dimmed" tt="uppercase" px="sm" py="xs">Workspace</Text>
           <NavLink component="button" label="Devices" leftSection={<IconDeviceDesktop size={18}/>} active={section === 'devices'} onClick={() => navigate('devices')} />
           <NavLink component="button" label="Monitoring" leftSection={<IconChartLine size={18}/>} active={section === 'monitoring'} onClick={() => navigate('monitoring')} />
-          <NavLink component="button" label="Containers" leftSection={<IconBox size={18}/>} active={section === 'containers'} onClick={() => navigate('containers')} />
-          <NavLink component="button" label="Images" leftSection={<IconPhoto size={18}/>} active={section === 'images'} onClick={() => navigate('images')} />
-          <NavLink component="button" label="Networks" leftSection={<IconNetwork size={18}/>} active={section === 'networks'} onClick={() => navigate('networks')} />
-          <NavLink component="button" label="Volumes" leftSection={<IconDatabase size={18}/>} active={section === 'volumes'} onClick={() => navigate('volumes')} />
+          <NavLink component="button" label="Docker Stacks" leftSection={<IconBox size={18}/>} opened={dockerMenuOpen} onChange={setDockerMenuOpen} childrenOffset={28} aria-expanded={dockerMenuOpen}>
+            <NavLink component="button" label="Compose stacks" leftSection={<IconBox size={16}/>} active={section === 'stacks'} onClick={() => navigate('stacks')} />
+            <NavLink component="button" label="Containers" leftSection={<IconBox size={16}/>} active={section === 'containers'} onClick={() => navigate('containers')} />
+            <NavLink component="button" label="Images" leftSection={<IconPhoto size={16}/>} active={section === 'images'} onClick={() => navigate('images')} />
+            <NavLink component="button" label="Networks" leftSection={<IconNetwork size={16}/>} active={section === 'networks'} onClick={() => navigate('networks')} />
+            <NavLink component="button" label="Volumes" leftSection={<IconDatabase size={16}/>} active={section === 'volumes'} onClick={() => navigate('volumes')} />
+          </NavLink>
           <NavLink component="button" label="Backup history" leftSection={<IconHistory size={18}/>} active={section === 'backups'} onClick={() => navigate('backups')} />
         </ScrollArea>
         <div className="sidebar-footer">
-          <Group wrap="nowrap" gap="sm" mb="sm">
+          <UnstyledButton className="sidebar-account" w="100%" p="xs" mb="sm" onClick={() => navigate('account')} aria-label={`Account settings for ${user?.displayName || user?.username}`} aria-current={section === 'account' ? 'page' : undefined}>
+          <Group wrap="nowrap" gap="sm">
             <Avatar name={user?.displayName || user?.username || 'Administrator'} color="blue" radius="xl" size={36} />
             <div className="sidebar-user"><Text size="sm" fw={600} truncate>{user?.displayName || user?.username}</Text><Text size="xs" c="dimmed" truncate>{user?.username} · {user?.role}</Text></div>
+            <Text c="dimmed" aria-hidden="true">›</Text>
           </Group>
+          </UnstyledButton>
           <Button variant="light" color="red" fullWidth size="sm" mb="md" leftSection={<IconLogout size={16}/>} loading={busy} onClick={() => void logout()}>Log out</Button>
           <Text size="xs" c="dimmed">Vigara server</Text><ReleaseStatus />
         </div>
       </AppShell.Navbar>}
       <AppShell.Main>
-        {view === 'loading' && <section className="welcome"><Text c="dimmed">Loading Vigira…</Text></section>}
-        {view === 'error' && <section className="auth-card"><Title order={2}>Vigira is unavailable</Title><Alert color="red" mt="md">{error}</Alert><Button mt="lg" onClick={() => { setView('loading'); setError(''); void loadView() }}>Try again</Button></section>}
+        {view === 'loading' && <section className="welcome"><Text c="dimmed">Loading Vigara…</Text></section>}
+        {view === 'error' && <section className="auth-card"><Title order={2}>Vigara is unavailable</Title><Alert color="red" mt="md">{error}</Alert><Button mt="lg" onClick={() => { setView('loading'); setError(''); void loadView() }}>Try again</Button></section>}
         {view === 'setup' && <section className="auth-card">
           <Text c="dimmed" size="sm" fw={600} tt="uppercase">First-time setup</Text>
           <Title order={1} mt="xs">Create your local account</Title>
@@ -183,7 +199,8 @@ function App() {
           <form className="auth-form" onSubmit={submitSetup}>
             <TextInput name="username" label="Username" required minLength={3} maxLength={64} autoComplete="username" />
             <TextInput name="displayName" label="Display name" maxLength={80} autoComplete="name" />
-            <PasswordInput name="password" label="Password" required minLength={12} maxLength={1024} autoComplete="new-password" />
+            <PasswordInput name="password" label="Password" required minLength={12} maxLength={1024} autoComplete="new-password" value={setupPassword} onChange={(event) => setSetupPassword(event.currentTarget.value)} />
+            <PasswordWhitespaceWarning value={setupPassword} />
             <PasswordInput name="confirmPassword" label="Confirm password" required minLength={12} maxLength={1024} autoComplete="new-password" />
             {error && <Alert color="red">{error}</Alert>}
             <Button type="submit" loading={busy}>Finish setup</Button>
@@ -200,7 +217,7 @@ function App() {
             <Button type="submit" loading={busy}>Log in</Button>
           </form>
         </section>}
-        {view === 'dashboard' && <>{error && <Alert color="red" mb="md" withCloseButton onClose={() => setError('')}>{error}</Alert>}{section === 'images' || section === 'networks' || section === 'volumes' ? <Resources key={`${user?.id}/${section}`} kind={section === 'images' ? 'image' : section === 'networks' ? 'network' : 'volume'} route={route} role={user?.role ?? ''} onNavigate={go} /> : section === 'containers' ? <Containers key={user?.id} route={route} role={user?.role ?? ''} onNavigate={go} /> : <Devices key={user?.id} section={section} selectedId={selectedId} onSelect={(id) => go(routeOf(id ? 'devices' : section, id))} />}</>}
+        {view === 'dashboard' && <>{error && <Alert color="red" mb="md" withCloseButton onClose={() => setError('')}>{error}</Alert>}{section === 'account' ? user && <Account key={user.id} user={user} onChanged={setUser} onSessionExpired={() => { setUser(null); setView('login'); setError('Your session expired. Log in again.') }} /> : section === 'stacks' ? <Stacks key={user?.id} route={route} role={user?.role ?? ''} onNavigate={go} /> : section === 'images' || section === 'networks' || section === 'volumes' ? <Resources key={`${user?.id}/${section}`} kind={section === 'images' ? 'image' : section === 'networks' ? 'network' : 'volume'} route={route} role={user?.role ?? ''} onNavigate={go} /> : section === 'containers' ? <Containers key={user?.id} route={route} role={user?.role ?? ''} onNavigate={go} /> : <Devices key={user?.id} section={section} selectedId={selectedId} onSelect={(id) => go(routeOf(id ? 'devices' : section, id))} />}</>}
       </AppShell.Main>
     </AppShell>
   </>

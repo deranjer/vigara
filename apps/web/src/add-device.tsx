@@ -3,7 +3,8 @@ import { Alert, Button, Checkbox, Group, Modal, Select, Stack, Text, TextInput }
 
 type ServerOption = { url: string; secure: boolean }
 type Availability = { serverUrl: string; serverUrls: ServerOption[]; allowInsecureHttp: boolean; targets: string[] }
-type Props = { opened: boolean; onClose: () => void }
+type ReinstallDevice = { id: string; name: string; platform: string; architecture: string }
+type Props = { opened: boolean; onClose: () => void; device?: ReinstallDevice }
 
 // The ceiling the server will accept for this device's Docker access. The host's own operator must
 // still opt in locally (VIGIRA_DOCKER_MODE); the server never grants more than the enrollment allows.
@@ -14,11 +15,11 @@ const dockerCeilings: Record<string, string[]> = {
   deploy: ['docker.manage', 'docker.exec', 'docker.deploy'],
 }
 
-export function AddDevice({ opened, onClose }: Props) {
+export function AddDevice({ opened, onClose, device }: Props) {
   const [availability, setAvailability] = useState<Availability>({ serverUrl: '', serverUrls: [], allowInsecureHttp: false, targets: [] })
-  const [target, setTarget] = useState<string | null>(null)
+  const [target, setTarget] = useState<string | null>(device ? `${device.platform}-${device.architecture}` : null)
   const [serverUrl, setServerUrl] = useState<string | null>(null)
-  const [name, setName] = useState('')
+  const [name, setName] = useState(device?.name ?? '')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [session, setSession] = useState('')
@@ -55,12 +56,12 @@ export function AddDevice({ opened, onClose }: Props) {
   async function createBundle() {
     setBusy(true); setError('')
     try {
-      const response = await fetch('/api/agent-downloads', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target, serverUrl, name, features: [...(backupFeature ? ['restic.backup'] : []), ...(dockerCeilings[dockerCeiling ?? 'read'] ?? [])] }) })
+      const response = await fetch('/api/agent-downloads', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ deviceId: device?.id, target, serverUrl, name, features: [...(backupFeature ? ['restic.backup'] : []), ...(dockerCeilings[dockerCeiling ?? 'read'] ?? [])] }) })
       if (!response.ok) throw new Error((await response.text()).slice(0, 300) || 'Could not prepare the bundle.')
-      const sessionId = response.headers.get('X-Vigira-Session-ID') ?? ''
+      const sessionId = response.headers.get('X-Vigara-Session-ID') ?? response.headers.get('X-Vigira-Session-ID') ?? ''
       const blob = await response.blob()
       const href = URL.createObjectURL(blob)
-      const link = document.createElement('a'); link.href = href; link.download = `vigira-agent-${target}.zip`; link.click()
+      const link = document.createElement('a'); link.href = href; link.download = `vigara-agent-${target}.zip`; link.click()
       window.setTimeout(() => URL.revokeObjectURL(href), 60_000)
       setSession(sessionId); setStatus('waiting')
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not prepare the bundle.') }
@@ -75,38 +76,39 @@ export function AddDevice({ opened, onClose }: Props) {
   }
 
   function close() {
-    if (['enrolled', 'canceled', 'expired'].includes(status)) { setSession(''); setStatus(''); setName(''); setBackupFeature(false); setDockerCeiling('read') }
+    if (['enrolled', 'canceled', 'expired'].includes(status)) { setSession(''); setStatus(''); setName(device?.name ?? ''); setBackupFeature(false); setDockerCeiling('read') }
     onClose()
   }
 
-  return <Modal opened={opened} onClose={close} title="Add device" size="md">
+  return <Modal opened={opened} onClose={close} title={device ? `Reinstall agent · ${device.name}` : 'Add device'} size="md">
     <Stack>
+      {device && <Alert color="blue" title="Reinstall on this device">This creates a fresh one-use installer for {device.name}, keeping its device record, history, and allowed capabilities. Running it replaces the previous agent credential. Use it only on this device.</Alert>}
       {error && <Alert color="red" title="Could not prepare device">{error}</Alert>}
       {availability.serverUrls.length === 0 && <Alert color="yellow" title="No server URL configured">Set <code>VIGIRA_PUBLIC_URL</code> to the HTTPS address agents can reach. On a trusted private network or Tailscale, you can instead set <code>VIGIRA_ALLOW_INSECURE_AGENT_HTTP=true</code> and use an <code>http://</code> address on a private (LAN or Tailscale) IP or name. Add more addresses with <code>VIGIRA_PUBLIC_URLS</code>.</Alert>}
       {availability.serverUrls.length === 1 && <Text size="sm">Agents will connect to <b>{availability.serverUrls[0].url}</b>.</Text>}
       {availability.serverUrls.length > 1 && <Select label="Server address the agent will connect to" description="Pick an address the new device can reach, such as the LAN or Tailscale address." value={serverUrl} onChange={setServerUrl} allowDeselect={false} data={availability.serverUrls.map((option) => ({ value: option.url, label: option.secure ? option.url : `${option.url} (unencrypted HTTP)` }))} />}
       {selectedOption && !selectedOption.secure && <Alert color="yellow" title="This connection is not encrypted">The agent will use plain HTTP, so its credential, telemetry, and inventory can be read or altered by anyone who can see traffic on the network between the device and this server. Use this only on a trusted private network or over a VPN such as Tailscale, never across the internet. Prefer an HTTPS address when you have one.</Alert>}
-      <Select label="Operating system and architecture" value={target} onChange={setTarget} data={[
+      <Select disabled={!!device || !!session} label="Operating system and architecture" value={target} onChange={setTarget} data={[
         { value: 'windows-amd64', label: 'Windows · x64' },
         { value: 'linux-amd64', label: 'Linux · x64' },
         { value: 'linux-arm64', label: 'Linux · ARM64' },
       ].map((item) => ({ ...item, disabled: !availability.targets.includes(item.value) }))} placeholder="Choose a supported target" />
       {availability.targets.length === 0 && <Alert color="yellow">Agent bundles are unavailable. The server operator must provision verified release artifacts.</Alert>}
-      <TextInput label="Device name" value={name} onChange={(event) => setName(event.currentTarget.value)} maxLength={120} required />
-      <Checkbox checked={backupFeature} onChange={(event) => setBackupFeature(event.currentTarget.checked)} label="Allow Restic backup jobs" description="This sets the server-side capability limit only. The Restic module and repository credentials must be configured locally on the device." />
-      <Select label="Container management allowed for this device" value={dockerCeiling} onChange={setDockerCeiling} allowDeselect={false}
+      <TextInput readOnly={!!device} disabled={!!session} description={device ? 'Existing device name' : 'Use a unique name. To reinstall an existing device, open its Device info tab.'} label="Device name" value={name} onChange={(event) => setName(event.currentTarget.value)} maxLength={120} required />
+      {!device && <><Checkbox disabled={!!session} checked={backupFeature} onChange={(event) => setBackupFeature(event.currentTarget.checked)} label="Allow Restic backup jobs" description="This sets the server-side capability limit only. The Restic module and repository credentials must be configured locally on the device." />
+      <Select disabled={!!session} label="Container management allowed for this device" value={dockerCeiling} onChange={setDockerCeiling} allowDeselect={false}
         description="The most access this server will accept from the device. The device's own operator must also enable it locally; read-only viewing needs no setting."
         data={[
           { value: 'read', label: 'View only' },
           { value: 'manage', label: 'Manage containers, images, networks and volumes' },
           { value: 'exec', label: 'Manage and open terminals in containers' },
           { value: 'deploy', label: 'Manage, terminals and deploy stacks' },
-        ]} />
+        ]} /></>}
       <Text size="sm" c="dimmed">Telemetry and inventory are included by the standard agent. Bundle selection never installs or enables privileged local modules.</Text>
-      {status && <Alert color={status === 'enrolled' ? 'green' : status === 'waiting' ? 'blue' : 'gray'} title={`Enrollment ${status}`}>{status === 'waiting' ? <>Extract the bundle on the device and run <code>{target?.startsWith('linux-') ? 'sh install.sh' : 'install.ps1'}</code> as an administrator. This one-use enrollment expires after 30 minutes.</> : status === 'enrolled' ? 'The device has enrolled and will appear in the inventory.' : status === 'canceled' ? 'The enrollment was canceled.' : 'The enrollment expired.'}</Alert>}
+      {status && <Alert color={status === 'enrolled' ? 'green' : status === 'waiting' ? 'blue' : 'gray'} title={`Enrollment ${status}`}>{status === 'waiting' ? <>Extract the bundle on the device and run <code>{target?.startsWith('linux-') ? 'sh install.sh' : 'install.cmd'}</code> as an administrator. This one-use enrollment expires after 30 minutes.</> : status === 'enrolled' ? 'Enrollment was accepted. Installation is complete only when the installer confirms the service is running and the device reports a successful check-in.' : status === 'canceled' ? 'The enrollment was canceled.' : 'The enrollment expired.'}</Alert>}
       <Group justify="space-between">
         {session && status === 'waiting' ? <Button variant="default" onClick={() => void cancel()}>Cancel enrollment</Button> : <Button variant="default" onClick={close}>Close</Button>}
-        {!session && <Button loading={busy} disabled={!selectedOption || !target || !name.trim() || !availability.targets.includes(target)} onClick={() => void createBundle()}>Download bundle</Button>}
+        {!session && <Button loading={busy} disabled={!selectedOption || !target || !name.trim() || !availability.targets.includes(target)} onClick={() => void createBundle()}>{device ? 'Download reinstall bundle' : 'Download bundle'}</Button>}
       </Group>
     </Stack>
   </Modal>

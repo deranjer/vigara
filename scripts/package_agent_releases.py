@@ -10,9 +10,9 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGETS = {
-    "windows-amd64": ("windows", "amd64", "vigira-agent-windows-amd64.exe"),
-    "linux-amd64": ("linux", "amd64", "vigira-agent-linux-amd64"),
-    "linux-arm64": ("linux", "arm64", "vigira-agent-linux-arm64"),
+    "windows-amd64": ("windows", "amd64", "vigara-agent-windows-amd64.exe"),
+    "linux-amd64": ("linux", "amd64", "vigara-agent-linux-amd64"),
+    "linux-arm64": ("linux", "arm64", "vigara-agent-linux-arm64"),
 }
 
 

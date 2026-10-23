@@ -71,6 +71,24 @@ func TestVerifiedArtifactRejectsManifestPathOverride(t *testing.T) {
 	}
 }
 
+func TestVerifiedArtifactAcceptsOriginalReleaseFilename(t *testing.T) {
+	dir := t.TempDir()
+	data := []byte("original release artifact")
+	digest := sha256.Sum256(data)
+	const filename = "vigira-agent-windows-amd64.exe"
+	if err := os.WriteFile(filepath.Join(dir, filename), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"version":"legacy","artifacts":{"windows-amd64":{"file":"` + filename + `","sha256":"` + hex.EncodeToString(digest[:]) + `"}}}`
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(manifest), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := (&Handler{releaseDir: dir}).verifiedArtifact("windows-amd64")
+	if err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("legacy release unavailable: %v", err)
+	}
+}
+
 func TestAgentDownloadCancelRejectsBootstrapToken(t *testing.T) {
 	pool, sessions := agentTestService(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

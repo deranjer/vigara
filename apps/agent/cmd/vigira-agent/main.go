@@ -14,17 +14,20 @@ import (
 	"strings"
 	"syscall"
 
-	dockercollector "github.com/deranjer/vigara/apps/agent/internal/collector/docker"
 	agentchannel "github.com/deranjer/vigara/apps/agent/internal/channel"
+	dockercollector "github.com/deranjer/vigara/apps/agent/internal/collector/docker"
+	"github.com/deranjer/vigara/apps/agent/internal/composedeploy"
 	"github.com/deranjer/vigara/apps/agent/internal/dockerapi"
 	"github.com/deranjer/vigara/apps/agent/internal/dockerchannel"
 	agentruntime "github.com/deranjer/vigara/apps/agent/internal/runtime"
 	"github.com/deranjer/vigara/internal/composeadoption"
+	"github.com/deranjer/vigara/internal/envcompat"
 	"github.com/deranjer/vigara/internal/protocol"
 	"github.com/deranjer/vigara/internal/serverurl"
 )
 
 func main() {
+	envcompat.ApplyAliases()
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	if err := execute(os.Args[1:], logger); err != nil {
 		logger.Error("agent stopped", "error", err)
@@ -38,7 +41,7 @@ func execute(args []string, logger *slog.Logger) error {
 	}
 	statePath, rest := extractStatePath(args)
 	if len(rest) == 0 {
-		return fmt.Errorf("usage: vigira-agent [--config PATH] enroll --server URL | run | compose-discover --root PATH")
+		return fmt.Errorf("usage: vigara-agent [--config PATH] enroll --server URL | run | compose-discover --root PATH")
 	}
 	switch rest[0] {
 	case "enroll":
@@ -47,7 +50,7 @@ func execute(args []string, logger *slog.Logger) error {
 			return err
 		}
 		flags := flag.NewFlagSet("enroll", flag.ContinueOnError)
-		server := flags.String("server", "", "Vigira server URL (HTTPS, or loopback HTTP)")
+		server := flags.String("server", "", "Vigara server URL (HTTPS, or loopback HTTP)")
 		name := flags.String("name", hostname(), "device display name")
 		insecure := flags.Bool("allow-insecure-private-http", false, "allow plain HTTP to a private-network or Tailscale server address (credentials and telemetry are unencrypted)")
 		if err := flags.Parse(rest[1:]); err != nil {
@@ -89,7 +92,7 @@ func execute(args []string, logger *slog.Logger) error {
 	case "compose-discover":
 		return discoverCompose(rest[1:])
 	default:
-		return fmt.Errorf("usage: vigira-agent [--config PATH] enroll --server URL | run | compose-discover --root PATH")
+		return fmt.Errorf("usage: vigara-agent [--config PATH] enroll --server URL | run | compose-discover --root PATH")
 	}
 }
 
@@ -134,11 +137,11 @@ func extractStatePath(args []string) (string, []string) {
 	path := os.Getenv("VIGIRA_AGENT_CONFIG")
 	if path == "" {
 		if dir, err := os.UserConfigDir(); err == nil {
-			path = filepath.Join(dir, "vigira", "agent.json")
+			path = defaultStatePath(dir)
 		}
 	}
 	if path == "" {
-		path = filepath.Join(".", "vigira-agent.json")
+		path = filepath.Join(".", "vigara-agent.json")
 	}
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--config" && i+1 < len(args) {
@@ -153,7 +156,7 @@ func extractStatePath(args []string) (string, []string) {
 func hostname() string {
 	name, err := os.Hostname()
 	if err != nil || name == "" {
-		return "Vigira agent"
+		return "Vigara agent"
 	}
 	return name
 }
@@ -178,6 +181,21 @@ func registerDocker(live *agentchannel.Client, logger *slog.Logger) {
 	if err != nil {
 		logger.Warn("Docker live views are unavailable: the Docker endpoint configuration is invalid")
 		return
+	}
+	if protocol.DockerTier(live.Capabilities()) == protocol.DockerModeDeploy {
+		targets := map[string]composedeploy.Target{}
+		if file := os.Getenv("VIGIRA_COMPOSE_TARGETS_FILE"); file != "" {
+			data, readErr := os.ReadFile(file)
+			if readErr != nil || json.Unmarshal(data, &targets) != nil {
+				logger.Warn("Compose deployment targets are invalid")
+			} else {
+				managedRoot := os.Getenv("VIGIRA_COMPOSE_MANAGED_ROOT")
+				if managedRoot == "" {
+					managedRoot = "/var/lib/vigira-agent/compose-stacks"
+				}
+				composedeploy.Register(live, &composedeploy.Runner{ManagedRoot: managedRoot, Targets: targets, DockerHost: strings.TrimSpace(os.Getenv("VIGIRA_DOCKER_HOST")), SOPS: os.Getenv("VIGIRA_SOPS_BINARY"), Identity: os.Getenv("VIGIRA_COMPOSE_AGE_IDENTITY")})
+			}
+		}
 	}
 	dockerchannel.Register(live, api)
 	dockerchannel.RegisterResources(live, api)
