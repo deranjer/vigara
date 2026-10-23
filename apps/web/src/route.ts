@@ -1,4 +1,4 @@
-export const sections = ['devices', 'monitoring', 'backups', 'containers', 'images', 'networks', 'volumes'] as const
+export const sections = ['devices', 'monitoring', 'backups', 'containers', 'stacks', 'images', 'networks', 'volumes', 'account'] as const
 export type Section = (typeof sections)[number]
 
 /**

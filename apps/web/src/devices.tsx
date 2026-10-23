@@ -8,7 +8,7 @@ import { chartRows, formatMetric, type MetricSeries, type RateUnit } from './met
 
 type Metric = { name: string; value: number; unit: string; labels?: Record<string, string> }
 type DockerContainer = { id: string; name?: string; image?: string; state: string }
-type Snapshot = { observedAt?: string; host?: { os?: string; osVersion?: string; architecture?: string; agentVersion?: string; cpuModel?: string; logicalCpus?: number; totalMemoryBytes?: number; uptimeSeconds?: number; hardwareInventory?: { observedAt?: string; cpuStatus?: string; cpu?: unknown; gpuStatus?: string; gpus?: unknown[]; memoryStatus?: string; memoryModules?: unknown[]; boardStatus?: string; motherboard?: unknown; firmware?: unknown; diskStatus?: string; disks?: unknown[] } }; metrics?: Metric[]; dockerContainers?: DockerContainer[]; errors?: { capability: string; message: string }[] }
+type Snapshot = { observedAt?: string; host?: { os?: string; osVersion?: string; architecture?: string; agentVersion?: string; cpuModel?: string; logicalCpus?: number; totalMemoryBytes?: number; uptimeSeconds?: number; hardwareInventory?: Record<string, unknown> }; metrics?: Metric[]; dockerContainers?: DockerContainer[]; errors?: { capability: string; message: string }[] }
 export type Device = { id: string; name: string; platformId?: string | null; status: 'healthy' | 'stale' | 'failed' | 'unsupported'; agentId?: string | null; platform: string; architecture: string; agentVersion: string; capabilities: string[]; lastSeenAt?: string | null; latest?: Snapshot; telemetryObservedAt?: string | null; collectionErrors?: Snapshot['errors'] }
 type Point = { at: string; value: number | null; min?: number; max?: number; samples: number; resolutionSeconds?: number }
 type Series = { name: string; unit: string; labels: Record<string, string>; points: Point[] }
@@ -151,15 +151,37 @@ function BackupHistory({ refresh, deviceId }: { refresh: number; deviceId?: stri
   </Card>
 }
 
+function DeviceHealthIssues({ device }: { device: Device }) {
+  return <Stack gap={4}>
+    {device.status === 'stale' && <Text size="xs" c="yellow">Stale check-in · {relativeLabel(device.lastSeenAt)}</Text>}
+    {device.status === 'failed' && <Text size="xs" c="red">Device needs attention</Text>}
+    {device.collectionErrors?.map((issue, index) => <Text key={index} size="xs" c="red" style={{ overflowWrap: 'anywhere' }}>{issue.capability}: {issue.message}</Text>)}
+  </Stack>
+}
+
 export function Devices({ section, selectedId, onSelect }: { section: 'devices' | 'monitoring' | 'backups'; selectedId: string | null; onSelect: (id: string | null) => void }) {
+  const [inventoryView, setInventoryView] = useState(() => {
+    try { return window.localStorage.getItem('vigara-device-view') === 'table' ? 'table' : 'cards' } catch { return 'cards' }
+  })
+  function changeInventoryView(value: string) {
+    setInventoryView(value)
+    try { window.localStorage.setItem('vigara-device-view', value) } catch { /* Keep the selection for this session when storage is unavailable. */ }
+  }
+  const [monitoringTab, setMonitoringTab] = useState('dashboard')
   const [addDeviceOpen, setAddDeviceOpen] = useState(false)
+  const [reinstallDevice, setReinstallDevice] = useState<Device | null>(null)
   const [allDevices, setAllDevices] = useState<Device[]>([]);
-  const [detailTab, setDetailTab] = useState<string | null>('info'); const [history, setHistory] = useState<History | null>(null); const [range, setRange] = useState('24h'); const [error, setError] = useState(''); const [historyError, setHistoryError] = useState(''); const [historyLoading, setHistoryLoading] = useState(false); const [loading, setLoading] = useState(true); const [offset, setOffset] = useState(0); const [total, setTotal] = useState(0); const [refresh, setRefresh] = useState(0); const [metricNames, setMetricNames] = useState<string[]>([]); const [normalized, setNormalized] = useState(false); const [rateUnit, setRateUnit] = useState<RateUnit>('MB/s')
+  const [detailTab, setDetailTab] = useState<string | null>('info'); const [history, setHistory] = useState<History | null>(null); const [range, setRange] = useState('24h'); const [error, setError] = useState(''); const [historyError, setHistoryError] = useState(''); const [historyLoading, setHistoryLoading] = useState(false); const [loading, setLoading] = useState(true); const [offset, setOffset] = useState(0); const [refresh, setRefresh] = useState(0); const [metricNames, setMetricNames] = useState<string[]>([]); const [normalized, setNormalized] = useState(false); const [rateUnit, setRateUnit] = useState<RateUnit>('MB/s')
   const [customStart, setCustomStart] = useState(''); const [customEnd, setCustomEnd] = useState(''); const [appliedInterval, setAppliedInterval] = useState<{ start: string; end: string } | null>(null); const [customError, setCustomError] = useState('')
   const initialMetric = useRef(true)
   const [zoomBase, setZoomBase] = useState<{ range: string; interval: { start: string; end: string } | null } | null>(null)
   const [availability, setAvailability] = useState<Availability | null>(null)
-  const devices = allDevices.slice(offset, offset + 100)
+  const pageSize = 20
+  const healthIssuesOnly = section === 'monitoring' && monitoringTab === 'issues'
+  const listedDevices = healthIssuesOnly ? allDevices.filter((device) => device.status === 'failed' || device.status === 'stale' || !!device.collectionErrors?.length) : allDevices
+  const total = listedDevices.length
+  const pageOffset = Math.min(offset, Math.max(0, Math.ceil(total / pageSize) - 1) * pageSize)
+  const devices = listedDevices.slice(pageOffset, pageOffset + pageSize)
   const selected = allDevices.find((device) => device.id === selectedId) ?? null
   const latestMetrics = useMemo(() => selected?.latest?.metrics ?? [], [selected])
   const labelValue = (key: string, value: string) => key === 'container_id' ? selected?.latest?.dockerContainers?.find((container) => container.id === value)?.name || value.slice(0, 12) : value
@@ -174,7 +196,7 @@ export function Devices({ section, selectedId, onSelect }: { section: 'devices' 
         result.push(...page.devices)
         if (!page.devices.length || result.length >= page.total) break
       }
-      if (active) { setAllDevices(result); setTotal(result.length); setError('') }
+      if (active) { setAllDevices(result); setOffset((current) => Math.min(current, Math.max(0, Math.ceil(result.length / pageSize) - 1) * pageSize)); setError('') }
     }
     void load().catch((cause: unknown) => { if (active) setError(cause instanceof Error ? cause.message : 'Could not load devices.') }).finally(() => { if (active) setLoading(false) })
     return () => { active = false }
@@ -204,11 +226,17 @@ export function Devices({ section, selectedId, onSelect }: { section: 'devices' 
 <Group>
 {!selected && section === 'devices' && <Button onClick={() => setAddDeviceOpen(true)}>Add device</Button>}
 <Button variant="default" onClick={() => setRefresh((value) => value + 1)}>Refresh</Button>
-{selected && <Button variant="subtle" onClick={backToList}>← All devices</Button>}
+{selected && <Button variant="subtle" onClick={backToList}>{section === 'monitoring' ? '← Back to monitoring' : '← All devices'}</Button>}
 </Group>
 </Group>
     {error && <Alert color="red" mb="md" title="Unable to load information" onClose={() => setError('')} withCloseButton>{error}</Alert>}
-    {!selected && section === 'monitoring' && !loading && (!error || allDevices.length > 0) && <MonitoringOverview devices={allDevices} refresh={refresh} onOpen={(id) => openDevice(id, 'monitoring')} />}
+    <Tabs value={monitoringTab} onChange={(value) => { if (value) { setMonitoringTab(value); setOffset(0) } }}>
+      {!selected && section === 'monitoring' && <Tabs.List mb="lg">
+        <Tabs.Tab value="dashboard">Dashboard</Tabs.Tab>
+        <Tabs.Tab value="issues">Device health issues</Tabs.Tab>
+        <Tabs.Tab value="all">All devices</Tabs.Tab>
+      </Tabs.List>}
+      <Tabs.Panel value={monitoringTab}>
     {!selected && section === 'backups' ? <BackupHistory refresh={refresh} /> : loading ? <div className="device-empty">
 <Loader size="sm" />
 <Text c="dimmed" mt="sm">Loading devices…</Text>
@@ -237,9 +265,9 @@ export function Devices({ section, selectedId, onSelect }: { section: 'devices' 
           <Tabs.Tab value="settings">Device settings</Tabs.Tab>
           {!!selected.latest?.dockerContainers?.length && <Tabs.Tab value="containers">Containers</Tabs.Tab>}
         </Tabs.List>
-        <Tabs.Panel value="info"><DeviceInfo device={selected} /></Tabs.Panel>
+        <Tabs.Panel value="info"><DeviceInfo device={selected} onReinstall={() => setReinstallDevice(selected)} /></Tabs.Panel>
         <Tabs.Panel value="backups"><BackupHistory key={selected.id} refresh={refresh} deviceId={selected.id} /></Tabs.Panel>
-        <Tabs.Panel value="settings"><DeviceSettings key={selected.id} device={selected} onSaved={() => setRefresh((value) => value + 1)} /></Tabs.Panel>
+        <Tabs.Panel value="settings"><DeviceSettings key={selected.id} device={selected} onDeleted={() => { setAllDevices((current) => current.filter((item) => item.id !== selected.id)); onSelect(null); setRefresh((value) => value + 1) }} onSaved={() => setRefresh((value) => value + 1)} /></Tabs.Panel>
         <Tabs.Panel value="monitoring"><Stack gap="lg">
       {selected.collectionErrors && selected.collectionErrors.length > 0 && <Alert color="red" title="Collection errors">{selected.collectionErrors.map((item, index) => <Text key={`${item.capability}-${index}`} size="sm">{item.capability}: {item.message}</Text>)}</Alert>}
       <Card withBorder radius="md" padding="lg">
@@ -317,12 +345,33 @@ export function Devices({ section, selectedId, onSelect }: { section: 'devices' 
 </Table.ScrollContainer>
 </Card>}<Text size="sm" c="dimmed">Compose stack details are not yet available.</Text></Tabs.Panel>
       </Tabs>
-    </Stack> : devices.length === 0 ? <div className="device-empty">
-<Text fw={600}>No devices yet</Text>
-<Text c="dimmed" size="sm" mt={6}>Enrolled agents and discovered devices will appear here.</Text>
+    </Stack> : section === 'monitoring' && monitoringTab === 'dashboard' ? (!error || allDevices.length > 0) && <MonitoringOverview devices={allDevices} refresh={refresh} onOpen={(id) => openDevice(id, 'monitoring')} /> : devices.length === 0 ? <div className="device-empty">
+<Text fw={600}>{healthIssuesOnly ? 'No device health issues' : 'No devices yet'}</Text>
+<Text c="dimmed" size="sm" mt={6}>{healthIssuesOnly ? 'No stale devices or collection failures.' : 'Enrolled agents and discovered devices will appear here.'}</Text>
 </div> : <>
-      <Group gap="xs" mb="md">{(['healthy', 'stale', 'failed', 'unsupported'] as const).map((status) => <Badge key={status} color={statusColor[status]} variant="light">{allDevices.filter((device) => device.status === status).length} {statusLabel[status]}</Badge>)}</Group>
-      <Card withBorder radius="md" padding={0} className="inventory-card">
+      {healthIssuesOnly && <Text size="sm" c="dimmed" mb="md">Stale check-ins, failed devices and collection errors. Availability schedules can explain stale check-ins.</Text>}
+      <Group justify="space-between" mb="md">
+        <Group gap="xs">{(['healthy', 'stale', 'failed', 'unsupported'] as const).map((status) => <Badge key={status} color={statusColor[status]} variant="light">{allDevices.filter((device) => device.status === status).length} {statusLabel[status]}</Badge>)}</Group>
+        <SegmentedControl aria-label="Device view" value={inventoryView} onChange={changeInventoryView} data={[{ label: 'Cards', value: 'cards' }, { label: 'Table', value: 'table' }]} />
+      </Group>
+      {inventoryView === 'cards' ? <SimpleGrid cols={{ base: 1, sm: 2, lg: 3, xl: 4 }} spacing="md">
+        {devices.map((device) => <Card key={device.id} withBorder radius="md" padding="lg" className="device-summary-card">
+          <Stack gap="md" h="100%">
+            <Group justify="space-between" align="flex-start" wrap="nowrap">
+              <div className="device-card-identity"><Text fw={600} className="device-name">{device.name}</Text><Text size="xs" c="dimmed">{[device.platform, device.architecture].filter(Boolean).join(' · ') || 'Platform not reported'}</Text></div>
+              <Badge color={statusColor[device.status]} variant="light" style={{ flexShrink: 0 }}>{statusLabel[device.status]}</Badge>
+            </Group>
+            <SimpleGrid cols={2} spacing="xs">
+              <div className="metric-value"><Text size="xs" c="dimmed">CPU</Text><Text fw={600}>{summaryMetric(device, 'cpu_used_percent')}</Text></div>
+              <div className="metric-value"><Text size="xs" c="dimmed">Memory</Text><Text fw={600}>{summaryMetric(device, 'memory_used_percent')}</Text></div>
+            </SimpleGrid>
+            {section === 'monitoring' && <div><Text size="xs" c="dimmed">Network receive / send</Text><Text size="sm">↓ {summaryMetric(device, 'network_receive_bytes_per_second', 'MB/s')} · ↑ {summaryMetric(device, 'network_send_bytes_per_second', 'MB/s')}</Text></div>}
+            {healthIssuesOnly && <DeviceHealthIssues device={device} />}
+            <Text size="xs" c="dimmed" title={timeLabel(device.lastSeenAt)}>Last check-in · {relativeLabel(device.lastSeenAt)}</Text>
+            <Button variant="light" fullWidth mt="auto" onClick={() => openDevice(device.id, section === 'monitoring' ? 'monitoring' : 'info')} aria-label={`View ${device.name}`}>View device</Button>
+          </Stack>
+        </Card>)}
+      </SimpleGrid> : <Card withBorder radius="md" padding={0} className="inventory-card">
 <div className="table-scroll">
 <Table highlightOnHover verticalSpacing="md" horizontalSpacing="lg">
 <Table.Thead>
@@ -332,6 +381,7 @@ export function Devices({ section, selectedId, onSelect }: { section: 'devices' 
 <Table.Th>Status</Table.Th>
 <Table.Th>Last check-in</Table.Th>
 {section === 'monitoring' ? <><Table.Th>CPU</Table.Th><Table.Th>Memory</Table.Th><Table.Th>Network receive / send</Table.Th></> : <Table.Th>Basic stats</Table.Th>}
+{healthIssuesOnly && <Table.Th>Health issues</Table.Th>}
 <Table.Th />
 </Table.Tr>
 </Table.Thead>
@@ -353,22 +403,26 @@ export function Devices({ section, selectedId, onSelect }: { section: 'devices' 
 <Table.Td>{summaryMetric(device, 'cpu_used_percent')}</Table.Td>
 <Table.Td>{summaryMetric(device, 'memory_used_percent')}</Table.Td>
 <Table.Td><Text size="sm">↓ {summaryMetric(device, 'network_receive_bytes_per_second', 'MB/s')}</Text><Text size="sm">↑ {summaryMetric(device, 'network_send_bytes_per_second', 'MB/s')}</Text></Table.Td>
-</> : <Table.Td><Text size="sm">CPU: {summaryMetric(device, 'cpu_used_percent')} · Memory: {summaryMetric(device, 'memory_used_percent')}</Text><Text size="xs" c="dimmed">Disk total: {summaryMetric(device, 'filesystem_total_bytes')}</Text></Table.Td>}
+</> : <Table.Td><Text size="sm">CPU: {summaryMetric(device, 'cpu_used_percent')}</Text><Text size="sm">Memory: {summaryMetric(device, 'memory_used_percent')}</Text></Table.Td>}
+{healthIssuesOnly && <Table.Td><DeviceHealthIssues device={device} /></Table.Td>}
 <Table.Td>
 <Button size="xs" variant="light" onClick={(event) => { event.stopPropagation(); openDevice(device.id, section === 'monitoring' ? 'monitoring' : 'info') }} aria-label={`View ${device.name}`}>View device</Button>
 </Table.Td>
 </Table.Tr>)}</Table.Tbody>
 </Table>
 </div>
-</Card>
+</Card>}
 <Group justify="space-between" mt="sm">
-<Text size="sm" c="dimmed">Showing {offset + 1}–{Math.min(offset + devices.length, total)} of {total}</Text>
-<Group>
-<Button size="xs" variant="default" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - 100))}>Previous</Button>
-<Button size="xs" variant="default" disabled={offset + devices.length >= total} onClick={() => setOffset(offset + 100)}>Next</Button>
-</Group>
+<Text size="sm" c="dimmed">Showing {pageOffset + 1}–{Math.min(pageOffset + devices.length, total)} of {total}</Text>
+{total > pageSize && <Group>
+<Button size="xs" variant="default" disabled={pageOffset === 0} onClick={() => setOffset(Math.max(0, pageOffset - pageSize))}>Previous</Button>
+<Button size="xs" variant="default" disabled={pageOffset + devices.length >= total} onClick={() => setOffset(pageOffset + pageSize)}>Next</Button>
+</Group>}
 </Group>
     </>}
+      </Tabs.Panel>
+    </Tabs>
     <AddDevice opened={addDeviceOpen} onClose={() => setAddDeviceOpen(false)} />
+    {reinstallDevice && <AddDevice key={reinstallDevice.id} device={reinstallDevice} opened onClose={() => { setReinstallDevice(null); setRefresh((value) => value + 1) }} />}
   </section>
 }

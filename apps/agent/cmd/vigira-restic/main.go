@@ -17,6 +17,7 @@ import (
 
 	"github.com/deranjer/vigara/apps/agent/internal/backupprep"
 	agentruntime "github.com/deranjer/vigara/apps/agent/internal/runtime"
+	"github.com/deranjer/vigara/internal/envcompat"
 	"github.com/deranjer/vigara/internal/restic"
 )
 
@@ -25,8 +26,9 @@ const maxCLIOutput = 16 << 20
 var repositoryScheme = regexp.MustCompile(`^[a-z][a-z0-9+.-]*:`)
 
 func main() {
+	envcompat.ApplyAliases()
 	if err := run(os.Args[1:], os.Stdout); err != nil {
-		fmt.Fprintln(os.Stderr, "vigira-restic: operation failed; details are withheld to protect local paths and credentials")
+		fmt.Fprintln(os.Stderr, "vigara-restic: operation failed; details are withheld to protect local paths and credentials")
 		os.Exit(1)
 	}
 }
@@ -47,7 +49,7 @@ func run(args []string, out io.Writer) error {
 		return errors.New("command required")
 	}
 	command := rest[0]
-	flags := flag.NewFlagSet("vigira-restic "+command, flag.ContinueOnError)
+	flags := flag.NewFlagSet("vigara-restic "+command, flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	profileID := flags.String("profile", "", "enabled local profile ID")
 	snapshotID := flags.String("snapshot", "", "full snapshot ID")

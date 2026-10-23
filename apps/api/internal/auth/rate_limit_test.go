@@ -18,10 +18,7 @@ func TestAttemptLimiterPeerBudget(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	for i := 0; i < authPeerAttempts+1; i++ {
-		path := "/api/auth/login"
-		if i%2 == 1 {
-			path = "/api/setup/first-user"
-		}
+		path := []string{"/api/auth/login", "/api/setup/first-user", "/api/auth/password"}[i%3]
 		r := httptest.NewRequest(http.MethodPost, path, nil)
 		r.RemoteAddr = fmt.Sprintf("192.0.2.1:%d", 1000+i)
 		r.Header.Set("X-Forwarded-For", fmt.Sprintf("192.0.2.%d", i+2))

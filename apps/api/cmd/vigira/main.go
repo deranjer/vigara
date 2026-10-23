@@ -19,20 +19,22 @@ import (
 	webassets "github.com/deranjer/vigara/apps/api"
 	"github.com/deranjer/vigara/apps/api/internal/agent"
 	"github.com/deranjer/vigara/apps/api/internal/alerts"
-	"github.com/deranjer/vigara/apps/api/internal/audit"
-	"github.com/deranjer/vigara/apps/api/internal/channel"
-	"github.com/deranjer/vigara/apps/api/internal/containers"
 	"github.com/deranjer/vigara/apps/api/internal/androidbackup"
+	"github.com/deranjer/vigara/apps/api/internal/audit"
 	"github.com/deranjer/vigara/apps/api/internal/auth"
 	"github.com/deranjer/vigara/apps/api/internal/backups"
+	"github.com/deranjer/vigara/apps/api/internal/channel"
 	"github.com/deranjer/vigara/apps/api/internal/config"
+	"github.com/deranjer/vigara/apps/api/internal/containers"
 	"github.com/deranjer/vigara/apps/api/internal/database"
 	"github.com/deranjer/vigara/apps/api/internal/db"
 	"github.com/deranjer/vigara/apps/api/internal/inventoryview"
 	"github.com/deranjer/vigara/apps/api/internal/notifications"
 	"github.com/deranjer/vigara/apps/api/internal/notifytransport"
+	"github.com/deranjer/vigara/apps/api/internal/stacks"
 	"github.com/deranjer/vigara/apps/api/internal/telemetry"
 	"github.com/deranjer/vigara/apps/api/migrations"
+	"github.com/deranjer/vigara/internal/envcompat"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -46,6 +48,7 @@ var version = "dev"
 var revision = ""
 
 func main() {
+	envcompat.ApplyAliases()
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	cfg, err := config.Load()
 	if err != nil {
@@ -125,6 +128,13 @@ func main() {
 		}
 		return names, rows.Err()
 	}})
+	stackRepository, stackTargets, err := stacks.FromEnv()
+	if err != nil {
+		logger.Error("invalid stack configuration")
+		os.Exit(1)
+	}
+	stackMux := http.NewServeMux()
+	stackAPI := stacks.Register(stackMux, stacks.Config{Repository: stackRepository, Targets: stackTargets, SOPS: os.Getenv("VIGIRA_SOPS_BINARY"), Pool: database.Pool, Hub: channelHub, Authz: authService, Audit: auditRecorder})
 	adminMux := http.NewServeMux()
 	authService.RegisterAdmin(adminMux, auditRecorder)
 	androidBackupMux := http.NewServeMux()
@@ -155,7 +165,7 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"version": version, "revision": revision})
 	})
-	api := humachi.New(router, huma.DefaultConfig("Vigira API", "0.1.0"))
+	api := humachi.New(router, huma.DefaultConfig("Vigara API", "0.1.0"))
 	huma.Register(api, huma.Operation{
 		OperationID: "healthCheck", Method: http.MethodGet, Path: "/healthz", Summary: "Check service health",
 	}, func(context.Context, *struct{}) (*healthOutput, error) {
@@ -169,6 +179,8 @@ func main() {
 	router.Handle("/api/containers", containersMux)
 	router.Handle("/api/containers/*", containersMux)
 	router.Handle("/api/docker/*", containersMux)
+	router.Handle("/api/stacks", stackMux)
+	router.Handle("/api/stacks/*", stackMux)
 	router.Handle("/api/users", adminMux)
 	router.Handle("/api/users/*", adminMux)
 	router.Handle("/api/audit", adminMux)
@@ -185,7 +197,7 @@ func main() {
 	router.Handle("/api/agent-downloads/*", agentMux)
 	router.Handle("/api/devices/*", agentMux)
 	router.Handle("/api/inventory/*", inventoryMux)
-	auth.RegisterAPI(api, authService, cfg.SecureSessionCookie)
+	auth.RegisterAPI(api, authService, cfg.SecureSessionCookie, auditRecorder)
 	staticFS, err := fs.Sub(webassets.FS, "web")
 	if err != nil {
 		logger.Error("web assets unavailable", "error", err)
@@ -205,10 +217,11 @@ func main() {
 			logger.Error("server shutdown failed", "error", err)
 		}
 	}()
+	go stackAPI.Run(ctx)
 	go notifications.Run(ctx, database.Pool, destinations, logger)
 	go alerts.Run(ctx, database.Pool, logger)
 	go backups.RunScheduler(ctx, database.Pool, logger)
-	logger.Info("starting Vigira API", "addr", cfg.Address)
+	logger.Info("starting Vigara API", "addr", cfg.Address)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("server failed", "error", err)
 		os.Exit(1)

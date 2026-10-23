@@ -3,6 +3,7 @@ package agent
 import (
 	"archive/zip"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/deranjer/vigara/internal/protocol"
 	"github.com/deranjer/vigara/internal/serverurl"
+	"github.com/jackc/pgx/v5"
 )
 
 // ConfigureDownloads sets operator-owned bundle provenance and the reachable
@@ -78,7 +80,7 @@ type releaseManifest struct {
 	} `json:"artifacts"`
 }
 
-var supportedDownloads = map[string]string{"windows-amd64": "vigira-agent-windows-amd64.exe", "linux-amd64": "vigira-agent-linux-amd64", "linux-arm64": "vigira-agent-linux-arm64"}
+var supportedDownloads = map[string]string{"windows-amd64": "vigara-agent-windows-amd64.exe", "linux-amd64": "vigara-agent-linux-amd64", "linux-arm64": "vigara-agent-linux-arm64"}
 
 var selectableFeatures = map[string]bool{
 	"restic.backup":                 true,
@@ -121,7 +123,8 @@ func (h *Handler) verifiedArtifact(target string) ([]byte, string, error) {
 	}
 	entry, ok := manifest.Artifacts[target]
 	expected := supportedDownloads[target]
-	if !ok || entry.File != expected || len(entry.SHA256) != 64 {
+	legacyName := strings.Replace(expected, "vigara-agent", "vigira-agent", 1)
+	if !ok || (entry.File != expected && entry.File != legacyName) || len(entry.SHA256) != 64 {
 		return nil, "", os.ErrNotExist
 	}
 	for _, c := range entry.SHA256 {
@@ -129,7 +132,7 @@ func (h *Handler) verifiedArtifact(target string) ([]byte, string, error) {
 			return nil, "", errors.New("invalid release digest")
 		}
 	}
-	artifactPath := filepath.Join(h.releaseDir, expected)
+	artifactPath := filepath.Join(h.releaseDir, entry.File)
 	data, err := readBoundedFile(artifactPath, 128<<20)
 	if err != nil {
 		return nil, "", err
@@ -186,14 +189,15 @@ func (h *Handler) downloadAvailability(w http.ResponseWriter, r *http.Request) {
 }
 
 type agentDownloadRequest struct {
+	DeviceID  string   `json:"deviceId,omitempty"`
 	Target    string   `json:"target"`
 	ServerURL string   `json:"serverUrl"`
-	Name     string   `json:"name"`
-	Features []string `json:"features"`
+	Name      string   `json:"name"`
+	Features  []string `json:"features"`
 }
 
 func (h *Handler) createAgentDownload(w http.ResponseWriter, r *http.Request) {
-	if !h.requireUser(w, r) {
+	if !h.requireAdmin(w, r) {
 		return
 	}
 	var req agentDownloadRequest
@@ -201,6 +205,10 @@ func (h *Handler) createAgentDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Name = strings.TrimSpace(req.Name)
+	if req.DeviceID != "" && !validUUID(req.DeviceID) {
+		http.Error(w, "invalid device ID", http.StatusBadRequest)
+		return
+	}
 	if len(req.Name) == 0 || len(req.Name) > 120 || strings.ContainsAny(req.Name, "\\/\x00") || len(req.Features) > 128 {
 		http.Error(w, "invalid device request", http.StatusBadRequest)
 		return
@@ -239,8 +247,46 @@ func (h *Handler) createAgentDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
+	var replacementID *string
+	if req.DeviceID != "" {
+		var id, platform, architecture, deviceName string
+		err = tx.QueryRow(r.Context(), "SELECT i.id::text,i.platform,i.architecture,d.display_name,i.allowed_capabilities FROM agent_identities i JOIN devices d ON d.id=i.device_id WHERE d.id=$1::uuid AND i.revoked_at IS NULL ORDER BY i.created_at DESC LIMIT 1 FOR UPDATE OF i,d", req.DeviceID).Scan(&id, &platform, &architecture, &deviceName, &req.Features)
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.Error(w, "device has no active agent to reinstall", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			http.Error(w, "could not prepare reinstall bundle", 500)
+			return
+		}
+		if platform+"-"+architecture != req.Target {
+			http.Error(w, "reinstall bundle must match the existing device platform", http.StatusConflict)
+			return
+		}
+		req.Name = deviceName
+		replacementID = &id
+		// Only the newest pending reinstall may rotate this identity's credentials.
+		_, err = tx.Exec(r.Context(), "UPDATE agent_download_sessions SET status='canceled' WHERE id IN (SELECT id FROM agent_enrollment_tokens WHERE replacement_agent_id=$1 AND used_at IS NULL) AND status='waiting'", id)
+		if err == nil {
+			_, err = tx.Exec(r.Context(), "UPDATE agent_enrollment_tokens SET used_at=now() WHERE replacement_agent_id=$1 AND used_at IS NULL", id)
+		}
+	} else {
+		_, err = tx.Exec(r.Context(), "SELECT pg_advisory_xact_lock(hashtextextended(lower($1),0))", req.Name)
+		var exists bool
+		if err == nil {
+			err = tx.QueryRow(r.Context(), "SELECT EXISTS(SELECT 1 FROM devices WHERE lower(btrim(display_name))=lower($1)) OR EXISTS(SELECT 1 FROM agent_download_sessions WHERE lower(btrim(device_name))=lower($1) AND status='waiting' AND expires_at>now())", req.Name).Scan(&exists)
+		}
+		if err == nil && exists {
+			http.Error(w, "This device name is already in use. Open the existing device and choose Reinstall agent, or use a different name.", http.StatusConflict)
+			return
+		}
+	}
+	if err != nil {
+		http.Error(w, "could not prepare device bundle", 500)
+		return
+	}
 	var sessionID string
-	err = tx.QueryRow(r.Context(), `INSERT INTO agent_enrollment_tokens(token_hash,capabilities,expires_at) VALUES($1,$2,$3) RETURNING id::text`, tokenHash, req.Features, expires).Scan(&sessionID)
+	err = tx.QueryRow(r.Context(), `INSERT INTO agent_enrollment_tokens(token_hash,capabilities,expires_at,replacement_agent_id) VALUES($1,$2,$3,$4) RETURNING id::text`, tokenHash, req.Features, expires, replacementID).Scan(&sessionID)
 	if err == nil {
 		_, err = tx.Exec(r.Context(), `INSERT INTO agent_download_sessions(id,device_name,target,version,status,expires_at) VALUES($1,$2,$3,$4,'waiting',$5)`, sessionID, req.Name, req.Target, version, expires)
 	}
@@ -249,10 +295,11 @@ func (h *Handler) createAgentDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/zip")
-	w.Header().Set("Content-Disposition", "attachment; filename=vigira-agent-"+req.Target+".zip")
+	w.Header().Set("Content-Disposition", "attachment; filename=vigara-agent-"+req.Target+".zip")
 	w.Header().Set("Cache-Control", "no-store, private")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Vigira-Session-ID", sessionID)
+	w.Header().Set("X-Vigara-Session-ID", sessionID)
 	w.WriteHeader(http.StatusOK)
 	zw := zip.NewWriter(&boundedBundleWriter{w: w, remaining: 160 << 20})
 	add := func(name string, data []byte) error {
@@ -263,10 +310,10 @@ func (h *Handler) createAgentDownload(w http.ResponseWriter, r *http.Request) {
 		_, e = f.Write(data)
 		return e
 	}
-	bootstrap, _ := json.Marshal(map[string]any{"serverUrl": serverURL, "insecureHttp": !serverurl.IsSecure(serverURL), "token": token, "name": req.Name, "sessionId": sessionID})
-	binaryName := "vigira-agent"
+	bootstrap, _ := json.Marshal(map[string]any{"serverUrl": serverURL, "insecureHttp": !serverurl.IsSecure(serverURL), "token": token, "name": req.Name, "sessionId": sessionID, "reinstall": replacementID != nil, "agentId": replacementID})
+	binaryName := "vigara-agent"
 	if strings.HasPrefix(req.Target, "windows-") {
-		binaryName = "vigira-agent.exe"
+		binaryName = "vigara-agent.exe"
 	}
 	if err = add(binaryName, artifact); err == nil {
 		err = add("bootstrap.json", bootstrap)
@@ -274,11 +321,14 @@ func (h *Handler) createAgentDownload(w http.ResponseWriter, r *http.Request) {
 	if err == nil && strings.HasPrefix(req.Target, "linux-") {
 		err = add("install.sh", []byte(linuxAgentInstaller))
 		if err == nil {
-			err = add("vigira-agent.service", []byte(linuxAgentService))
+			err = add("vigara-agent.service", []byte(linuxAgentService))
 		}
 	}
 	if err == nil && strings.HasPrefix(req.Target, "windows-") {
 		err = add("install.ps1", []byte(windowsAgentInstaller))
+		if err == nil {
+			err = add("install.cmd", []byte(windowsAgentLauncher))
+		}
 	}
 	if err == nil {
 		err = zw.Close()
@@ -317,73 +367,14 @@ func (h *Handler) cancelAgentDownload(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-const linuxAgentInstaller = `#!/bin/sh
-set -eu
-umask 077
-BASE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-CONFIG="$BASE/bootstrap.json"
-SERVER=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["serverUrl"])' "$CONFIG")
-NAME=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["name"])' "$CONFIG")
-TOKEN=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["token"])' "$CONFIG")
-INSECURE=$(python3 -c 'import json,sys; print("1" if json.load(open(sys.argv[1])).get("insecureHttp") else "")' "$CONFIG")
-INSECURE_FLAG=""
-if [ -n "$INSECURE" ]; then
-  INSECURE_FLAG="--allow-insecure-private-http"
-  echo "WARNING: this server is reached over plain HTTP. Agent credentials and telemetry are not encrypted; use only on a trusted private network or VPN." >&2
-fi
-getent group vigira-agent >/dev/null || sudo groupadd --system vigira-agent
-id -u vigira-agent >/dev/null 2>&1 || sudo useradd --system --gid vigira-agent --home-dir /var/lib/vigira-agent --shell /usr/sbin/nologin vigira-agent
-sudo install -d -o vigira-agent -g vigira-agent -m 0700 /var/lib/vigira-agent
-sudo install -m 0755 "$BASE/vigira-agent" /usr/local/bin/vigira-agent
-printf '%s\n' "$TOKEN" | sudo -u vigira-agent /usr/local/bin/vigira-agent --config /var/lib/vigira-agent/agent.json enroll --server "$SERVER" --name "$NAME" $INSECURE_FLAG
-rm -f -- "$CONFIG"
-sudo install -m 0644 "$BASE/vigira-agent.service" /etc/systemd/system/vigira-agent.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now vigira-agent.service
-`
+//go:embed installers/linux.sh
+var linuxAgentInstaller string
 
-const linuxAgentService = `[Unit]
-Description=Vigira host agent
-After=network-online.target
-Wants=network-online.target
-[Service]
-Type=simple
-User=vigira-agent
-Group=vigira-agent
-ExecStart=/usr/local/bin/vigira-agent --config /var/lib/vigira-agent/agent.json run
-Restart=always
-RestartSec=5
-StateDirectory=vigira-agent
-StateDirectoryMode=0700
-ProtectSystem=strict
-ProtectHome=true
-PrivateTmp=true
-NoNewPrivileges=true
-RestrictAddressFamilies=AF_INET AF_INET6
-[Install]
-WantedBy=multi-user.target
-`
+//go:embed installers/linux.service
+var linuxAgentService string
 
-const windowsAgentInstaller = `Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'
-$base = Split-Path -Parent $MyInvocation.MyCommand.Path
-$bootstrap = Get-Content -Raw (Join-Path $base 'bootstrap.json') | ConvertFrom-Json
-$token = $bootstrap.token
-$extraArgs = @()
-if ($bootstrap.insecureHttp) {
-  $extraArgs += '--allow-insecure-private-http'
-  Write-Warning 'This server is reached over plain HTTP. Agent credentials and telemetry are not encrypted; use only on a trusted private network or VPN.'
-}
-$stateDir = Join-Path $env:ProgramData 'Vigira'
-New-Item -ItemType Directory -Force $stateDir | Out-Null
-icacls.exe $stateDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
-$statePath = Join-Path $stateDir 'agent.json'
-$token | & (Join-Path $base 'vigira-agent.exe') --config $statePath enroll --server $bootstrap.serverUrl --name $bootstrap.name @extraArgs
-if ($LASTEXITCODE -ne 0) { throw 'Enrollment failed; bootstrap file retained for retry.' }
-Remove-Item -LiteralPath (Join-Path $base 'bootstrap.json') -Force
-New-Item -ItemType Directory -Force "$env:ProgramFiles\Vigira" | Out-Null
-$exe = Join-Path $env:ProgramFiles 'Vigira\vigira-agent.exe'
-Copy-Item (Join-Path $base 'vigira-agent.exe') $exe -Force
-sc.exe create VigiraAgent binPath= ('"' + $exe + '" --config "' + $statePath + '" run') start= auto
-sc.exe start VigiraAgent
-`
+//go:embed installers/windows.ps1
+var windowsAgentInstaller string
+
+//go:embed installers/windows.cmd
+var windowsAgentLauncher string

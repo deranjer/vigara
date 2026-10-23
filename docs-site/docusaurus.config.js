@@ -1,8 +1,8 @@
 /** @type {import('@docusaurus/types').Config} */
 const config = {
-  title: 'Vigira Documentation',
-  tagline: 'Guides and technical reference for Vigira',
-  favicon: 'img/logo.svg',
+  title: 'Vigara Documentation',
+  tagline: 'Guides and technical reference for Vigara',
+  favicon: 'img/vigara-icon.png',
   url: 'https://deranjer.github.io',
   baseUrl: '/vigara/docs/',
   organizationName: 'deranjer',
@@ -21,7 +21,7 @@ const config = {
   }]],
   themeConfig: {
     navbar: {
-      title: 'Vigira', logo: {alt: 'Vigira', src: 'img/logo.svg'},
+      title: 'Vigara', logo: {alt: 'Vigara', src: 'img/vigara-icon.png'},
       items: [
         {type: 'docSidebar', sidebarId: 'docs', position: 'left', label: 'Documentation'},
         {href: 'https://github.com/deranjer/vigara', label: 'GitHub', position: 'right'},
@@ -30,7 +30,7 @@ const config = {
     footer: {
       style: 'dark',
       links: [{title: 'Project', items: [{label: 'GitHub repository', href: 'https://github.com/deranjer/vigara'}]}],
-      copyright: `Copyright © ${new Date().getFullYear()} Vigira contributors.`,
+      copyright: `Copyright © ${new Date().getFullYear()} Vigara contributors.`,
     },
     prism: {additionalLanguages: ['bash', 'go', 'json', 'yaml']},
   },

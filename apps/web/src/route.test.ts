@@ -4,6 +4,7 @@ import { defaultRoute, formatRoute, parseRoute, route, sameRoute } from './route
 describe('route', () => {
   it('parses sections with up to three further segments', () => {
     expect(parseRoute('#/devices')).toEqual(route('devices'))
+    expect(parseRoute('#/account')).toEqual(route('account'))
     expect(parseRoute('#/containers')).toEqual(route('containers'))
     expect(parseRoute('#/monitoring/0b1f3c2e-aaaa-4bbb-8ccc-123456789abc')).toEqual(route('monitoring', '0b1f3c2e-aaaa-4bbb-8ccc-123456789abc'))
     expect(parseRoute('#/containers/host-1/my_app.web-1')).toEqual(route('containers', 'host-1', 'my_app.web-1'))
@@ -29,7 +30,7 @@ describe('route', () => {
   })
 
   it('round-trips valid routes and omits invalid parts when formatting', () => {
-    for (const value of [route('devices'), route('containers', 'abc-123'), route('backups', 'a.b_c'), route('containers', 'host', 'web'), route('containers', 'host', 'web', 'stats')]) {
+    for (const value of [route('account'), route('devices'), route('containers', 'abc-123'), route('backups', 'a.b_c'), route('containers', 'host', 'web'), route('containers', 'host', 'web', 'stats')]) {
       expect(parseRoute(formatRoute(value))).toEqual(value)
     }
     expect(formatRoute(route('containers', '<bad>'))).toBe('#/containers')

@@ -40,7 +40,7 @@ func NewAttemptLimiter() *AttemptLimiter {
 
 func (l *AttemptLimiter) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || (r.URL.Path != "/api/auth/login" && r.URL.Path != "/api/setup/first-user") {
+		if r.Method != http.MethodPost || (r.URL.Path != "/api/auth/login" && r.URL.Path != "/api/setup/first-user" && r.URL.Path != "/api/auth/password") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -104,6 +104,6 @@ func writeThrottled(w http.ResponseWriter, retry time.Duration) {
 	w.WriteHeader(http.StatusTooManyRequests)
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"title": "Too Many Requests", "status": http.StatusTooManyRequests,
-		"detail": "Too many sign-in or setup attempts. Please wait and try again.",
+		"detail": "Too many authentication attempts. Please wait and try again.",
 	})
 }
