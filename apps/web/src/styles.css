@@ -18,6 +18,22 @@ body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--mantine
 .cpu-estimate { margin-top: 16px; padding: 12px 14px; border-left: 3px solid var(--mantine-color-blue-6); background: var(--mantine-color-default-hover); }
 .chart-frame { min-height: 320px; overflow: hidden; }
 .chart-frame .recharts-wrapper { touch-action: pan-y; }
+.monitoring-groups { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+.monitoring-group-wide { grid-column: 1 / -1; }
+@media (min-width: 48em) { .monitoring-groups { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.monitoring-resource-group { min-width: 0; padding: 16px; border: 1px solid var(--mantine-color-default-border); border-radius: var(--mantine-radius-md); background: var(--mantine-color-default-hover); }
+.monitoring-group-label { overflow-wrap: anywhere; }
+.monitoring-resource-card { min-width: 0; overflow: visible; }
+.monitoring-values { min-height: 58px; }
+.monitoring-values > div { min-width: 0; overflow-wrap: anywhere; }
+.monitoring-capacity { margin-top: 14px; }
+.monitoring-trend { margin-top: auto; padding-top: 18px; }
+.monitoring-trend-empty { height: 110px; display: flex; align-items: center; justify-content: center; border-radius: var(--mantine-radius-sm); background: var(--mantine-color-default-hover); }
+.monitoring-series-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.monitoring-history { border-top: 1px solid var(--mantine-color-default-border); padding-top: 20px; }
+.monitoring-history > summary { cursor: pointer; font-weight: 600; padding: 8px 0; }
+.monitoring-history > summary:focus-visible { outline: 2px solid var(--mantine-color-blue-6); outline-offset: 4px; }
+@media (max-width: 640px) { .monitoring-resource-group { padding: 10px; } }
 .metric-select { min-width: 200px; padding: 7px 10px; border: 1px solid var(--mantine-color-default-border); border-radius: 6px; background: var(--mantine-color-body); color: var(--mantine-color-text); }
 @media (max-width: 640px) {
   .topbar { gap: 8px; padding: 0 10px; }

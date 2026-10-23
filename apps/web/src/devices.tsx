@@ -3,6 +3,7 @@ import { Alert, LoadingOverlay, Badge, Button, Card, Checkbox, Group, Loader, Se
 import { LineChart } from '@mantine/charts'
 import { ReferenceArea } from 'recharts'
 import { DeviceInfo, DeviceSettings, MonitoringOverview } from './device-panels'
+import { DeviceMonitoring } from './device-monitoring'
 import { type HardwareInventory } from './device-info-utils'
 import { AddDevice } from './add-device'
 import { chartRows, formatMetric, type MetricSeries, type RateUnit } from './metric-utils'
@@ -184,8 +185,6 @@ export function Devices({ section, selectedId, onSelect }: { section: 'devices' 
   const pageOffset = Math.min(offset, Math.max(0, Math.ceil(total / pageSize) - 1) * pageSize)
   const devices = listedDevices.slice(pageOffset, pageOffset + pageSize)
   const selected = allDevices.find((device) => device.id === selectedId) ?? null
-  const latestMetrics = useMemo(() => selected?.latest?.metrics ?? [], [selected])
-  const labelValue = (key: string, value: string) => key === 'container_id' ? selected?.latest?.dockerContainers?.find((container) => container.id === value)?.name || value.slice(0, 12) : value
 
   useEffect(() => {
     let active = true
@@ -271,19 +270,9 @@ export function Devices({ section, selectedId, onSelect }: { section: 'devices' 
         <Tabs.Panel value="settings"><DeviceSettings key={selected.id} device={selected} onDeleted={() => { setAllDevices((current) => current.filter((item) => item.id !== selected.id)); onSelect(null); setRefresh((value) => value + 1) }} onSaved={() => setRefresh((value) => value + 1)} /></Tabs.Panel>
         <Tabs.Panel value="monitoring"><Stack gap="lg">
       {selected.collectionErrors && selected.collectionErrors.length > 0 && <Alert color="red" title="Collection errors">{selected.collectionErrors.map((item, index) => <Text key={`${item.capability}-${index}`} size="sm">{item.capability}: {item.message}</Text>)}</Alert>}
-      <Card withBorder radius="md" padding="lg">
-<Group justify="space-between" mb="md">
-<div>
-<Title order={3}>Latest measurements</Title>
-<Select label="Network rate units" aria-label="Latest network rate units" value={rateUnit} onChange={(value) => { if (value) setRateUnit(value as RateUnit) }} data={['B/s','kB/s','MB/s','GB/s','kb/s','Mb/s','Gb/s']} w={140} size="xs" />
-<Text size="sm" c="dimmed">Observed {timeLabel(selected.telemetryObservedAt)}</Text>
-</div>
-</Group>{latestMetrics.length === 0 ? <Text c="dimmed">No measurements were reported in the latest snapshot. Missing values are not treated as zero.</Text> : <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }}>{latestMetrics.map((metric, index) => <div className="metric-value" key={`${metric.name}-${JSON.stringify(metric.labels ?? {})}-${index}`}>
-<Text size="sm" c="dimmed">{prettyName(metric.name)}{metric.labels && Object.keys(metric.labels).length ? ` · ${Object.entries(metric.labels).map(([key, value]) => labelValue(key, value)).join(', ')}` : ''}</Text>
-<Text fw={700} size="xl">{formatValue(metric.value, metric.unit, rateUnit)}</Text>
-</div>)}</SimpleGrid>}{selected.latest?.host?.logicalCpus && latestMetrics.find((metric) => metric.name === 'cpu_used_percent') && <div className="cpu-estimate"><Text size="sm" c="dimmed">CPU in use (estimated)</Text><Text fw={700} size="lg">{((latestMetrics.find((metric) => metric.name === 'cpu_used_percent')!.value * selected.latest.host.logicalCpus) / 100).toFixed(2)} of {selected.latest.host.logicalCpus} logical cores</Text><Text size="xs" c="dimmed">Derived from total CPU capacity percent × logical CPU count.</Text></div>}</Card>
+      <DeviceMonitoring key={selected.id} device={selected} refresh={refresh} rateUnit={rateUnit} onRateUnitChange={setRateUnit} />
 
-      <Card withBorder radius="md" padding="lg">
+      <details className="monitoring-history"><summary>Compare metrics & explore history</summary><Card withBorder radius="md" padding="lg" mt="md">
 <Group justify="space-between" align="flex-start" mb="md">
 <div>
 <Title order={3}>Resource history</Title>
@@ -312,7 +301,7 @@ export function Devices({ section, selectedId, onSelect }: { section: 'devices' 
 </Group>
 </Checkbox.Group>{history.series.length > 64 && <Alert color="yellow" mt="sm">More than 64 label variants match. Select fewer metrics to keep the chart readable.</Alert>}<div className="chart-frame">
 <LineChartWrapper loading={historyLoading} series={history.series.slice(0,64)} range={range} history={history} normalized={normalized} onZoom={(start, end) => { if (!zoomBase) setZoomBase({ range, interval: appliedInterval }); setCustomStart(toLocalInput(start)); setCustomEnd(toLocalInput(end)); setAppliedInterval({ start: start.toISOString(), end: end.toISOString() }); setCustomError(''); setRange('custom') }} rateUnit={rateUnit} />
-</div>{range === 'custom' && <Button size="xs" variant="default" mt="sm" onClick={() => { setCustomStart(zoomBase?.interval ? toLocalInput(new Date(zoomBase.interval.start)) : ''); setCustomEnd(zoomBase?.interval ? toLocalInput(new Date(zoomBase.interval.end)) : ''); setAppliedInterval(zoomBase?.interval ?? null); setRange(zoomBase?.range ?? '24h'); setZoomBase(null); setCustomError('') }}>Reset zoom</Button>}</>}</Card>
+</div>{range === 'custom' && <Button size="xs" variant="default" mt="sm" onClick={() => { setCustomStart(zoomBase?.interval ? toLocalInput(new Date(zoomBase.interval.start)) : ''); setCustomEnd(zoomBase?.interval ? toLocalInput(new Date(zoomBase.interval.end)) : ''); setAppliedInterval(zoomBase?.interval ?? null); setRange(zoomBase?.range ?? '24h'); setZoomBase(null); setCustomError('') }}>Reset zoom</Button>}</>}</Card></details>
         </Stack></Tabs.Panel>
         <Tabs.Panel value="containers">      {selected.latest?.dockerContainers && selected.latest.dockerContainers.length > 0 && <Card withBorder radius="md" padding="lg">
 <Group justify="space-between" mb="md">
