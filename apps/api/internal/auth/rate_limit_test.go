@@ -70,6 +70,28 @@ func TestAttemptLimiterGlobalBudget(t *testing.T) {
 	}
 }
 
+func TestOAuthEndpointsShareAuthenticationBudget(t *testing.T) {
+	for _, path := range []string{"/oauth/authorize", "/oauth/register", "/oauth/token", "/oauth/revoke"} {
+		t.Run(path, func(t *testing.T) {
+			limiter := NewAttemptLimiter()
+			handler := limiter.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+			for i := 0; i < authPeerAttempts; i++ {
+				r := httptest.NewRequest(http.MethodPost, "/api/auth/login", nil)
+				r.RemoteAddr = "192.0.2.1:1234"
+				w := httptest.NewRecorder()
+				handler.ServeHTTP(w, r)
+			}
+			r := httptest.NewRequest(http.MethodPost, path, nil)
+			r.RemoteAddr = "192.0.2.1:5678"
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, r)
+			if w.Code != http.StatusTooManyRequests {
+				t.Fatalf("OAuth path bypassed password budget: %d", w.Code)
+			}
+		})
+	}
+}
+
 func TestAttemptLimiterConcurrency(t *testing.T) {
 	limiter := NewAttemptLimiter()
 	entered := make(chan struct{}, cap(limiter.active))

@@ -44,3 +44,5 @@ For local Restic snapshot browsing, repository checks, alternate-destination res
 For the native Android companion, its selected-file upload storage, and operator download API, see [Android companion setup](docs/android.md).
 
 Compose stack editing and deployment: [Git-backed stacks setup](docs/git-backed-stacks.md).
+
+Claude and ChatGPT monitoring tools: [MCP and OAuth setup](docs/mcp.md).

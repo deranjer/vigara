@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { Alert, Badge, Button, Card, Group, PasswordInput, Stack, Text, TextInput, Title } from '@mantine/core'
 import { PasswordWhitespaceWarning } from './password-warning'
 
@@ -11,6 +11,16 @@ export function Account({ user, onChanged, onSessionExpired }: { user: AccountUs
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState(false)
+
+  const [mcpEnabled, setMcpEnabled] = useState(false)
+  useEffect(() => {
+    let ignore = false
+    void fetch('/api/mcp/status', { credentials: 'same-origin' })
+      .then(async (response) => response.ok ? response.json() as Promise<{ enabled?: boolean }> : null)
+      .then((status) => { if (!ignore) setMcpEnabled(status?.enabled === true) })
+      .catch(() => { /* The account form remains usable if status is unavailable. */ })
+    return () => { ignore = true }
+  }, [])
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -51,5 +61,10 @@ export function Account({ user, onChanged, onSessionExpired }: { user: AccountUs
         <Button type="submit" loading={busy} disabled={!currentPassword || newPassword.length < 12 || newPassword !== confirmation} style={{ alignSelf: 'flex-start' }}>Change password</Button>
       </Stack></form>
     </Stack></Card>
+    {mcpEnabled && <Card withBorder radius="md" padding="lg"><Stack gap="sm">
+      <Title order={3}>Connected applications</Title>
+      <Text size="sm" c="dimmed">Manage access granted to Claude, ChatGPT, and other applications.</Text>
+      <a href="/oauth/connections">Manage connected applications</a>
+    </Stack></Card>}
   </Stack></section>
 }

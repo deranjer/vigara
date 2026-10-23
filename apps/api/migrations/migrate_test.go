@@ -71,7 +71,7 @@ func TestApplyFreshDatabaseAndRestart(t *testing.T) {
 	if err := Apply(u); err != nil {
 		t.Fatal(err)
 	}
-	assertVersion(t, conn, 18, false)
+	assertVersion(t, conn, 19, false)
 	if _, err := conn.Exec(context.Background(), "INSERT INTO devices (display_name) VALUES ('keep across restart')"); err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestApplyFreshDatabaseAndRestart(t *testing.T) {
 	if err := conn.QueryRow(context.Background(), "SELECT count(*) FROM devices WHERE display_name = 'keep across restart'").Scan(&count); err != nil || count != 1 {
 		t.Fatalf("restart lost data: count=%d err=%v", count, err)
 	}
-	assertVersion(t, conn, 18, false)
+	assertVersion(t, conn, 19, false)
 }
 
 func TestApplyUpgradesExistingMigrationHistory(t *testing.T) {
@@ -112,7 +112,7 @@ func TestApplyUpgradesExistingMigrationHistory(t *testing.T) {
 	if err := Apply(u); err != nil {
 		t.Fatalf("upgrade: %v", err)
 	}
-	assertVersion(t, conn, 18, false)
+	assertVersion(t, conn, 19, false)
 	var count int
 	if err := conn.QueryRow(context.Background(), "SELECT count(*) FROM devices WHERE display_name = 'keep across upgrade'").Scan(&count); err != nil || count != 1 {
 		t.Fatalf("upgrade lost data: count=%d err=%v", count, err)
@@ -135,7 +135,7 @@ func TestApplyConcurrentStarts(t *testing.T) {
 			t.Errorf("concurrent startup: %v", err)
 		}
 	}
-	assertVersion(t, conn, 18, false)
+	assertVersion(t, conn, 19, false)
 }
 
 func TestApplyRejectsFailedMigration(t *testing.T) {

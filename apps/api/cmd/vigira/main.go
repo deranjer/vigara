@@ -29,6 +29,7 @@ import (
 	"github.com/deranjer/vigara/apps/api/internal/database"
 	"github.com/deranjer/vigara/apps/api/internal/db"
 	"github.com/deranjer/vigara/apps/api/internal/inventoryview"
+	"github.com/deranjer/vigara/apps/api/internal/mcpserver"
 	"github.com/deranjer/vigara/apps/api/internal/notifications"
 	"github.com/deranjer/vigara/apps/api/internal/notifytransport"
 	"github.com/deranjer/vigara/apps/api/internal/stacks"
@@ -161,6 +162,31 @@ func main() {
 	router.Use(auth.NewAttemptLimiter().Middleware)
 	router.Use(authService.SessionMiddleware)
 	router.Use(authService.WriteGuard)
+	router.Get("/api/mcp/status", func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := authService.UserFromRequest(r); !ok {
+			http.Error(w, "login required", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_ = json.NewEncoder(w).Encode(map[string]bool{"enabled": cfg.MCPURL != ""})
+	})
+	var mcpHandler *mcpserver.Handler
+	if cfg.MCPURL != "" {
+		mcpHandler, err = mcpserver.New(database.Pool, authService, auditRecorder, cfg.MCPURL)
+		if err != nil {
+			logger.Error("invalid MCP configuration", "error", err)
+			os.Exit(1)
+		}
+		mcpMux := http.NewServeMux()
+		mcpHandler.Register(mcpMux)
+		router.Handle("/mcp", mcpMux)
+		router.Handle("/oauth/*", mcpMux)
+		router.Handle("/.well-known/oauth-protected-resource", mcpMux)
+		router.Handle("/.well-known/oauth-protected-resource/mcp", mcpMux)
+		router.Handle("/.well-known/oauth-authorization-server", mcpMux)
+		logger.Info("MCP enabled", "url", strings.TrimSuffix(cfg.MCPURL, "/")+"/mcp")
+	}
 	router.Get("/api/version", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"version": version, "revision": revision})
@@ -207,6 +233,9 @@ func main() {
 	server := &http.Server{Addr: cfg.Address, Handler: router, ReadHeaderTimeout: 5 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if mcpHandler != nil {
+		go mcpHandler.RunCleanup(ctx)
+	}
 	retention := telemetry.RetentionConfig{RawAge: time.Duration(cfg.TelemetryRawRetentionHours) * time.Hour, RollupAge: time.Duration(cfg.TelemetryRollupRetentionDays) * 24 * time.Hour}
 	go telemetry.RunRetentionWorker(ctx, telemetryStore, retention, logger)
 	go func() {
