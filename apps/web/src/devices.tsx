@@ -3,12 +3,13 @@ import { Alert, LoadingOverlay, Badge, Button, Card, Checkbox, Group, Loader, Se
 import { LineChart } from '@mantine/charts'
 import { ReferenceArea } from 'recharts'
 import { DeviceInfo, DeviceSettings, MonitoringOverview } from './device-panels'
+import { type HardwareInventory } from './device-info-utils'
 import { AddDevice } from './add-device'
 import { chartRows, formatMetric, type MetricSeries, type RateUnit } from './metric-utils'
 
 type Metric = { name: string; value: number; unit: string; labels?: Record<string, string> }
 type DockerContainer = { id: string; name?: string; image?: string; state: string }
-type Snapshot = { observedAt?: string; host?: { os?: string; osVersion?: string; architecture?: string; agentVersion?: string; cpuModel?: string; logicalCpus?: number; totalMemoryBytes?: number; uptimeSeconds?: number; hardwareInventory?: Record<string, unknown> }; metrics?: Metric[]; dockerContainers?: DockerContainer[]; errors?: { capability: string; message: string }[] }
+type Snapshot = { observedAt?: string; host?: { os?: string; osVersion?: string; architecture?: string; agentVersion?: string; cpuModel?: string; logicalCpus?: number; totalMemoryBytes?: number; uptimeSeconds?: number; hardwareInventory?: HardwareInventory }; metrics?: Metric[]; dockerContainers?: DockerContainer[]; errors?: { capability: string; message: string }[] }
 export type Device = { id: string; name: string; platformId?: string | null; status: 'healthy' | 'stale' | 'failed' | 'unsupported'; agentId?: string | null; platform: string; architecture: string; agentVersion: string; capabilities: string[]; lastSeenAt?: string | null; latest?: Snapshot; telemetryObservedAt?: string | null; collectionErrors?: Snapshot['errors'] }
 type Point = { at: string; value: number | null; min?: number; max?: number; samples: number; resolutionSeconds?: number }
 type Series = { name: string; unit: string; labels: Record<string, string>; points: Point[] }

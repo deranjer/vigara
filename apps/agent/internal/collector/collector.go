@@ -37,6 +37,8 @@ type counters struct {
 // Collector retains only the immediately previous I/O counters, needed to
 // calculate rates without reporting cumulative counters as throughput.
 type Collector struct {
+	hardware            *protocol.HardwareInventory
+	storage             storageSource
 	previousDisk        map[string]counters
 	previousDiskAt      time.Time
 	previousNet         map[string]counters
@@ -154,10 +156,12 @@ func (c *Collector) Collect(ctx context.Context) protocol.TelemetrySnapshot {
 		add("cpu_utilization", "cpu_used_percent", percentages[0], "%", nil)
 	}
 
-	if partitions, err := disk.PartitionsWithContext(ctx, false); err != nil {
-		fail("filesystem_capacity", err)
-	} else {
-		if len(partitions) == 0 {
+	{
+		partitions, err := c.storageSource().Partitions(ctx)
+		if err != nil {
+			fail("filesystem_capacity", err)
+		}
+		if len(partitions) == 0 && err == nil {
 			fail("filesystem_capacity", fmt.Errorf("no filesystem partitions returned"))
 		}
 		if len(partitions) > maxDevices {
@@ -167,9 +171,9 @@ func (c *Collector) Collect(ctx context.Context) protocol.TelemetrySnapshot {
 			if part.Mountpoint == "" {
 				continue
 			}
-			usage, err := disk.UsageWithContext(ctx, part.Mountpoint)
+			usage, err := c.storageSource().Usage(ctx, part.Mountpoint)
 			if err != nil {
-				fail("filesystem_capacity", err)
+				fail("filesystem_capacity", fmt.Errorf("volume %s: %w", part.Mountpoint, err))
 				continue
 			}
 			labels := map[string]string{"mount_path": part.Mountpoint, "filesystem": part.Fstype}
@@ -207,6 +211,15 @@ func (c *Collector) Collect(ctx context.Context) protocol.TelemetrySnapshot {
 	}
 	c.collectDocker(&snapshot, capabilities, fail, ctx)
 	c.collectSynology(&snapshot, capabilities, fail, ctx)
+	if ctx.Err() == nil {
+		if c.hardware == nil || snapshot.ObservedAt.Sub(c.hardware.ObservedAt) >= time.Hour {
+			c.hardware = collectHardware(ctx)
+		}
+		snapshot.Host.HardwareInventory = c.hardware
+		if c.hardware != nil {
+			capabilities["hardware_inventory"] = true
+		}
+	}
 	for capability := range capabilities {
 		snapshot.Capabilities = append(snapshot.Capabilities, capability)
 	}
@@ -273,13 +286,14 @@ func (c *Collector) collectDocker(snapshot *protocol.TelemetrySnapshot, capabili
 }
 
 func (c *Collector) collectDiskRates(ctx context.Context, now time.Time, add func(string, string, float64, string, map[string]string), fail func(string, error)) {
-	current, err := disk.IOCountersWithContext(ctx)
+	current, err := c.storageSource().IOCounters(ctx)
 	if err != nil {
 		fail("disk_throughput", err)
-		return
 	}
 	if len(current) == 0 {
-		fail("disk_throughput", fmt.Errorf("no disk counters returned"))
+		if err == nil {
+			fail("disk_throughput", fmt.Errorf("no disk counters returned"))
+		}
 		return
 	}
 	if len(current) > maxDevices {

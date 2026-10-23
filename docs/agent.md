@@ -1,5 +1,30 @@
 # Agent enrollment and services
 
+## Device hardware inventory
+
+Device info shows a used/free capacity bar for every filesystem in the latest
+telemetry snapshot. Bars represent each drive's own total capacity; missing free
+space remains unknown. Operating systems have platform-specific icons.
+
+Updated agents collect static hardware inventory on their first report and then
+refresh it hourly. The inventory has its own collection timestamp. Windows uses
+CIM to report graphics adapter names and driver versions, memory module slots,
+capacities and configured speeds, baseboard manufacturer/model/version, and BIOS
+manufacturer/version. GPU VRAM is omitted because the CIM AdapterRAM field cannot
+reliably represent modern adapter capacities. PowerShell runs without a visible
+window and has a 12-second timeout.
+
+Linux reads motherboard and BIOS information from sysfs and identifies display
+adapters by PCI vendor/device IDs and their bound driver. Memory module details
+require an installed `dmidecode` and permission to read SMBIOS data; the agent
+does not elevate privileges. This command has a three-second timeout. Other
+platforms report these inventory categories as unsupported. Missing tools,
+permission restrictions, or unavailable firmware tables leave individual
+categories unavailable without failing ordinary monitoring. Serial numbers are
+not included. Older agents continue to work and show unreported hardware fields.
+
+## Enrollment
+
 The API creates one-use enrollment tokens that are limited to a set of module
 capabilities. Sign in as an administrator, then create a token with the
 authenticated `POST /api/agents/enrollment-tokens` endpoint:
