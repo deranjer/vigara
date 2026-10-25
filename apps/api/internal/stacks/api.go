@@ -18,6 +18,7 @@ import (
 	"github.com/deranjer/vigara/apps/api/internal/auth"
 	"github.com/deranjer/vigara/apps/api/internal/channel"
 	"github.com/deranjer/vigara/internal/composesecrets"
+	"github.com/deranjer/vigara/internal/placement"
 	"github.com/deranjer/vigara/internal/protocol"
 	"github.com/deranjer/vigara/internal/stack"
 	"github.com/deranjer/vigara/internal/stackgit"
@@ -92,6 +93,8 @@ func FromEnv() (*stackgit.Repository, map[string]Binding, error) {
 func Register(mux *http.ServeMux, c Config) *API {
 	a := &API{c}
 	mux.HandleFunc("GET /api/stacks", a.list)
+	mux.HandleFunc("GET /api/stack-placements", a.getPlacements)
+	mux.HandleFunc("PUT /api/stack-placements", a.savePlacements)
 	mux.HandleFunc("POST /api/stacks", a.create)
 	mux.HandleFunc("GET /api/stacks/settings", a.getSettings)
 	mux.HandleFunc("PUT /api/stacks/settings", func(w http.ResponseWriter, r *http.Request) { a.editSettings(w, r, true) })
@@ -140,6 +143,10 @@ func (a *API) authorize(w http.ResponseWriter, r *http.Request, write bool) (aut
 }
 func fail(w http.ResponseWriter, e error) {
 	switch {
+	case errors.Is(e, errPlacementInactive):
+		http.Error(w, e.Error(), 409)
+	case errors.Is(e, placement.ErrInvalid):
+		http.Error(w, e.Error(), 422)
 	case errors.Is(e, stackgit.ErrConflict):
 		http.Error(w, e.Error(), 409)
 	case errors.Is(e, stackgit.ErrNotFound):
@@ -580,6 +587,10 @@ func (a *API) plan(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Select a saved revision.", 422)
 		return
 	}
+	if e = directPlacement(ctx, repo, r.PathValue("id")); e != nil {
+		fail(w, e)
+		return
+	}
 	s, e := repo.Read(ctx, r.PathValue("id"), q.Commit)
 	if e != nil {
 		fail(w, e)
@@ -619,6 +630,10 @@ func (a *API) deploy(w http.ResponseWriter, r *http.Request) {
 	}
 	if !stack.CommitPattern.MatchString(q.Commit) || len(q.Token) != 64 {
 		http.Error(w, "Review a deployment preview first.", 422)
+		return
+	}
+	if e = directPlacement(ctx, repo, r.PathValue("id")); e != nil {
+		fail(w, e)
 		return
 	}
 	s, e := repo.Read(ctx, r.PathValue("id"), q.Commit)
@@ -777,7 +792,11 @@ func (a *API) tick(ctx context.Context) {
 	}
 	var result stack.Result
 	callCtx, cancel := context.WithTimeout(ctx, 20*time.Minute)
-	e = a.Hub.Call(callCtx, agent, protocol.MethodComposeDeploy, stack.DeployRequest{Job: stack.Job{ID: id, Snapshot: s, Pull: pull}, Token: token}, &result)
+	if guard := a.checkDirectDeployment(callCtx, stackID, c); guard != nil {
+		result = stack.Result{Status: "failed", Stage: "validate", Message: "Deployment was not sent: current profile assignments or repository access require review."}
+	} else {
+		e = a.Hub.Call(callCtx, agent, protocol.MethodComposeDeploy, stack.DeployRequest{Job: stack.Job{ID: id, Snapshot: s, Pull: pull}, Token: token}, &result)
+	}
 	cancel()
 	if e != nil {
 		result = stack.Result{Status: "unknown", Stage: "reconcile", Message: "Device disconnected or did not confirm the outcome. Check device status before another deployment."}

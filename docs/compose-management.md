@@ -4,6 +4,8 @@ This contract defines portable Git data for Compose stacks, logical server profi
 
 ## Portable repository layout
 
+The [Profiles and assignments editor](stack-profiles.md) implements Git-backed authoring and validation of profiles and disabled assignments. Runtime profile binding, assignment deployment and fenced transfer remain pending. Existing direct deployment does not consume profile requirements.
+
 ```text
 compose-stacks/
   schema-version: 1 is carried by each Vigara manifest
