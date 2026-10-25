@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Alert, LoadingOverlay, Badge, Button, Card, Checkbox, Group, Loader, SegmentedControl, Select, SimpleGrid, Stack, Tabs, Table, Text, TextInput, Title } from '@mantine/core'
+import { Alert, LoadingOverlay, Badge, Button, Card, Checkbox, Group, Loader, Progress, SegmentedControl, Select, SimpleGrid, Stack, Tabs, Table, Text, TextInput, Title } from '@mantine/core'
 import { LineChart } from '@mantine/charts'
 import { ReferenceArea } from 'recharts'
 import { DeviceInfo, DeviceSettings, MonitoringOverview } from './device-panels'
@@ -56,6 +56,40 @@ function formatValue(value: number, unit: string, rateUnit: RateUnit = 'B/s') { 
 export function summaryMetric(device: Device, name: string, rateUnit: RateUnit = 'B/s') {
   const metrics = device.latest?.metrics?.filter((metric) => metric.name === name) ?? []
   return metrics.length ? metrics.map((metric) => `${formatValue(metric.value, metric.unit, rateUnit)}${metric.labels && Object.keys(metric.labels).length ? ` (${Object.values(metric.labels).join(', ')})` : ''}`).join(' · ') : '—'
+}
+
+function ResourceMeter({ device, name, label }: { device: Device; name: string; label: string }) {
+  const metrics = device.latest?.metrics?.filter((metric) => metric.name === name) ?? []
+  return <Stack gap={4} className="device-resource-meter">
+    {metrics.length ? metrics.map((metric, index) => {
+      const percent = Math.max(0, Math.min(100, metric.value))
+      const scope = Object.values(metric.labels ?? {}).join(' · ')
+      return <div key={`${name}:${scope}:${index}`}>
+        <Group justify="space-between" gap="xs" wrap="nowrap" mb={3}>
+          <Text size="xs" c="dimmed" truncate title={scope || label}>{scope || label}</Text>
+          <Text size="xs" fw={600} style={{ flexShrink: 0 }}>{formatValue(metric.value, metric.unit)}</Text>
+        </Group>
+        <Progress value={percent} size={6} color={percent >= 90 ? 'red' : percent >= 80 ? 'orange' : 'cyan'} aria-label={`${label}${scope ? ` ${scope}` : ''}: ${percent.toFixed(1)}%`} />
+      </div>
+    }) : <div><Text size="xs" c="dimmed">{label}</Text><Text size="sm" c="dimmed">No data</Text></div>}
+  </Stack>
+}
+
+function NetworkRates({ device }: { device: Device }) {
+  const directions = [
+    { label: '↓ Receive', name: 'network_receive_bytes_per_second' },
+    { label: '↑ Send', name: 'network_send_bytes_per_second' },
+  ]
+  return <SimpleGrid cols={2} spacing="xs">{directions.map(({ label, name }) => {
+    const metrics = device.latest?.metrics?.filter(metric => metric.name === name) ?? []
+    const first = metrics[0]
+    const scope = Object.values(first?.labels ?? {}).join(' · ')
+    return <div className="metric-value" key={name}>
+      <Text size="xs" c="dimmed">{label}</Text>
+      <Text size="sm" fw={600} truncate title={first ? `${formatValue(first.value, first.unit, 'MB/s')}${scope ? ` · ${scope}` : ''}` : 'No data'}>{first ? formatValue(first.value, first.unit, 'MB/s') : '—'}</Text>
+      {metrics.length > 1 && <Text size="xs" c="dimmed">+{metrics.length - 1} interfaces</Text>}
+    </div>
+  })}</SimpleGrid>
 }
 
 function labelValueForChart(key: string, value: string) { return key === 'container_id' ? value.slice(0, 12) : value }
@@ -170,6 +204,7 @@ export function Devices({ section, selectedId, onSelect }: { section: 'devices' 
     try { window.localStorage.setItem('vigara-device-view', value) } catch { /* Keep the selection for this session when storage is unavailable. */ }
   }
   const [monitoringTab, setMonitoringTab] = useState('dashboard')
+  const [monitoringPanel, setMonitoringPanel] = useState('overview')
   const [addDeviceOpen, setAddDeviceOpen] = useState(false)
   const [reinstallDevice, setReinstallDevice] = useState<Device | null>(null)
   const [allDevices, setAllDevices] = useState<Device[]>([]);
@@ -207,12 +242,12 @@ export function Devices({ section, selectedId, onSelect }: { section: 'devices' 
     const timer = window.setInterval(() => setRefresh((value) => value + 1), 30_000)
     return () => window.clearInterval(timer)
   }, [section, selectedId])
-  useEffect(() => { initialMetric.current = true; setZoomBase(null); setHistory(null); setHistoryError(''); setMetricNames([]); setCustomStart(''); setCustomEnd(''); setAppliedInterval(null); setRange('24h') }, [selectedId])
+  useEffect(() => { setMonitoringPanel('overview'); initialMetric.current = true; setZoomBase(null); setHistory(null); setHistoryError(''); setMetricNames([]); setCustomStart(''); setCustomEnd(''); setAppliedInterval(null); setRange('24h') }, [selectedId])
   useEffect(() => { setAvailability(null); if (!selectedId) return; let active = true; void get<Availability>(`/api/devices/${encodeURIComponent(selectedId)}/availability`).then((value) => { if (active) setAvailability(value) }).catch(() => { /* Availability rules are optional until configured. */ }); return () => { active = false } }, [selectedId, refresh])
-  useEffect(() => { if (!selectedId || detailTab !== 'monitoring') return; let active = true; setHistoryLoading(true); setHistoryError(''); const query = new URLSearchParams()
+  useEffect(() => { if (!selectedId || detailTab !== 'monitoring' || monitoringPanel !== 'history') return; let active = true; setHistoryLoading(true); setHistoryError(''); const query = new URLSearchParams()
     if (range === 'custom' && appliedInterval) { query.set('start', appliedInterval.start); query.set('end', appliedInterval.end) } else query.set('range', range === 'custom' ? '24h' : range)
     metricNames.slice(0, 5).forEach((name) => query.append('metrics', name))
-    void get<History>(`/api/inventory/devices/${encodeURIComponent(selectedId)}/history?${query}`).then((data) => { if (active) { setHistory(data); if (initialMetric.current && data.metrics.length) { initialMetric.current = false; setMetricNames([data.metrics[0]!]) } } }).catch((cause: unknown) => { if (active) setHistoryError(cause instanceof Error ? cause.message : 'Could not load metric history.') }).finally(() => { if (active) setHistoryLoading(false) }); return () => { active = false } }, [selectedId, detailTab, range, metricNames, appliedInterval, refresh])
+    void get<History>(`/api/inventory/devices/${encodeURIComponent(selectedId)}/history?${query}`).then((data) => { if (active) { setHistory(data); if (initialMetric.current && data.metrics.length) { initialMetric.current = false; setMetricNames([data.metrics[0]!]) } } }).catch((cause: unknown) => { if (active) setHistoryError(cause instanceof Error ? cause.message : 'Could not load metric history.') }).finally(() => { if (active) setHistoryLoading(false) }); return () => { active = false } }, [selectedId, detailTab, monitoringPanel, range, metricNames, appliedInterval, refresh])
 
   function backToList() { onSelect(null); setHistory(null); setError('') }
   function openDevice(id: string, tab = 'info') { setDetailTab(tab); onSelect(id); setError('') }
@@ -270,9 +305,13 @@ export function Devices({ section, selectedId, onSelect }: { section: 'devices' 
         <Tabs.Panel value="settings"><DeviceSettings key={selected.id} device={selected} onDeleted={() => { setAllDevices((current) => current.filter((item) => item.id !== selected.id)); onSelect(null); setRefresh((value) => value + 1) }} onSaved={() => setRefresh((value) => value + 1)} /></Tabs.Panel>
         <Tabs.Panel value="monitoring"><Stack gap="lg">
       {selected.collectionErrors && selected.collectionErrors.length > 0 && <Alert color="red" title="Collection errors">{selected.collectionErrors.map((item, index) => <Text key={`${item.capability}-${index}`} size="sm">{item.capability}: {item.message}</Text>)}</Alert>}
-      <DeviceMonitoring key={selected.id} device={selected} refresh={refresh} rateUnit={rateUnit} onRateUnitChange={setRateUnit} />
-
-      <details className="monitoring-history"><summary>Compare metrics & explore history</summary><Card withBorder radius="md" padding="lg" mt="md">
+      <Tabs value={monitoringPanel} onChange={(value) => { if (value) setMonitoringPanel(value) }} keepMounted={false}>
+      <Tabs.List mb="md">
+        <Tabs.Tab value="overview">Resource overview</Tabs.Tab>
+        <Tabs.Tab value="history">Compare metrics &amp; explore history</Tabs.Tab>
+      </Tabs.List>
+      <Tabs.Panel value="overview"><DeviceMonitoring key={selected.id} device={selected} refresh={refresh} rateUnit={rateUnit} onRateUnitChange={setRateUnit} /></Tabs.Panel>
+      <Tabs.Panel value="history"><Card withBorder radius="md" padding="lg">
 <Group justify="space-between" align="flex-start" mb="md">
 <div>
 <Title order={3}>Resource history</Title>
@@ -301,7 +340,8 @@ export function Devices({ section, selectedId, onSelect }: { section: 'devices' 
 </Group>
 </Checkbox.Group>{history.series.length > 64 && <Alert color="yellow" mt="sm">More than 64 label variants match. Select fewer metrics to keep the chart readable.</Alert>}<div className="chart-frame">
 <LineChartWrapper loading={historyLoading} series={history.series.slice(0,64)} range={range} history={history} normalized={normalized} onZoom={(start, end) => { if (!zoomBase) setZoomBase({ range, interval: appliedInterval }); setCustomStart(toLocalInput(start)); setCustomEnd(toLocalInput(end)); setAppliedInterval({ start: start.toISOString(), end: end.toISOString() }); setCustomError(''); setRange('custom') }} rateUnit={rateUnit} />
-</div>{range === 'custom' && <Button size="xs" variant="default" mt="sm" onClick={() => { setCustomStart(zoomBase?.interval ? toLocalInput(new Date(zoomBase.interval.start)) : ''); setCustomEnd(zoomBase?.interval ? toLocalInput(new Date(zoomBase.interval.end)) : ''); setAppliedInterval(zoomBase?.interval ?? null); setRange(zoomBase?.range ?? '24h'); setZoomBase(null); setCustomError('') }}>Reset zoom</Button>}</>}</Card></details>
+</div>{range === 'custom' && <Button size="xs" variant="default" mt="sm" onClick={() => { setCustomStart(zoomBase?.interval ? toLocalInput(new Date(zoomBase.interval.start)) : ''); setCustomEnd(zoomBase?.interval ? toLocalInput(new Date(zoomBase.interval.end)) : ''); setAppliedInterval(zoomBase?.interval ?? null); setRange(zoomBase?.range ?? '24h'); setZoomBase(null); setCustomError('') }}>Reset zoom</Button>}</>}</Card></Tabs.Panel>
+      </Tabs>
         </Stack></Tabs.Panel>
         <Tabs.Panel value="containers">      {selected.latest?.dockerContainers && selected.latest.dockerContainers.length > 0 && <Card withBorder radius="md" padding="lg">
 <Group justify="space-between" mb="md">
@@ -351,11 +391,11 @@ export function Devices({ section, selectedId, onSelect }: { section: 'devices' 
               <div className="device-card-identity"><Text fw={600} className="device-name">{device.name}</Text><Text size="xs" c="dimmed">{[device.platform, device.architecture].filter(Boolean).join(' · ') || 'Platform not reported'}</Text></div>
               <Badge color={statusColor[device.status]} variant="light" style={{ flexShrink: 0 }}>{statusLabel[device.status]}</Badge>
             </Group>
-            <SimpleGrid cols={2} spacing="xs">
-              <div className="metric-value"><Text size="xs" c="dimmed">CPU</Text><Text fw={600}>{summaryMetric(device, 'cpu_used_percent')}</Text></div>
-              <div className="metric-value"><Text size="xs" c="dimmed">Memory</Text><Text fw={600}>{summaryMetric(device, 'memory_used_percent')}</Text></div>
+            <SimpleGrid cols={2} spacing="md">
+              <ResourceMeter device={device} name="cpu_used_percent" label="CPU" />
+              <ResourceMeter device={device} name="memory_used_percent" label="Memory" />
             </SimpleGrid>
-            {section === 'monitoring' && <div><Text size="xs" c="dimmed">Network receive / send</Text><Text size="sm">↓ {summaryMetric(device, 'network_receive_bytes_per_second', 'MB/s')} · ↑ {summaryMetric(device, 'network_send_bytes_per_second', 'MB/s')}</Text></div>}
+            {section === 'monitoring' && <NetworkRates device={device} />}
             {healthIssuesOnly && <DeviceHealthIssues device={device} />}
             <Text size="xs" c="dimmed" title={timeLabel(device.lastSeenAt)}>Last check-in · {relativeLabel(device.lastSeenAt)}</Text>
             <Button variant="light" fullWidth mt="auto" onClick={() => openDevice(device.id, section === 'monitoring' ? 'monitoring' : 'info')} aria-label={`View ${device.name}`}>View device</Button>

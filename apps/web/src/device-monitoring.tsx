@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Alert, Badge, Button, Card, Group, Loader, Progress, SegmentedControl, Select, SimpleGrid, Stack, Text, Title } from '@mantine/core'
+import { Alert, Badge, Button, Card, Group, Loader, Progress, SegmentedControl, Select, SimpleGrid, Stack, Tabs, Text, Title } from '@mantine/core'
 import { LineChart } from '@mantine/charts'
 import { type Device } from './devices'
 import { chartRows, formatMetric, type MetricSeries, type RateUnit } from './metric-utils'
@@ -55,7 +55,9 @@ function ResourceCard({ card, history, loading, failed, rateUnit, logicalCpus }:
 export function DeviceMonitoring({ device, refresh, rateUnit, onRateUnitChange }: { device: Device; refresh: number; rateUnit: RateUnit; onRateUnitChange: (unit: RateUnit) => void }) {
   const [range, setRange] = useState('24h')
   const [retry, setRetry] = useState(0)
+  const [selectedSection, setSelectedSection] = useState<string | null>(null)
   const sections = useMemo(() => monitoringSections(device.latest?.metrics ?? [], device.latest?.dockerContainers), [device.latest])
+  const activeSection = sections.some(section => section.id === selectedSection) ? selectedSection : sections[0]?.id ?? null
   const names = JSON.stringify([...new Set(sections.flatMap(section => section.groups.flatMap(group => group.cards.flatMap(card => card.trends.map(metric => metric.name)))))].sort())
   const requestKey = `${device.id}:${range}:${names}:${refresh}:${retry}`
   const [state, setState] = useState<TrendState>({ key: '', history: null, loading: true, error: '' })
@@ -103,14 +105,17 @@ export function DeviceMonitoring({ device, refresh, rateUnit, onRateUnitChange }
     </Group>
     {current.error && <Alert color="yellow" title="Trends unavailable">{current.error}<Button size="xs" variant="light" ml="sm" onClick={() => setRetry(value => value + 1)}>Retry trends</Button></Alert>}
     {!sections.length && <Text c="dimmed">No measurements were reported in the latest snapshot. Missing values are not treated as zero.</Text>}
-    {sections.map(section => <section key={section.id} aria-labelledby={`monitoring-${section.id}`}>
+    {!!sections.length && <Tabs value={activeSection} onChange={setSelectedSection} keepMounted={false}>
+      <Tabs.List mb="md">{sections.map(section => <Tabs.Tab key={section.id} value={section.id}>{section.title}</Tabs.Tab>)}</Tabs.List>
+      {sections.map(section => <Tabs.Panel key={section.id} value={section.id}>
       <Title order={4} id={`monitoring-${section.id}`} mb={4}>{section.title}</Title>
       <Text size="sm" c="dimmed" mb="md">{section.description}</Text>
       <div className="monitoring-groups">{section.groups.map(group => <div className={`${group.title ? 'monitoring-resource-group' : ''} ${group.cards.length > 1 ? 'monitoring-group-wide' : ''}`} key={group.id}>
         {group.title && <Text fw={600} size="sm" mb="sm" className="monitoring-group-label">{group.title}</Text>}
         <SimpleGrid cols={{ base: 1, sm: Math.min(2, group.cards.length), xl: Math.min(3, group.cards.length) }} spacing="md">{group.cards.map(card => <ResourceCard key={card.id} card={card} history={current.history} loading={current.loading} failed={!!current.error} rateUnit={rateUnit} logicalCpus={device.latest?.host?.logicalCpus} />)}</SimpleGrid>
       </div>)}</div>
-    </section>)}
+      </Tabs.Panel>)}
+    </Tabs>}
     {current.history && <Text size="xs" c="dimmed">Trends: {new Date(current.history.windowStart).toLocaleString()} – {new Date(current.history.windowEnd).toLocaleString()}. Hover for values. Gaps indicate missing measurements.</Text>}
   </Stack>
 }
