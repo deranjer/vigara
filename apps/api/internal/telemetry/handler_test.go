@@ -418,4 +418,18 @@ func TestRetentionConfigRequiresAlertCompatibleRawWindow(t *testing.T) {
 	if err := base.Validate(); err != nil {
 		t.Fatalf("rejected the 25-hour minimum raw window: %v", err)
 	}
+	base.RawAge = 30 * 24 * time.Hour
+	base.RollupAge = 365 * 24 * time.Hour
+	if err := base.Validate(); err != nil {
+		t.Fatalf("rejected monthly raw/yearly summary policy: %v", err)
+	}
+	base.RawAge += time.Hour
+	if err := base.Validate(); err == nil {
+		t.Fatal("accepted raw retention above 30 days")
+	}
+	base.RawAge = 30 * 24 * time.Hour
+	base.RollupAge += time.Hour
+	if err := base.Validate(); err == nil {
+		t.Fatal("accepted summary retention above 365 days")
+	}
 }

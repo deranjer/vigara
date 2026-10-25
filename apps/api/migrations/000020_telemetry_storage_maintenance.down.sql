@@ -1,0 +1,4 @@
+ALTER TABLE agent_telemetry RESET (autovacuum_vacuum_scale_factor, autovacuum_analyze_scale_factor);
+ALTER TABLE agent_telemetry_latest RESET (autovacuum_vacuum_scale_factor, autovacuum_analyze_scale_factor);
+ALTER TABLE telemetry_metric_rollups RESET (autovacuum_vacuum_scale_factor, autovacuum_analyze_scale_factor);
+ALTER TABLE telemetry_report_dedup RESET (autovacuum_vacuum_scale_factor, autovacuum_analyze_scale_factor);
