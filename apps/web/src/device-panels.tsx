@@ -1,9 +1,9 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { Alert, Badge, Button, Card, Checkbox, Group, Loader, MultiSelect, Modal, Progress, SimpleGrid, Stack, Text, TextInput, Title } from '@mantine/core'
-import { IconBrandWindowsFilled, IconBrandAppleFilled, IconDeviceDesktopQuestion } from '@tabler/icons-react'
+import { IconBrandWindowsFilled, IconBrandAppleFilled, IconBrandDebian, IconBrandRedhat, IconBrandUbuntu, IconDeviceDesktopQuestion, IconTerminal2 } from '@tabler/icons-react'
 import { type Device } from './devices'
 import { driveUsage, operatingSystem, type HardwareComponent } from './device-info-utils'
-import { formatMetric } from './metric-utils'
+import { formatDuration, formatMetric } from './metric-utils'
 
 type Awake = { weekdays: string[]; start: string; end: string; timezone: string }
 type Availability = { awake: Awake | null; expectedAwake: boolean; maintenanceActive: boolean; maintenance: { id: string; startsAt: string; endsAt: string }[] }
@@ -17,9 +17,15 @@ async function read<T>(path: string): Promise<T> {
 const date = (value?: string | null) => value ? new Date(value).toLocaleString() : 'Not reported'
 
 function OSLogo({ os }: { os: string }) {
-  const kind = operatingSystem(os)
+  const value = os.toLowerCase()
+  const kind = operatingSystem(value)
   if (kind === 'windows') return <IconBrandWindowsFilled size={28} color="#0078d4" aria-label="Windows" />
-  if (kind === 'linux') return <svg width="28" height="32" viewBox="0 0 28 32" role="img" aria-label="Linux"><ellipse cx="14" cy="17" rx="10" ry="13" fill="#242424" /><ellipse cx="14" cy="21" rx="7" ry="9" fill="#fff" /><ellipse cx="10" cy="9" rx="3" ry="4" fill="#fff" /><ellipse cx="18" cy="9" rx="3" ry="4" fill="#fff" /><circle cx="11" cy="10" r="1.4" /><circle cx="17" cy="10" r="1.4" /><path d="M9 14 14 11 19 14 14 17Z" fill="#f6bf26" /><ellipse cx="7" cy="29" rx="6" ry="2.5" fill="#f6bf26" /><ellipse cx="21" cy="29" rx="6" ry="2.5" fill="#f6bf26" /></svg>
+  if (kind === 'linux') {
+    if (/\b(ubuntu|kubuntu|xubuntu|lubuntu|edubuntu)\b/.test(value)) return <IconBrandUbuntu size={28} color="#e95420" aria-label="Ubuntu" />
+    if (/\bdebian\b/.test(value)) return <IconBrandDebian size={28} color="#a80030" aria-label="Debian" />
+    if (/\b(red hat|redhat|rhel)\b/.test(value)) return <IconBrandRedhat size={28} color="#ee0000" aria-label="Red Hat" />
+    return <IconTerminal2 size={28} aria-label="Linux" />
+  }
   if (kind === 'macos') return <IconBrandAppleFilled size={28} aria-label="macOS" />
   return <IconDeviceDesktopQuestion size={28} aria-label="Unknown operating system" />
 }
@@ -46,10 +52,10 @@ export function DeviceInfo({ device, onReinstall }: { device: Device; onReinstal
     ['Installed memory', host?.totalMemoryBytes ? formatMetric(host.totalMemoryBytes, 'By') : 'Not reported'],
     ['Architecture', host?.architecture || device.architecture || 'Not reported'],
     ['Agent version', host?.agentVersion || device.agentVersion || 'Not reported'],
-    ['Uptime at observation', host?.uptimeSeconds === undefined ? 'Not reported' : `${Math.floor(host.uptimeSeconds / 86400)} days, ${Math.floor(host.uptimeSeconds / 3600) % 24} hours`],
+    ['Uptime at observation', host?.uptimeSeconds === undefined ? 'Not reported' : formatDuration(host.uptimeSeconds)],
   ]
   return <Stack>
-    <Card withBorder padding="lg"><Title order={3} mb="xs">Hardware and system</Title><Text size="sm" c="dimmed" mb="lg">{device.telemetryObservedAt ? `Reported ${date(device.telemetryObservedAt)}. These details describe the latest agent snapshot.` : 'No hardware snapshot has been reported for this device.'}</Text><SimpleGrid cols={{base: 1, sm: 2, lg: 3}}><Group gap="sm" wrap="nowrap"><OSLogo os={os} /><div><Text size="xs" c="dimmed">Operating system</Text><Text fw={500}>{[os, host?.osVersion].filter(Boolean).join(' ')}</Text></div></Group>{fields.map(([label, value]) => <div key={label}><Text size="xs" c="dimmed">{label}</Text><Text fw={500}>{value}</Text></div>)}</SimpleGrid></Card>
+    <Card withBorder padding="lg"><Title order={3} mb="xs">Hardware and system</Title><Text size="sm" c="dimmed" mb="lg">{device.telemetryObservedAt ? `Reported ${date(device.telemetryObservedAt)}. These details describe the latest agent snapshot.` : 'No hardware snapshot has been reported for this device.'}</Text><SimpleGrid cols={{base: 1, sm: 2, lg: 3}}><Group gap="sm" wrap="nowrap"><div><Text size="xs" c="dimmed">Operating system</Text><Text fw={500}>{[os, host?.osVersion].filter(Boolean).join(' ')}</Text></div><OSLogo os={[os, host?.osVersion].filter(Boolean).join(' ')} /></Group>{fields.map(([label, value]) => <div key={label}><Text size="xs" c="dimmed">{label}</Text><Text fw={500}>{value}</Text></div>)}</SimpleGrid></Card>
     <Card withBorder padding="lg"><Group justify="space-between" mb="xs"><Title order={3}>Disk space</Title><Badge variant="light">{drives.length} {drives.length === 1 ? 'drive' : 'drives'}</Badge></Group><Text size="sm" c="dimmed" mb="lg">Used and free space for each reported filesystem. Each bar represents that drive’s total capacity.</Text>
       {drives.length ? <Stack gap="lg">{drives.map(drive => <div key={drive.key}>
         <Group justify="space-between" mb={6}><Group gap="xs"><Text fw={600}>{drive.mount}</Text>{drive.filesystem && <Badge color="gray" variant="light" size="sm">{drive.filesystem}</Badge>}</Group><Text size="sm">{drive.used === null ? 'Usage unavailable' : `${formatMetric(drive.used, 'By')} used`} / {formatMetric(drive.total, 'By')} total</Text></Group>
