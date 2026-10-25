@@ -32,7 +32,7 @@ async function get<T>(path: string): Promise<T> {
 
 const statusColor = { healthy: 'green', stale: 'yellow', failed: 'red', unsupported: 'gray' } as const
 const statusLabel = { healthy: 'Healthy', stale: 'Stale', failed: 'Failed', unsupported: 'Unsupported' } as const
-const ranges = [{ label: '1 hour', value: '1h' }, { label: '6 hours', value: '6h' }, { label: '24 hours', value: '24h' }, { label: '7 days', value: '7d' }, { label: '30 days', value: '30d' }]
+const ranges = [{ label: '1 hour', value: '1h' }, { label: '6 hours', value: '6h' }, { label: '24 hours', value: '24h' }, { label: '7 days', value: '7d' }, { label: '30 days', value: '30d' }, { label: '90 days', value: '90d' }, { label: '1 year', value: '365d' }]
 
 function timeLabel(value?: string | null) { return value ? new Date(value).toLocaleString() : 'Never' }
 function relativeLabel(value?: string | null) {
@@ -283,7 +283,7 @@ export function Devices({ section, selectedId, onSelect }: { section: 'devices' 
 <Group align="end" mb="md">
 <TextInput type="datetime-local" step="0.001" label="Start" value={customStart} onChange={(event) => { setCustomStart(event.currentTarget.value) }} />
 <TextInput type="datetime-local" step="0.001" label="End" value={customEnd} onChange={(event) => { setCustomEnd(event.currentTarget.value) }} />
-<Button variant="light" onClick={() => { const start = new Date(customStart); const end = new Date(customEnd); const now = new Date(); if (!customStart || !customEnd || !Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || start >= end || end.getTime() - start.getTime() > 30 * 86400000 || end > new Date(now.getTime() + 60000)) { setCustomError('Enter a valid interval up to 30 days ending no more than one minute in the future.'); return } setZoomBase(null); setCustomError(''); setAppliedInterval({ start: start.toISOString(), end: end.toISOString() }); setRange('custom') }}>Apply interval</Button>
+<Button variant="light" onClick={() => { const start = new Date(customStart); const end = new Date(customEnd); const now = new Date(); if (!customStart || !customEnd || !Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || start >= end || end.getTime() - start.getTime() > 365 * 86400000 || end > new Date(now.getTime() + 60000)) { setCustomError('Enter a valid interval up to 365 days ending no more than one minute in the future.'); return } setZoomBase(null); setCustomError(''); setAppliedInterval({ start: start.toISOString(), end: end.toISOString() }); setRange('custom') }}>Apply interval</Button>
 <Text size="xs" c="dimmed">Timezone: {Intl.DateTimeFormat().resolvedOptions().timeZone}</Text>
 </Group>{customError && <Alert color="red" mb="sm">{customError}</Alert>}<Group justify="space-between" mb="sm">
 <Text size="sm" fw={600}>Overlay metrics</Text>

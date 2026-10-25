@@ -20,37 +20,36 @@ type sampleAggregate struct {
 	sum, min, max float64
 }
 
-// Retain folds a bounded set of old snapshots into UTC hourly aggregates and
-// removes the corresponding raw rows in the same transaction.
+// Retain drains expired history in small transactions until it is caught up or
+// ctx expires. Each transaction aggregates and removes its raw rows atomically.
 func (s postgresStore) Retain(ctx context.Context, cfg RetentionConfig, now time.Time) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
-	for batch := 0; batch < 10; batch++ {
+	// Each transaction stays small, but a pass drains all eligible work until
+	// its context expires. A fixed batch cap can permanently fall behind intake.
+	for {
 		done, err := s.retainBatch(ctx, cfg, now)
 		if err != nil {
 			return err
 		}
 		if done {
-			break
+			return nil
 		}
 	}
-	return nil
 }
 
-// retainBatch returns done when no raw samples remain eligible for rollup.
+// retainBatch returns done when raw and auxiliary cleanup are both caught up.
 func (s postgresStore) retainBatch(ctx context.Context, cfg RetentionConfig, now time.Time) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback(ctx)
-	var acquired bool
-	if err = tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock(140006)`).Scan(&acquired); err != nil {
+	// Waiting is bounded by the pass context. Lock contention is not evidence
+	// that cleanup completed, and must not masquerade as an empty backlog.
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(140006)`); err != nil {
 		return false, err
-	}
-	if !acquired {
-		return true, nil
 	}
 	rows, err := tx.Query(ctx, `SELECT id,agent_id::text,observed_at,payload FROM agent_telemetry WHERE observed_at < $1 ORDER BY observed_at LIMIT 500 FOR UPDATE SKIP LOCKED`, now.Add(-cfg.RawAge))
 	if err != nil {
@@ -152,26 +151,37 @@ func (s postgresStore) retainBatch(ctx context.Context, cfg RetentionConfig, now
 			return false, err
 		}
 	}
-	if _, err = tx.Exec(ctx, `DELETE FROM telemetry_metric_rollups WHERE ctid IN (SELECT ctid FROM telemetry_metric_rollups WHERE bucket_start < $1 LIMIT 10000)`, now.Add(-cfg.RollupAge)); err != nil {
+	rollupDelete, err := tx.Exec(ctx, `DELETE FROM telemetry_metric_rollups WHERE ctid IN (SELECT ctid FROM telemetry_metric_rollups WHERE bucket_start < $1 LIMIT 10000)`, now.Add(-cfg.RollupAge))
+	if err != nil {
 		return false, err
 	}
-	if _, err = tx.Exec(ctx, `DELETE FROM telemetry_report_dedup WHERE ctid IN (SELECT ctid FROM telemetry_report_dedup WHERE received_at < $1 LIMIT 10000)`, now.Add(-(48*time.Hour + 5*time.Minute))); err != nil {
+	dedupDelete, err := tx.Exec(ctx, `DELETE FROM telemetry_report_dedup WHERE ctid IN (SELECT ctid FROM telemetry_report_dedup WHERE received_at < $1 LIMIT 10000)`, now.Add(-(48*time.Hour + 5*time.Minute)))
+	if err != nil {
 		return false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, err
 	}
-	return len(raw) == 0, nil
+	// Expired rollups and dedup keys must drain even when no raw rows remain.
+	return len(raw) == 0 && rollupDelete.RowsAffected() < 10000 && dedupDelete.RowsAffected() < 10000, nil
 }
 
 func RunRetentionWorker(ctx context.Context, store Store, cfg RetentionConfig, logger *slog.Logger) {
-	ticker := time.NewTicker(15 * time.Minute)
+	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	run := func() {
-		workCtx, cancel := context.WithTimeout(ctx, time.Minute)
+		workCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 		defer cancel()
-		if err := store.Retain(workCtx, cfg, time.Now().UTC()); err != nil {
+		started := time.Now()
+		if err := store.Retain(workCtx, cfg, started.UTC()); err != nil {
 			logger.Error("telemetry retention failed", "error", err)
+		}
+		if reporter, ok := store.(interface {
+			LogStorageHealth(context.Context, RetentionConfig, *slog.Logger)
+		}); ok && ctx.Err() == nil {
+			healthCtx, healthCancel := context.WithTimeout(ctx, 5*time.Second)
+			reporter.LogStorageHealth(healthCtx, cfg, logger.With("retention_duration_ms", time.Since(started).Milliseconds()))
+			healthCancel()
 		}
 	}
 	run()

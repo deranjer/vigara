@@ -8,7 +8,7 @@ import { labelKey, measurementName, monitoringSections, type MonitoringCard } fr
 type TrendHistory = { series: MetricSeries[]; resolutionSeconds: number; windowStart: string; windowEnd: string }
 type TrendState = { key: string; history: TrendHistory | null; loading: boolean; error: string }
 const colors = ['cyan.6', 'grape.5', 'teal.6', 'orange.6']
-const intervals = [{ label: '1h', value: '1h' }, { label: '6h', value: '6h' }, { label: '24h', value: '24h' }, { label: '7d', value: '7d' }]
+const intervals = [{ label: '1h', value: '1h' }, { label: '6h', value: '6h' }, { label: '24h', value: '24h' }, { label: '7d', value: '7d' }, { label: '30d', value: '30d' }, { label: '90d', value: '90d' }, { label: '1y', value: '365d' }]
 
 function Trend({ card, history, loading, failed, rateUnit }: { card: MonitoringCard; history: TrendHistory | null; loading: boolean; failed: boolean; rateUnit: RateUnit }) {
   const series = useMemo(() => card.trends.flatMap(metric => history?.series.filter(item => item.name === metric.name && labelKey(item.labels) === labelKey(metric.labels)) ?? []), [card, history])

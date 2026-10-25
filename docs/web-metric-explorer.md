@@ -6,7 +6,7 @@ Device history uses Mantine LineChart. Select up to five metric names; label var
 
 Presets retain the page position. Start/end fields are drafts until Apply interval. They use the displayed browser timezone and accept seconds/milliseconds. Drag the plot to zoom, then Reset zoom restores the pre-zoom range. Exact bounds filter raw observations. Retained hourly summaries are included only when the complete summary hour fits; sub-hour values cannot be reconstructed. Point-level resolution preserves recent minute data when mixed with older hourly summaries.
 
-History API retains the legacy `range`/`metric` query. It additionally accepts paired RFC3339 `start`/`end` values and up to five repeated `metrics` parameters. Intervals must be positive, at most 30 days, and end no more than one minute in the future. Authentication and origin checks still apply.
+History API retains the legacy `range`/`metric` query. It additionally accepts paired RFC3339 `start`/`end` values and up to five repeated `metrics` parameters. Intervals must be positive, at most 365 days, and end no more than one minute in the future. Presets include 90 days and one year. Wide multi-series charts combine whole hours to stay within the 20,000-point limit; zooming restores stored detail. Raw detail defaults to 30 days, followed by hourly summaries through day 365. Authentication and origin checks still apply.
 
 Network values are stored in bytes per second (`By/s`) but displayed as B/s, kB/s, MB/s, GB/s, kb/s, Mb/s or Gb/s. Units use decimal prefixes; bit units multiply bytes by eight. CPU cores in use is explicitly an estimate from total CPU-capacity percentage times reported logical CPU count. Disk totals are shown only when reported.
 

@@ -26,8 +26,8 @@ func Load() (Config, error) {
 		MCPURL:                       envcompat.Getenv("VIGARA_MCP_URL"),
 		Address:                      envOr("VIGIRA_ADDR", ":8080"),
 		DatabaseURL:                  envOr("VIGIRA_DATABASE_URL", "postgres://vigira:vigira@localhost:5432/vigira?sslmode=disable"),
-		TelemetryRawRetentionHours:   48,
-		TelemetryRollupRetentionDays: 90,
+		TelemetryRawRetentionHours:   30 * 24,
+		TelemetryRollupRetentionDays: 365,
 		AndroidBackupRoot:            envcompat.Getenv("VIGARA_ANDROID_BACKUP_ROOT"),
 		AndroidBackupMaxFileBytes:    512 << 20,
 		AndroidBackupMaxTotalBytes:   100 << 30,
@@ -42,7 +42,7 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("VIGIRA_COOKIE_SECURE must be true or false: %w", err)
 	}
 	cfg.SecureSessionCookie = secure
-	if err := parseBoundedInt("VIGIRA_TELEMETRY_RAW_RETENTION_HOURS", &cfg.TelemetryRawRetentionHours, 25, 168); err != nil {
+	if err := parseBoundedInt("VIGIRA_TELEMETRY_RAW_RETENTION_HOURS", &cfg.TelemetryRawRetentionHours, 25, 30*24); err != nil {
 		return Config{}, err
 	}
 	if err := parseBoundedInt("VIGIRA_TELEMETRY_ROLLUP_RETENTION_DAYS", &cfg.TelemetryRollupRetentionDays, (cfg.TelemetryRawRetentionHours+23)/24, 365); err != nil {
