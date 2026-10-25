@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Alert, Badge, Button, Card, Group, Loader, Modal, Pagination, SegmentedControl, Select, SimpleGrid, Stack, Table, Text, TextInput, Title } from '@mantine/core'
 import { filterStacks, stackContainers, stackStatus, type StackHost, type StackSummary } from './stack-list-utils'
+import { StackProfiles } from './stack-profiles'
 
 async function request<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
   const response = await fetch(path, { method, credentials: 'same-origin', headers: body === undefined ? undefined : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })
@@ -28,6 +29,7 @@ export function StackList({ onOpen }: { onOpen: (id: string) => void }) {
   const [view, setView] = useState(() => { try { return localStorage.getItem('vigara.stack-view') === 'table' ? 'table' : 'cards' } catch { return 'cards' } })
   const [creating, setCreating] = useState(false)
   const [settings, setSettings] = useState(false)
+  const [profiles, setProfiles] = useState(false)
   useEffect(() => {
     let active = true
     setLoading(true)
@@ -47,6 +49,7 @@ export function StackList({ onOpen }: { onOpen: (id: string) => void }) {
   const empty = listing?.stacks.length ? 'No stacks match your search and device filter.' : 'Create your first stack to start editing and deploying from Vigara.'
   return <section className="devices-page"><Stack gap="lg">
     <Group justify="space-between" align="start"><div><Text size="sm" c="dimmed" tt="uppercase">Docker Stacks</Text><Title order={1}>Compose stacks</Title><Text c="dimmed" mt="xs">Your applications, devices and deployment status in one place.</Text></div><Group><Button variant="default" onClick={() => setSettings(true)}>Git settings</Button><Button variant="default" loading={loading} onClick={() => setRefresh((value) => value + 1)}>Refresh</Button><Button disabled={!listing?.configured || loading} onClick={() => setCreating(true)}>New stack</Button></Group></Group>
+    <Group><Button variant="default" disabled={!listing?.configured || loading} onClick={() => setProfiles(true)}>Profiles and assignments</Button></Group>
     {error && <Alert color="red" title="Could not load stacks">{error}</Alert>}
     {inventoryError && <Alert color="yellow">{inventoryError}</Alert>}
     {!listing && loading && <Loader />}
@@ -62,6 +65,7 @@ export function StackList({ onOpen }: { onOpen: (id: string) => void }) {
     </>}
     <Modal opened={creating} onClose={() => setCreating(false)} title="New Compose stack" size="lg" centered>{creating && <NewStack approved={listing?.targets?.filter((target) => !listing.stacks.some((stack) => stack.id === target.id)) ?? []} onOpen={onOpen} />}</Modal>
     <Modal opened={settings} onClose={() => setSettings(false)} title="Git settings" size="lg" centered>{settings && <GitSettings onSaved={() => { setSettings(false); setRefresh((value) => value + 1) }} />}</Modal>
+    <Modal opened={profiles} onClose={() => {}} withCloseButton={false} closeOnEscape={false} closeOnClickOutside={false} title="Server profiles and assignments" size="xl" centered>{profiles && <StackProfiles stacks={listing?.stacks ?? []} onClose={() => setProfiles(false)} />}</Modal>
   </Stack></section>
 }
 

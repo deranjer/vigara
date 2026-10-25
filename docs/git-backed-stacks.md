@@ -12,6 +12,8 @@ The Compose stacks page provides Cards and Table views, search across stack/proj
 
 ## Repository setup
 
+Administrators can prepare logical server profiles and disabled placement manifests through **Profiles and assignments**. See [server profiles and assignment manifests](stack-profiles.md). These manifests are saved to Git; activating them and binding profiles to agents remain separate work.
+
 Use a dedicated repository with an existing branch and at least one initial commit. Configure these variables on the API server:
 
 ```text

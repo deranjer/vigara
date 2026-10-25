@@ -265,7 +265,7 @@ func (r *Repository) Save(ctx context.Context, s stack.Snapshot, actor string) (
 	}
 	for p := range current.Files {
 		if _, ok := s.Files[p]; !ok {
-			if _, e = r.run(ctx, "", env, "update-index", "--force-remove", "--", "stacks/"+s.ID+"/"+p); e != nil {
+			if _, e = r.run(ctx, "0 "+strings.Repeat("0", len(head))+"\tstacks/"+s.ID+"/"+p+"\n", env, "update-index", "--index-info"); e != nil {
 				return result, e
 			}
 		}

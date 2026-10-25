@@ -32,15 +32,26 @@ type gitSettings struct {
 }
 
 func (a *API) settings(ctx context.Context) (gitSettings, error) {
+	if a.Pool == nil {
+		return a.readSettings(ctx, nil)
+	}
+	return a.readSettings(ctx, a.Pool)
+}
+
+type settingsReader interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+func (a *API) readSettings(ctx context.Context, reader settingsReader) (gitSettings, error) {
 	s := gitSettings{Branch: "main"}
 	if a.Repository != nil {
 		s.Remote = a.Repository.Remote
 		s.Branch = a.Repository.Branch
 	}
-	if a.Pool == nil {
+	if reader == nil {
 		return s, nil
 	}
-	e := a.Pool.QueryRow(ctx, "SELECT remote,branch,version FROM stack_git_settings WHERE singleton=true").Scan(&s.Remote, &s.Branch, &s.Version)
+	e := reader.QueryRow(ctx, "SELECT remote,branch,version FROM stack_git_settings WHERE singleton=true").Scan(&s.Remote, &s.Branch, &s.Version)
 	if errors.Is(e, pgx.ErrNoRows) {
 		return s, nil
 	}
@@ -51,6 +62,10 @@ func (a *API) repository(ctx context.Context) (*stackgit.Repository, error) {
 	if e != nil || s.Remote == "" {
 		return nil, e
 	}
+	return a.repositoryFromSettings(s), nil
+}
+
+func (a *API) repositoryFromSettings(s gitSettings) *stackgit.Repository {
 	dir := os.Getenv("VIGIRA_STACK_GIT_DIR")
 	if a.Repository != nil {
 		dir = a.Repository.Directory
@@ -58,7 +73,7 @@ func (a *API) repository(ctx context.Context) (*stackgit.Repository, error) {
 	if dir == "" {
 		dir = "/var/lib/vigira/stacks.git"
 	}
-	return &stackgit.Repository{Directory: dir, Remote: s.Remote, Branch: s.Branch}, nil
+	return &stackgit.Repository{Directory: dir, Remote: s.Remote, Branch: s.Branch}
 }
 func (a *API) requireRepository(w http.ResponseWriter, ctx context.Context) (*stackgit.Repository, bool) {
 	repo, e := a.repository(ctx)
