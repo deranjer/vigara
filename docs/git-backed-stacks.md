@@ -22,6 +22,7 @@ VIGIRA_STACK_GIT_BRANCH=main
 VIGIRA_STACK_GIT_DIR=/var/lib/vigira/stacks.git
 VIGIRA_STACK_TARGETS_FILE=/etc/vigira/stack-targets.json
 VIGIRA_SOPS_BINARY=/usr/bin/sops
+VIGIRA_COMPOSE_EDITOR_AGE_IDENTITY=/etc/vigira/keys/editor/editor.txt
 ```
 
 Git authenticates as the Vigara service account, using its normal SSH configuration or Git credential helper. Credentials and private keys are configured outside the browser. Configure known_hosts in advance; interactive prompts are disabled. Grant write access to the selected branch, without force-push or delete rights. A branch requiring pull requests cannot use this direct-save workflow.
@@ -60,6 +61,7 @@ VIGIRA_DOCKER_MODE=deploy
 VIGIRA_DOCKER_HOST=unix:///var/run/docker.sock
 VIGIRA_COMPOSE_TARGETS_FILE=/etc/vigira/compose-targets.json
 VIGIRA_SOPS_BINARY=/usr/bin/sops
+VIGIRA_COMPOSE_EDITOR_AGE_IDENTITY=/etc/vigira/keys/editor/editor.txt
 VIGIRA_COMPOSE_AGE_IDENTITY=/etc/vigira/keys/target-age.txt
 ```
 
@@ -118,7 +120,11 @@ Configure three independent age recipient classes in the server target binding. 
 ]
 ```
 
-The **Environment** tab accepts complete replacement dotenv contents. SOPS encrypts them in memory before returning ciphertext; the UI updates the interpolation descriptor and recipient references in `vigara-stack.yaml`. Use `${VARIABLE}` in Compose to consume these values. Existing secret values are never returned to this editor. The target decrypts them with its own protected age identity into a private temporary workspace, removed when Compose exits. The central editor and recovery private identities are provisioned and protected independently; this first UI does not reveal or decrypt existing values. See [the secret trust and recovery contract](compose-management.md#secret-editor-trust-and-recovery).
+The **Environment** tab masks values by default. **Reveal and edit** first stores the current ciphertext draft, then explicitly decrypts its declared encrypted input with the central editor identity. The API requires administrator deployment permission and successfully records a metadata-only audit event before returning plaintext. It selects the exact user-owned draft version and file digest (or an immutable Git revision through the API); the browser cannot submit arbitrary ciphertext or private-key paths for decryption. This operation uses the API server and works while the target device is offline. Configure `VIGIRA_COMPOSE_EDITOR_AGE_IDENTITY` as an absolute path to the operator-provisioned editor identity: a service-owned `0600` file in a service-owned `0700` directory on Linux. Mount it separately from Git, PostgreSQL and recovery media. A missing or incorrect key fails without exposing SOPS diagnostics. Secret file operations fail closed on Windows until service-account ACL support exists.
+
+**Enter replacement** accepts complete replacement dotenv contents without revealing existing values. **Encrypt into draft** encrypts in memory to the configured editor, target and recovery recipient policy, checks the exact source draft again, and returns ciphertext plus the updated interpolation descriptor and recipient references in `vigara-stack.yaml`. It clears the plaintext form as encryption starts, including on failure. Save the draft to commit the encrypted result. Secret requests and responses use `no-store`; plaintext is held only in the active form, outside persisted drafts, browser storage, the source editor and query caches. Hide, tab/stack changes, other stack operations, and page visibility changes clear the form and invalidate pending reveal responses. Browser and server runtimes may retain old string allocations until garbage collection; clearing the form is not a secure memory-erasure guarantee. Use `${VARIABLE}` in Compose to consume the values. Dotenv editing is limited to 64 KiB.
+
+The target independently decrypts with its own protected age identity into a private temporary workspace, removed when Compose exits. Central editor, target and recovery identities are provisioned, backed up and rotated by the operator; the UI does not create, escrow, distribute or automatically rotate keys. To rotate recipients, update the operator-managed recipient binding, explicitly reveal/edit and encrypt each affected input into a new saved commit, then verify decryption using each intended identity before retiring old recipients. Keep old keys available under operator custody for historical revisions that still need them. A new central key cannot reveal old ciphertext unless it was already a recipient; use the prior editor or recovery identity in an operator-controlled recovery procedure. Removing a recipient does not revoke old Git history or plaintext copies. See [the secret trust and recovery contract](compose-management.md#secret-editor-trust-and-recovery).
 
 Drafts and job snapshots contain non-secret configuration and SOPS ciphertext. Protect PostgreSQL storage and backups with encryption at rest. Do not paste secrets into ordinary file fields. Raw Compose, Git and SOPS diagnostics are suppressed rather than stored in jobs or audit entries.
 

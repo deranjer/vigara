@@ -34,11 +34,12 @@ type Binding struct {
 	Recipients  []composesecrets.RecipientRecord `json:"recipients,omitempty"`
 }
 type Config struct {
-	Repository *stackgit.Repository
-	Targets    map[string]Binding
-	SOPS       string
-	Pool       *pgxpool.Pool
-	Hub        interface {
+	Repository         *stackgit.Repository
+	Targets            map[string]Binding
+	SOPS               string
+	CentralAgeIdentity string
+	Pool               *pgxpool.Pool
+	Hub                interface {
 		Call(context.Context, string, string, any, any) error
 	}
 	Authz channel.Authorizer
@@ -105,7 +106,8 @@ func Register(mux *http.ServeMux, c Config) *API {
 	mux.HandleFunc("PUT /api/stacks/{id}/draft", a.putDraft)
 	mux.HandleFunc("DELETE /api/stacks/{id}/draft", a.deleteDraft)
 	mux.HandleFunc("POST /api/stacks/{id}/save", a.save)
-	mux.HandleFunc("POST /api/stacks/{id}/environment", a.environment)
+	mux.HandleFunc("POST /api/stacks/{id}/environment", a.editEnvironment)
+	mux.HandleFunc("POST /api/stacks/{id}/environment/reveal", a.revealEnvironment)
 	mux.HandleFunc("POST /api/stacks/{id}/plan", a.plan)
 	mux.HandleFunc("POST /api/stacks/{id}/deploy", a.deploy)
 	mux.HandleFunc("GET /api/stacks/{id}/deployments", a.deployments)
@@ -402,7 +404,7 @@ func (a *API) putDraft(w http.ResponseWriter, r *http.Request) {
 		fail(w, e)
 		return
 	}
-	respond(w, 200, d)
+	respond(w, 200, map[string]any{"base": d.Base, "files": d.Files, "version": d.Version, "digest": stack.Digest(stack.Snapshot{ID: id, Files: d.Files})})
 }
 func (a *API) deleteDraft(w http.ResponseWriter, r *http.Request) {
 	u, ok := a.authorize(w, r, true)
@@ -521,44 +523,6 @@ func (a *API) save(w http.ResponseWriter, r *http.Request) {
 	}
 	a.record(ctx, u, s.ID, "save", outcome, map[string]any{"commit": saved.Commit, "state": saved.State})
 	respond(w, 200, saved)
-}
-func (a *API) environment(w http.ResponseWriter, r *http.Request) {
-	_, ok := a.authorize(w, r, true)
-	if !ok {
-		return
-	}
-	var q struct {
-		Path     string `json:"path"`
-		Value    string `json:"value"`
-		Manifest string `json:"manifest"`
-	}
-	if !decode(w, r, &q) {
-		return
-	}
-	if !stack.ValidPath(q.Path) || len(q.Path) < 5 || q.Path[len(q.Path)-5:] != ".sops" {
-		http.Error(w, "Select an encrypted environment file ending in .sops.", 422)
-		return
-	}
-	b, ok := a.lookupTarget(r.Context(), r.PathValue("id"))
-	if !ok {
-		http.Error(w, "stack target not configured", 422)
-		return
-	}
-	cipher, e := composesecrets.EncryptForPolicy(r.Context(), a.SOPS, []byte(q.Value), b.Recipients)
-	if e != nil {
-		http.Error(w, "Environment encryption failed. Configure editor, target and recovery recipients.", 422)
-		return
-	}
-	refs := []stack.RecipientRef{}
-	for _, recipient := range b.Recipients {
-		refs = append(refs, stack.RecipientRef{Class: string(recipient.Class), KeyRef: recipient.KeyRef})
-	}
-	manifest, e := stack.WithEncryptedInput(q.Manifest, q.Path, refs)
-	if e != nil {
-		http.Error(w, "The stack manifest must contain a valid compose section before adding environment inputs.", 422)
-		return
-	}
-	respond(w, 200, map[string]string{"path": q.Path, "ciphertext": string(cipher), "manifest": manifest})
 }
 func (a *API) plan(w http.ResponseWriter, r *http.Request) {
 	_, ok := a.authorize(w, r, true)
