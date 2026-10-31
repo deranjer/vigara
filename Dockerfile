@@ -21,6 +21,7 @@ ARG TARGETOS
 ARG TARGETARCH
 COPY apps/api ./apps/api
 COPY internal ./internal
+COPY schemas ./schemas
 COPY --from=web-build /src/apps/api/web ./apps/api/web
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o /out/vigara ./apps/api/cmd/vigira
 
