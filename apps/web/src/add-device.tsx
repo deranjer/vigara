@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react'
 import { Alert, Button, Checkbox, Group, Modal, Select, Stack, Text, TextInput } from '@mantine/core'
 
+import { BackupFields, newBackupConfig } from './backup-config'
+import { isAbsoluteBackupPath } from './backup-path-utils'
+
 type ServerOption = { url: string; secure: boolean }
-type Availability = { serverUrl: string; serverUrls: ServerOption[]; allowInsecureHttp: boolean; targets: string[] }
+type Availability = { serverUrl: string; serverUrls: ServerOption[]; allowInsecureHttp: boolean; targets: string[]; managedBackupsAvailable?: boolean; backupTargets?: string[] }
 type ReinstallDevice = { id: string; name: string; platform: string; architecture: string }
 type Props = { opened: boolean; onClose: () => void; device?: ReinstallDevice }
 
@@ -25,6 +28,8 @@ export function AddDevice({ opened, onClose, device }: Props) {
   const [session, setSession] = useState('')
   const [status, setStatus] = useState('')
   const [backupFeature, setBackupFeature] = useState(false)
+  const [backup, setBackup] = useState(newBackupConfig)
+  const [pathsPending, setPathsPending] = useState(false)
   const [dockerCeiling, setDockerCeiling] = useState<string | null>('read')
 
   const selectedOption = availability.serverUrls.find((option) => option.url === serverUrl)
@@ -56,7 +61,7 @@ export function AddDevice({ opened, onClose, device }: Props) {
   async function createBundle() {
     setBusy(true); setError('')
     try {
-      const response = await fetch('/api/agent-downloads', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ deviceId: device?.id, target, serverUrl, name, features: [...(backupFeature ? ['restic.backup'] : []), ...(dockerCeilings[dockerCeiling ?? 'read'] ?? [])] }) })
+      const response = await fetch('/api/agent-downloads', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ deviceId: device?.id, target, serverUrl, name, backup: backupFeature ? { ...backup, sourcePaths: backup.sourcePaths.map((p) => p.trim()).filter(Boolean) } : undefined, features: [...(backupFeature ? ['restic.backup'] : []), ...(dockerCeilings[dockerCeiling ?? 'read'] ?? [])] }) })
       if (!response.ok) throw new Error((await response.text()).slice(0, 300) || 'Could not prepare the bundle.')
       const sessionId = response.headers.get('X-Vigara-Session-ID') ?? response.headers.get('X-Vigira-Session-ID') ?? ''
       const blob = await response.blob()
@@ -95,7 +100,10 @@ export function AddDevice({ opened, onClose, device }: Props) {
       ].map((item) => ({ ...item, disabled: !availability.targets.includes(item.value) }))} placeholder="Choose a supported target" />
       {availability.targets.length === 0 && <Alert color="yellow">Agent bundles are unavailable. The server operator must provision verified release artifacts.</Alert>}
       <TextInput readOnly={!!device} disabled={!!session} description={device ? 'Existing device name' : 'Use a unique name. To reinstall an existing device, open its Device info tab.'} label="Device name" value={name} onChange={(event) => setName(event.currentTarget.value)} maxLength={120} required />
-      {!device && <><Checkbox disabled={!!session} checked={backupFeature} onChange={(event) => setBackupFeature(event.currentTarget.checked)} label="Allow Restic backup jobs" description="This sets the server-side capability limit only. The Restic module and repository credentials must be configured locally on the device." />
+      {!device && <><Checkbox disabled={!!session || !availability.managedBackupsAvailable || !availability.backupTargets?.includes(target ?? '')} checked={backupFeature} onChange={(event) => setBackupFeature(event.currentTarget.checked)} label="Enable managed backups" description="Bundles restic and lets administrators manage backup paths and schedules. On Linux, installs the backup-enabled service with root access." />
+      {availability.managedBackupsAvailable && !availability.backupTargets?.includes(target ?? '') && <Text size="xs" c="dimmed">A backup-enabled bundle is unavailable for this platform. Rebuild server release artifacts to include restic.</Text>}
+      {backupFeature && <BackupFields value={backup} onChange={setBackup} disabled={!!session} onPathsPendingChange={setPathsPending} />}
+      {!availability.managedBackupsAvailable && <Text size="xs" c="dimmed">Managed backups require a backup master key on the server.</Text>}
       <Select disabled={!!session} label="Container management allowed for this device" value={dockerCeiling} onChange={setDockerCeiling} allowDeselect={false}
         description="The most access this server will accept from the device. The device's own operator must also enable it locally; read-only viewing needs no setting."
         data={[
@@ -104,11 +112,11 @@ export function AddDevice({ opened, onClose, device }: Props) {
           { value: 'exec', label: 'Manage and open terminals in containers' },
           { value: 'deploy', label: 'Manage, terminals and deploy stacks' },
         ]} /></>}
-      <Text size="sm" c="dimmed">Telemetry and inventory are included by the standard agent. Bundle selection never installs or enables privileged local modules.</Text>
+      <Text size="sm" c="dimmed">Telemetry and inventory are included by the standard agent. Backup-enabled bundles include restic and provision the selected backup settings. Container management still requires local configuration.</Text>
       {status && <Alert color={status === 'enrolled' ? 'green' : status === 'waiting' ? 'blue' : 'gray'} title={`Enrollment ${status}`}>{status === 'waiting' ? <>Extract the bundle on the device and run <code>{target?.startsWith('linux-') ? 'sh install.sh' : 'install.cmd'}</code> as an administrator. This one-use enrollment expires after 30 minutes.</> : status === 'enrolled' ? 'Enrollment was accepted. Installation is complete only when the installer confirms the service is running and the device reports a successful check-in.' : status === 'canceled' ? 'The enrollment was canceled.' : 'The enrollment expired.'}</Alert>}
       <Group justify="space-between">
         {session && status === 'waiting' ? <Button variant="default" onClick={() => void cancel()}>Cancel enrollment</Button> : <Button variant="default" onClick={close}>Close</Button>}
-        {!session && <Button loading={busy} disabled={!selectedOption || !target || !name.trim() || !availability.targets.includes(target)} onClick={() => void createBundle()}>{device ? 'Download reinstall bundle' : 'Download bundle'}</Button>}
+        {!session && <Button loading={busy} disabled={!selectedOption || !target || !name.trim() || !availability.targets.includes(target) || (backupFeature && (!availability.backupTargets?.includes(target) || pathsPending || !backup.sourcePaths.length || !isAbsoluteBackupPath(backup.repository)))} onClick={() => void createBundle()}>{device ? 'Download reinstall bundle' : 'Download bundle'}</Button>}
       </Group>
     </Stack>
   </Modal>

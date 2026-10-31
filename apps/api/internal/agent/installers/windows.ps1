@@ -55,6 +55,10 @@ try {
     Copy-Item -LiteralPath $legacyState -Destination $statePath
     Write-Host 'Migrated the saved enrollment from Vigira to Vigara.'
   }
+  if (Test-Path -LiteralPath (Join-Path $base 'restic.exe')) {
+    Copy-Item -LiteralPath (Join-Path $base 'restic.exe') -Destination (Join-Path $installDir 'restic.exe') -Force
+    Copy-Item -LiteralPath (Join-Path $base 'restic.LICENSE') -Destination (Join-Path $installDir 'restic.LICENSE') -Force
+  }
   $reinstall = $false
   $bootstrap = $null
   if (Test-Path -LiteralPath $bootstrapPath) {
@@ -76,10 +80,18 @@ try {
       $extraArgs += '--allow-insecure-private-http'
       Write-Warning 'This server uses plain HTTP. Use only on a trusted private network or VPN.'
     }
+    if ($bootstrap.PSObject.Properties.Name -contains 'managedBackups' -and $bootstrap.managedBackups) {
+      & $exe --config $statePath enable-managed-backups
+      if ($LASTEXITCODE -ne 0) { throw 'Could not enable managed backups.' }
+    }
     $bootstrap.token | & $exe --config $statePath enroll --server $bootstrap.serverUrl --name $bootstrap.name @extraArgs
     if ($LASTEXITCODE -ne 0) { throw 'Enrollment failed. Keep agent.json. If no credentials were saved, obtain a new reinstall bundle.' }
     if (-not (Test-Path -LiteralPath $statePath)) { throw 'Enrollment did not save agent.json.' }
     Remove-Item -LiteralPath $bootstrapPath -Force
+  }
+  if ($bootstrap -and ($bootstrap.PSObject.Properties.Name -contains 'managedBackups') -and $bootstrap.managedBackups) {
+    & $exe --config $statePath enable-managed-backups
+    if ($LASTEXITCODE -ne 0) { throw 'Could not enable managed backups.' }
   }
   if (-not $service) {
     New-Service -Name VigaraAgent -DisplayName 'Vigara Agent' -BinaryPathName $binaryPath -StartupType Automatic | Out-Null
