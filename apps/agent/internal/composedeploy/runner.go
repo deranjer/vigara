@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/deranjer/vigara/apps/agent/internal/channel"
 	"github.com/deranjer/vigara/internal/composesecrets"
+	"github.com/deranjer/vigara/internal/placement"
 	"github.com/deranjer/vigara/internal/protocol"
 	"github.com/deranjer/vigara/internal/stack"
 	"gopkg.in/yaml.v3"
@@ -42,6 +44,58 @@ type Runner struct {
 var errTarget = errors.New("stack target unavailable, changed, or not approved on this device")
 var errCompose = errors.New("Compose validation or deployment failed; check the stack configuration and device prerequisites")
 var errJournal = errors.New("the deployment journal could not confirm the outcome; inspect this device before retrying")
+var immutableImage = regexp.MustCompile(`^[^\s@]+@sha256:[a-f0-9]{64}$`)
+
+func validImages(images map[string]string) bool {
+	if len(images) == 0 || len(images) > 256 {
+		return false
+	}
+	for name, image := range images {
+		if name == "" || !immutableImage.MatchString(image) {
+			return false
+		}
+	}
+	return true
+}
+
+// releaseToken binds the reviewed immutable image set to the snapshot and device files.
+func releaseToken(t Target, s stack.Snapshot, images map[string]string) (string, error) {
+	files, err := fingerprint(t, s)
+	if err != nil {
+		return "", err
+	}
+	b, _ := json.Marshal(images)
+	sum := sha256.Sum256(append([]byte("VIGARA-RELEASE-V1\x00"+s.ID+"\x00"+s.Commit+"\x00"+files+"\x00"), b...))
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// imageOverride contains no rendered environment values and is safe to retain with the release journal.
+func imageOverride(file string, images map[string]string) error {
+	if !validImages(images) {
+		return stack.ErrInvalid
+	}
+	services := map[string]any{}
+	for name, image := range images {
+		services[name] = map[string]string{"image": image}
+	}
+	b, err := json.Marshal(map[string]any{"services": services})
+	if err != nil {
+		return errJournal
+	}
+	// Each release owns a new file. Exclusive creation also refuses a symlink
+	// or an orphaned override rather than overwriting an uncertain release.
+	f, err := os.OpenFile(file, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		return errJournal
+	}
+	_, err = f.Write(b)
+	closeErr := f.Close()
+	if err != nil || closeErr != nil {
+		os.Remove(file)
+		return errJournal
+	}
+	return nil
+}
 
 func Register(c *channel.Client, r *Runner) {
 	c.Calls[protocol.MethodComposeTargets] = func(ctx context.Context, p json.RawMessage) (any, error) { return r.TargetInfo(), nil }
@@ -71,7 +125,7 @@ func Register(c *channel.Client, r *Runner) {
 			if errors.Is(err, errJournal) {
 				status = "unknown"
 			}
-			return stack.Result{Status: status, Stage: "validate", Message: err.Error()}, nil
+			return stack.Result{Status: status, Stage: "validate", Message: err.Error(), JobID: q.Job.ID, Commit: q.Job.Snapshot.Commit, ConfigurationRevision: stack.ConfigurationRevision(q.Job.Snapshot), PlanToken: q.Token, Images: q.Images, Readiness: "not-checked"}, nil
 		}
 		return result, nil
 	}
@@ -99,7 +153,7 @@ func Register(c *channel.Client, r *Runner) {
 }
 
 func (r *Runner) target(s stack.Snapshot) (Target, stack.Manifest, error) {
-	m, e := stack.Validate(s)
+	_, _, m, e := placement.ResolveRuntime(s)
 	if e != nil {
 		return Target{}, m, e
 	}
@@ -226,7 +280,18 @@ func (r *Runner) workspace(ctx context.Context, s stack.Snapshot, m stack.Manife
 // model checks storage before applying. Relative binds are resolved against the original approved directory.
 // Builds, includes, hooks, service env files and file-based configs/secrets are excluded in this first runner.
 func (r *Runner) model(ctx context.Context, s stack.Snapshot, t Target, m stack.Manifest) (Plan, error) {
+	return r.modelWithImages(ctx, s, t, m, nil)
+}
+
+func (r *Runner) modelWithImages(ctx context.Context, s stack.Snapshot, t Target, m stack.Manifest, images map[string]string) (Plan, error) {
 	plan := Plan{ProjectName: m.ProjectName, Services: []string{}}
+	p, _, _, e := placement.ResolveRuntime(s)
+	if e != nil {
+		return plan, e
+	}
+	if e = r.preflight(ctx, t.Directory, p); e != nil {
+		return plan, e
+	}
 	for _, p := range m.Compose.Files {
 		var raw map[string]any
 		if yaml.Unmarshal([]byte(s.Files[p]), &raw) != nil {
@@ -249,7 +314,7 @@ func (r *Runner) model(ctx context.Context, s stack.Snapshot, t Target, m stack.
 			if !ok {
 				return plan, stack.ErrInvalid
 			}
-			for _, key := range []string{"build", "develop", "extends", "env_file", "configs", "secrets", "post_start", "pre_start", "pre_stop", "label_file", "credential_spec", "use_api_socket", "provider"} {
+			for _, key := range []string{"build", "develop", "extends", "env_file", "configs", "secrets", "post_start", "pre_start", "pre_stop", "label_file", "credential_spec", "use_api_socket", "provider", "profiles"} {
 				if _, ok := service[key]; ok {
 					return plan, errors.New("this runner supports image-based stacks with encrypted interpolation; builds, includes, hooks and service file inputs need migration first")
 				}
@@ -276,7 +341,18 @@ func (r *Runner) model(ctx context.Context, s stack.Snapshot, t Target, m stack.
 		return plan, e
 	}
 	defer os.RemoveAll(dir)
-	b, e := r.command(ctx, dir, append(args, "config", "--format", "json")...)
+	if images != nil {
+		override := filepath.Join(dir, ".vigara-images.json")
+		if e := imageOverride(override, images); e != nil {
+			return plan, e
+		}
+		args = append(args, "-f", override)
+	}
+	configArgs := append(args, "config", "--format", "json")
+	if images == nil {
+		configArgs = append(configArgs, "--resolve-image-digests")
+	}
+	b, e := r.command(ctx, dir, configArgs...)
 	if e != nil {
 		return plan, e
 	}
@@ -306,6 +382,7 @@ func (r *Runner) model(ctx context.Context, s stack.Snapshot, t Target, m stack.
 	if json.Unmarshal(b, &model) != nil || len(model.Services) == 0 {
 		return plan, errCompose
 	}
+	plan.Images = make(map[string]string, len(model.Services))
 	for _, network := range model.Networks {
 		if network.External {
 			if _, e := r.command(ctx, dir, "network", "inspect", "--format", "{{.Name}}", network.Name); e != nil {
@@ -321,7 +398,7 @@ func (r *Runner) model(ctx context.Context, s stack.Snapshot, t Target, m stack.
 		}
 	}
 	for name, svc := range model.Services {
-		if svc.Image == "" || svc.Build != nil || svc.Develop != nil || svc.Extends != nil || svc.EnvFile != nil || svc.Configs != nil || svc.Secrets != nil || svc.PostStart != nil || svc.PreStop != nil || svc.PreStart != nil {
+		if !immutableImage.MatchString(svc.Image) || svc.Build != nil || svc.Develop != nil || svc.Extends != nil || svc.EnvFile != nil || svc.Configs != nil || svc.Secrets != nil || svc.PostStart != nil || svc.PreStop != nil || svc.PreStart != nil {
 			return plan, errors.New("this runner supports image-based stacks with interpolation inputs; builds, hooks and service file inputs need migration first")
 		}
 		for _, v := range svc.Volumes {
@@ -339,9 +416,13 @@ func (r *Runner) model(ctx context.Context, s stack.Snapshot, t Target, m stack.
 			}
 		}
 		plan.Services = append(plan.Services, name)
+		plan.Images[name] = svc.Image
+	}
+	if !validImages(plan.Images) || (images != nil && !stack.Equal(images, plan.Images)) {
+		return plan, errCompose
 	}
 	sort.Strings(plan.Services)
-	plan.Token, e = fingerprint(t, s)
+	plan.Token, e = releaseToken(t, s, plan.Images)
 	return plan, e
 }
 func (r *Runner) Plan(ctx context.Context, s stack.Snapshot) (Plan, error) {
@@ -362,7 +443,7 @@ func (r *Runner) Deploy(ctx context.Context, q Request) (stack.Result, error) {
 	if e != nil {
 		return stack.Result{}, e
 	}
-	if !stack.CommitPattern.MatchString(q.Job.ID) || !stack.CommitPattern.MatchString(s.Commit) || q.Token == "" {
+	if !stack.CommitPattern.MatchString(q.Job.ID) || !stack.CommitPattern.MatchString(s.Commit) || q.Token == "" || !validImages(q.Images) {
 		return stack.Result{}, stack.ErrInvalid
 	}
 	journal := filepath.Join(t.Directory, ".vigara-jobs")
@@ -375,30 +456,52 @@ func (r *Runner) Deploy(ctx context.Context, q Request) (stack.Result, error) {
 	record := filepath.Join(journal, q.Job.ID+".json")
 	if b, e := os.ReadFile(record); e == nil {
 		var result stack.Result
-		if json.Unmarshal(b, &result) == nil {
+		if json.Unmarshal(b, &result) == nil && result.JobID == q.Job.ID && result.Commit == s.Commit && result.ConfigurationRevision == stack.ConfigurationRevision(s) && result.PlanToken == q.Token && stack.Equal(result.Images, q.Images) {
+			if result.Status == "running" {
+				result.Status = "unknown"
+				result.Stage = "reconcile"
+				result.Message = "No final result recorded. Inspect the device before another deployment."
+			}
 			return result, nil
 		}
+		return stack.Result{}, errJournal
+	} else if !os.IsNotExist(e) {
+		return stack.Result{}, errJournal
 	}
 	lock := filepath.Join(journal, "active")
 	if os.Mkdir(lock, 0700) != nil {
 		return stack.Result{}, errors.New("another deployment is active or an interrupted deployment needs device review")
 	}
 	defer os.Remove(lock)
-	result := stack.Result{Status: "failed", Stage: "validate"}
+	// Another process may have finished this job between our first read and
+	// acquiring the directory lock. Never replace its final/uncertain record.
+	if _, e := os.Lstat(record); !os.IsNotExist(e) {
+		return stack.Result{}, errJournal
+	}
+	result := stack.Result{Status: "failed", Stage: "validate", JobID: q.Job.ID, Commit: s.Commit, ConfigurationRevision: stack.ConfigurationRevision(s), PlanToken: q.Token, Images: q.Images, Readiness: "not-checked"}
 	persist := func() bool {
 		b, _ := json.Marshal(result)
-		tmp := record + ".tmp"
-		f, e := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+		f, e := os.CreateTemp(journal, ".vigara-result-")
 		if e != nil {
 			return false
 		}
+		tmp := f.Name()
+		defer os.Remove(tmp)
 		_, e = f.Write(b)
 		syncErr := f.Sync()
 		closeErr := f.Close()
 		if e != nil || syncErr != nil || closeErr != nil || os.Rename(tmp, record) != nil {
 			return false
 		}
-		return true
+		// A durable rename is essential: an acknowledged release must survive a restart
+		// without allowing an uncertain apply to execute again.
+		d, e := os.Open(journal)
+		if e != nil {
+			return false
+		}
+		e = d.Sync()
+		closeErr = d.Close()
+		return e == nil && closeErr == nil
 	}
 	// Record execution before any mutation. A repeated request never silently re-runs an uncertain deployment.
 	result.Status = "running"
@@ -415,16 +518,18 @@ func (r *Runner) Deploy(ctx context.Context, q Request) (stack.Result, error) {
 		}
 		return result, nil
 	}
-	plan, e := r.model(ctx, s, t, m)
+	plan, e := r.modelWithImages(ctx, s, t, m, q.Images)
 	if e != nil {
 		return fail("validate", e.Error())
 	}
 	if plan.Token != q.Token {
-		return fail("validate", "Device files changed after the deployment preview. Review a new preview.")
+		return fail("validate", "Device files or resolved release inputs changed after the deployment preview. Review a new preview.")
 	}
 	result.Stage = "write"
 	result.Message = "Saving the selected revision on this device."
-	persist()
+	if !persist() {
+		return stack.Result{}, errJournal
+	}
 	dir, args, e := r.workspace(ctx, s, m)
 	if e != nil {
 		return fail("validate", e.Error())
@@ -461,26 +566,39 @@ func (r *Runner) Deploy(ctx context.Context, q Request) (stack.Result, error) {
 	for i := range m.Compose.InterpolationFiles {
 		args = append(args, "--env-file", filepath.Join(dir, fmt.Sprintf(".vigara-input-%d", i)))
 	}
+	// Compose applies exactly the registry digests reviewed in the preview, even if tags moved.
+	// Keep this non-secret override beside the journal for post-deployment inspection.
+	override := filepath.Join(journal, q.Job.ID+".images.json")
+	if imageOverride(override, q.Images) != nil {
+		return stack.Result{}, errJournal
+	}
+	args = append(args, "-f", override)
 	if _, e = r.command(ctx, t.Directory, append(args, "config", "--quiet")...); e != nil {
 		return fail("validate", "Saved files did not pass Compose validation on this device.")
 	}
 	if q.Job.Pull {
 		result.Stage = "pull"
 		result.Message = "Downloading container images."
-		persist()
+		if !persist() {
+			return stack.Result{}, errJournal
+		}
 		if _, e = r.command(ctx, t.Directory, append(args, "pull", "--quiet")...); e != nil {
 			return fail("pull", "Image download failed. Check registry access on this device.")
 		}
 	}
 	result.Stage = "apply"
 	result.Message = "Applying saved configuration and waiting for services."
-	persist()
-	if _, e = r.command(ctx, t.Directory, append(args, "up", "--detach", "--no-build", "--wait", "--wait-timeout", "120")...); e != nil {
+	if !persist() {
+		return stack.Result{}, errJournal
+	}
+	if _, e = r.command(ctx, t.Directory, append(args, "up", "--detach", "--no-build", "--pull", "never", "--wait", "--wait-timeout", "120")...); e != nil {
+		result.Readiness = "compose-wait-failed"
 		return fail("apply", "Compose did not confirm all services running or healthy. Inspect the stack before retrying.")
 	}
 	result.Status = "succeeded"
 	result.Stage = "complete"
-	result.Message = "Compose confirmed services running or healthy."
+	result.Readiness = "compose-wait-passed"
+	result.Message = "Compose --wait completed. Readiness follows Compose conditions; services without healthchecks may only be running. Application readiness was not independently checked."
 	if !persist() {
 		return stack.Result{}, errJournal
 	}
