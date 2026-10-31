@@ -1,0 +1,68 @@
+# Compose offline recovery plan
+
+`compose-recovery` builds a deterministic, metadata-only plan from a local
+checked-out configuration Git repository. It reads the current commit with
+`git rev-parse`, rejects tracked edits under the portable profile, assignment,
+stack, and release inputs, and validates the saved manifests through the
+existing placement and stack validators.
+
+```powershell
+go run ./cmd/compose-recovery --repo C:\recovery\vigara-config --profile dns-primary `
+  --snapshot-file C:\recovery\nightly-snapshot.json `
+  --release 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+```
+
+The snapshot file is optional for profiles without declared persistent
+resources. For a persistent mount, volume, or stack asset, select a snapshot
+and supply a reference for every backup policy. A missing reference blocks plan
+generation. `snapshotId` accepts a lowercase slug label or a full 64-character
+lowercase hexadecimal snapshot ID. References are opaque identifiers made of
+letters, digits, `.`, `_`, `:`, or `-`; do not put credentials or repository
+URLs in them.
+
+```json
+{
+  "snapshotId": "nightly-2026-10-25",
+  "profileId": "dns-primary",
+  "backupReferences": {
+    "application-data": "restic:nightly-2026-10-25"
+  },
+  "recoveryKeyRefs": ["operator-recovery-main"]
+}
+```
+
+The optional `--release` flag accepts a comma-separated list of selected
+64-character release IDs. Each must match a committed
+`releases/<profile>/<stack>/<releaseId>.yaml` record for a stack in the profile.
+Output contains only the release ID, stack ID, Git commit, and outcome; image
+references and container identifiers are omitted.
+
+The JSON plan lists profile-declared networks, mounts, volumes, devices, and
+startup dependencies. It orders assigned stacks deterministically according
+to those dependency edges and lists Compose service names, assignment IDs,
+project names, persistent paths, backup policy IDs, and opaque recovery-key
+references. It never reads host mount paths. Encrypted `*.sops` blobs are not
+read; validation uses an internal presence marker. Plain `.env` files and
+manifest paths that resemble private-key material are rejected.
+
+Stack `configurationAssets` are validated separately against their bounded
+metadata shape for this offline plan, while the existing stack validator checks
+the remaining stack fields. This does not add `configurationAssets` support to
+the live deployment runner.
+
+## Plan boundary
+
+Every result is marked `NOT_EXECUTABLE` with `executable: false`. It contains
+no shell commands, Compose commands, restic commands, restore destinations, or
+deployment instructions. It does not validate live backups or decrypt secrets.
+Before any real recovery, an operator must collect current replacement-host
+evidence, validate backup integrity and a restore point, verify independent
+offline recovery-identity access, prove the prior owner is fenced and advance
+ownership safely, then enroll and bind a replacement agent. These prerequisites
+remain marked `required` in the plan; the tool cannot mark them complete.
+
+The plan includes every assignment declared for the selected profile, even if
+an assignment is currently disabled. Review the assignment set and the
+committed revision before relying on the output. The tool only reads the local
+repository and does not fetch, commit, stage, deploy, restore, reboot, or alter
+configuration.
