@@ -1,14 +1,14 @@
 networks:
   proxy:
     # Must already exist and be shared with caddy-docker-proxy.
-    name: ${VIGIRA_PROXY_NETWORK:-web}
+    name: ${VIGARA_PROXY_NETWORK:-web}
     external: true
   backend:
     internal: true
 
 services:
   app:
-    image: ${VIGIRA_IMAGE:-ghcr.io/deranjer/vigara:staging}
+    image: ${VIGARA_IMAGE:-ghcr.io/deranjer/vigara:staging}
     depends_on:
       postgres:
         condition: service_healthy
@@ -16,14 +16,14 @@ services:
       - proxy
       - backend
     environment:
-      VIGIRA_ADDR: :8080
-      VIGIRA_DATABASE_URL: postgres://vigara:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/vigara?sslmode=disable
-      VIGIRA_COOKIE_SECURE: "true"
+      VIGARA_ADDR: :8080
+      VIGARA_DATABASE_URL: postgres://vigara:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/vigara?sslmode=disable
+      VIGARA_COOKIE_SECURE: "true"
     # Caddy connects over the proxy network; no host port is published.
     labels:
-      caddy: ${VIGIRA_DOMAIN:?Set VIGIRA_DOMAIN to your public hostname}
+      caddy: ${VIGARA_DOMAIN:?Set VIGARA_DOMAIN to your public hostname}
       caddy.reverse_proxy: "{{upstreams 8080}}"
-      caddy_ingress_network: ${VIGIRA_PROXY_NETWORK:-web}
+      caddy_ingress_network: ${VIGARA_PROXY_NETWORK:-web}
     restart: unless-stopped
 
   postgres:
