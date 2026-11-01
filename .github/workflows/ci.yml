@@ -11,6 +11,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python3 scripts/test_deployment_env.py
+      - run: bash -n deploy/setup.sh
+      - run: python3 scripts/test_setup.py
   go:
     runs-on: ubuntu-latest
     services:

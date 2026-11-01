@@ -4,6 +4,49 @@ The container runs the Vigira API and serves the web UI embedded in the same pro
 
 The server preserves the `schema_migrations` history used by previous CLI/container deployments and serializes simultaneous migration attempts with a database lock. If a migration fails or the database is marked dirty, startup stops without resetting that state. Inspect and repair the failure before restarting; do not force the version forward without checking the database. The configured database user needs permission to apply the schema changes, including creating the `pgcrypto` extension on a fresh database.
 
+## Interactive Linux setup
+
+For a new server deployment, run from your cloned repository:
+
+```sh
+bash deploy/setup.sh
+```
+
+The script checks Docker access and Compose support, asks for an image and
+project name, and offers either Caddy Docker Proxy labels or a published IPv4
+port. For Caddy it asks for the hostname, existing network and running proxy
+container, and checks the container's network attachment. Start your Caddy
+project first. DNS and inbound ports 80/443 must already route to your proxy.
+For direct access, it defaults to loopback port 8080 and asks whether a separate
+HTTPS proxy will serve it, enabling secure cookies when appropriate.
+
+It generates a database password and backup master key, writes private files
+under `deploy/production/` (ignored by Git), and validates Compose before asking
+whether to pull images and start. No credentials are printed. The script stops
+if that directory or the selected project's containers or volumes already
+exist; it is an initial installer, not an adoption or migration tool.
+
+After setup, use the generated helper from any working directory:
+
+```sh
+bash deploy/production/compose.sh ps
+bash deploy/production/compose.sh logs --tail 100
+```
+
+The helper keeps the project name, environment file and Compose file together.
+It clears exported `VIGARA_*`, `VIGIRA_*`, `POSTGRES_*` and `COMPOSE_*` variables
+so the generated `.env` remains authoritative. Edit that file for later changes.
+Back it up securely; losing or replacing the backup master key can make managed
+backup credentials unrecoverable. Keep the generated Compose file too.
+
+If a pull fails for a private image, authenticate with `docker login ghcr.io`,
+then retry `compose.sh pull` and `compose.sh up -d --wait --wait-timeout 120`.
+If startup fails, configuration is retained for inspection and retry. An optional
+HTTP health check follows startup; Caddy health checks also depend on DNS, TLS
+and routing. Complete the first administrator setup after opening the site.
+Host-agent enrollment and management of existing Compose stacks are separate
+steps. This script does not configure agent downloads or optional Android storage.
+
 ## Environment variable names
 
 Use `VIGARA_*` in deployment environment files. Before upgrading an existing
