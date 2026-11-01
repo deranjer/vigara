@@ -12,7 +12,7 @@ The Compose stacks page provides Cards and Table views, search across stack/proj
 
 ## Repository setup
 
-Administrators can prepare logical server profiles and disabled placement manifests through **Profiles and assignments**. See [server profiles and assignment manifests](stack-profiles.md). These manifests are saved to Git; activating them and binding profiles to agents remain separate work.
+Administrators can prepare logical server profiles and assignment manifests through **Profiles and assignments**, save them to Git, and explicitly bind a saved profile to an enrolled agent. Initial enabled exclusive assignments at ownership epoch 1 are supported. See [server profiles and assignment manifests](stack-profiles.md). Ownership transfer, replicated placements and subsequent epoch changes remain separate work.
 
 Use a dedicated repository with an existing branch and at least one initial commit. Configure these variables on the API server:
 
@@ -61,7 +61,6 @@ VIGIRA_DOCKER_MODE=deploy
 VIGIRA_DOCKER_HOST=unix:///var/run/docker.sock
 VIGIRA_COMPOSE_TARGETS_FILE=/etc/vigira/compose-targets.json
 VIGIRA_SOPS_BINARY=/usr/bin/sops
-VIGIRA_COMPOSE_EDITOR_AGE_IDENTITY=/etc/vigira/keys/editor/editor.txt
 VIGIRA_COMPOSE_AGE_IDENTITY=/etc/vigira/keys/target-age.txt
 ```
 
@@ -135,16 +134,16 @@ Drafts and job snapshots contain non-secret configuration and SOPS ciphertext. P
 - A failed or unconfirmed push is shown as **Pending sync**. The draft is retained. Retry Save after Git is available. The unconfirmed commit is not deployable.
 - Restoring a historical revision loads its files into the draft. Saving creates a new forward commit, preserving history.
 - Deployment captures the selected commit and files in a durable database job. Later saves cannot change that job. Only ancestors of the configured remote branch are selectable; a remote history rewrite may make older commits unavailable for new deployments.
-- The deployment preview validates Compose and existing bind paths on the device. A fingerprint detects local configuration changes between preview and execution. Each stack has at most one queued, running or uncertain job. Deployment requests are journaled on the device and completed requests are not executed again.
+- The deployment preview checks the saved profile and assignment, Compose configuration, required mounts and devices, existing bind paths, and preexisting external networks and volumes on the device. It resolves each service image to an immutable digest and shows the resulting image references for review. The API stores the exact image map with the preview for 15 minutes; deploy must submit that same map and uses it without resolving newer tags. A fingerprint detects local configuration changes between preview and execution. Each stack has at most one queued, running or uncertain job. Deployment requests and their image digest map, configuration revision and readiness result are journaled on the device; completed requests are not executed again.
 - The runner preserves the project directory, writes the selected files, optionally pulls images, then runs `compose up --detach --no-build --wait`. It never runs `down`, removes volumes, or removes orphaned containers. Runtime reconciliation is Compose's normal non-transactional behavior. Removed Git files are intentionally left on the device.
-- Current service progress is displayed without raw command output. Success means Compose confirmed services running or healthy; services without health checks are only confirmed running.
-- **Last deployed** is the last successful deployment recorded by Vigara, not a claim that no one has changed Docker outside Vigara. The stack file digest is distinct from the future complete configuration revision described in the broader contract: it does not include profile/assignment manifests.
+- Current service progress is displayed without raw command output. The `compose-wait-passed` readiness result means Compose confirmed services running or healthy according to each service's health check; services without health checks are only confirmed running. It does not verify application data or restore correctness.
+- **Last deployed** is the last successful deployment recorded by Vigara, not a claim that no one has changed Docker outside Vigara. Deployment records retain the normative configuration revision covering the captured stack and placement inputs, plus the reviewed image digest map. The separate stack-file digest used for editor comparisons covers stack files only.
 
 ## Interrupted deployments and current boundaries
 
 The browser can reconnect to deployment history. A server restart or lost channel result marks an executing job **unknown**, rather than retrying it. **Check device result** reads the device's durable journal. A final success/failure releases the server-side block. If the device has no final result, the stack stays blocked for operator inspection; do not start another rollout or delete its `.vigara-jobs/active` lock until the old operation is proven stopped. There is no automatic recovery or ownership-transfer override in the UI.
 
-This first runner supports image-based Compose services, ordinary networks/volumes and encrypted interpolation files. It rejects builds, includes, extends, lifecycle hooks, service `env_file`, file-based configs/secrets, and other service file inputs before Compose can read them. Existing relative bind storage must already exist. Parent-relative and interpolated storage sources are rejected; use explicit absolute paths or paths inside the approved project directory. Private registry access uses the device service account's Docker configuration. Full server-profile preflight, assignment manifests, replicated placements, image-digest release records, automatic deployment on Git push, and transactional rollback are not implemented. The broader [Compose management contract](compose-management.md) describes those subsequent capabilities.
+This runner supports image-based Compose services, ordinary networks/volumes, encrypted interpolation files, saved profile bindings and initial exclusive assignments at epoch 1. Profile preflight checks required mounts/devices and preexisting external networks/volumes before preview and apply. It does not create managed resources, execute capability requirements or startup dependency ordering, transfer ownership, or support replicas. It rejects builds, includes, extends, lifecycle hooks, service `env_file`, file-based configs/secrets, and other service file inputs before Compose can read them. Existing relative bind storage must already exist. Parent-relative and interpolated storage sources are rejected; use explicit absolute paths or paths inside the approved project directory. Private registry access uses the device service account's Docker configuration. Automatic deployment on Git push and transactional rollback are not implemented. The broader [Compose management contract](compose-management.md) describes subsequent capabilities.
 
 Configuration history does not reverse application migrations or restore application data. Backups are separate.
 

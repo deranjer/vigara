@@ -72,7 +72,18 @@ func (h *Handler) deleteDevice(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Resolve active or uncertain backup jobs and stack deployments before deleting this device.", http.StatusConflict)
 		return
 	}
+	var profileBound bool
+	err = tx.QueryRow(r.Context(), "SELECT EXISTS(SELECT 1 FROM stack_profile_bindings p JOIN agent_identities a ON a.id=p.agent_id WHERE a.device_id=$1)", id).Scan(&profileBound)
+	if err != nil {
+		http.Error(w, "could not check profile ownership", 500)
+		return
+	}
+	if profileBound {
+		http.Error(w, "This device owns a server profile. A fenced replacement workflow is required before deleting it.", http.StatusConflict)
+		return
+	}
 	for _, statement := range []string{
+		"DELETE FROM stack_deployment_previews WHERE agent_id IN (SELECT id FROM agent_identities WHERE device_id=$1)",
 		"DELETE FROM backup_job_attempts WHERE job_id IN (SELECT j.id FROM backup_jobs j JOIN agent_identities a ON a.id=j.agent_id WHERE a.device_id=$1)",
 		"DELETE FROM backup_jobs WHERE agent_id IN (SELECT id FROM agent_identities WHERE device_id=$1)",
 		"DELETE FROM stack_deployments WHERE agent_id IN (SELECT id FROM agent_identities WHERE device_id=$1) OR stack_id IN (SELECT stack_id FROM stack_bindings WHERE agent_id IN (SELECT id FROM agent_identities WHERE device_id=$1))",

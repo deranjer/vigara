@@ -54,9 +54,10 @@ type Manifest struct {
 	Notes                       string         `yaml:"notes,omitempty"`
 }
 type Snapshot struct {
-	ID     string            `json:"id"`
-	Commit string            `json:"commit"`
-	Files  map[string]string `json:"files"`
+	ID        string            `json:"id"`
+	Commit    string            `json:"commit"`
+	Files     map[string]string `json:"files"`
+	Placement *Placement        `json:"placement,omitempty"`
 }
 type Job struct {
 	ID       string   `json:"id"`
@@ -64,10 +65,16 @@ type Job struct {
 	Pull     bool     `json:"pull"`
 }
 type Result struct {
-	Status  string            `json:"status"`
-	Stage   string            `json:"stage"`
-	Message string            `json:"message,omitempty"`
-	Images  map[string]string `json:"images,omitempty"`
+	Status                string            `json:"status"`
+	Stage                 string            `json:"stage"`
+	Message               string            `json:"message,omitempty"`
+	Images                map[string]string `json:"images,omitempty"`
+	JobID                 string            `json:"jobId,omitempty"`
+	Commit                string            `json:"commit,omitempty"`
+	ConfigurationRevision string            `json:"configurationRevision,omitempty"`
+	PlanToken             string            `json:"planToken,omitempty"`
+	// Readiness describes only the observed Compose wait outcome, not application availability.
+	Readiness string `json:"readiness,omitempty"`
 }
 
 func ValidProject(name string) bool { return projectPattern.MatchString(name) }
@@ -184,6 +191,11 @@ func Digest(s Snapshot) string {
 	sort.Strings(keys)
 	h := sha256.New()
 	h.Write([]byte("VIGARA-STACK-FILES-V1\x00"))
+	if s.Placement != nil {
+		b, _ := json.Marshal(s.Placement)
+		h.Write(b)
+		h.Write([]byte{0})
+	}
 	for _, p := range keys {
 		b, _ := json.Marshal([]string{p, s.Files[p]})
 		h.Write(b)
@@ -199,11 +211,13 @@ func Equal(a, b map[string]string) bool {
 }
 
 type Plan struct {
-	Token       string   `json:"token"`
-	Services    []string `json:"services"`
-	ProjectName string   `json:"projectName"`
+	Token       string            `json:"token"`
+	Services    []string          `json:"services"`
+	ProjectName string            `json:"projectName"`
+	Images      map[string]string `json:"images"`
 }
 type DeployRequest struct {
-	Job   Job    `json:"job"`
-	Token string `json:"token"`
+	Job    Job               `json:"job"`
+	Token  string            `json:"token"`
+	Images map[string]string `json:"images"`
 }

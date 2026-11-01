@@ -207,6 +207,8 @@ func main() {
 	router.Handle("/api/docker/*", containersMux)
 	router.Handle("/api/stacks", stackMux)
 	router.Handle("/api/stacks/*", stackMux)
+	router.Handle("/api/stack-placements", stackMux)
+	router.Handle("/api/stack-placements/*", stackMux)
 	router.Handle("/api/users", adminMux)
 	router.Handle("/api/users/*", adminMux)
 	router.Handle("/api/audit", adminMux)
