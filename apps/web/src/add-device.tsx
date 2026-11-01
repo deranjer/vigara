@@ -10,7 +10,7 @@ type ReinstallDevice = { id: string; name: string; platform: string; architectur
 type Props = { opened: boolean; onClose: () => void; device?: ReinstallDevice }
 
 // The ceiling the server will accept for this device's Docker access. The host's own operator must
-// still opt in locally (VIGIRA_DOCKER_MODE); the server never grants more than the enrollment allows.
+// still opt in locally (VIGARA_DOCKER_MODE); the server never grants more than the enrollment allows.
 const dockerCeilings: Record<string, string[]> = {
   read: [],
   manage: ['docker.manage'],
@@ -89,7 +89,7 @@ export function AddDevice({ opened, onClose, device }: Props) {
     <Stack>
       {device && <Alert color="blue" title="Reinstall on this device">This creates a fresh one-use installer for {device.name}, keeping its device record, history, and allowed capabilities. Running it replaces the previous agent credential. Use it only on this device.</Alert>}
       {error && <Alert color="red" title="Could not prepare device">{error}</Alert>}
-      {availability.serverUrls.length === 0 && <Alert color="yellow" title="No server URL configured">Set <code>VIGIRA_PUBLIC_URL</code> to the HTTPS address agents can reach. On a trusted private network or Tailscale, you can instead set <code>VIGIRA_ALLOW_INSECURE_AGENT_HTTP=true</code> and use an <code>http://</code> address on a private (LAN or Tailscale) IP or name. Add more addresses with <code>VIGIRA_PUBLIC_URLS</code>.</Alert>}
+      {availability.serverUrls.length === 0 && <Alert color="yellow" title="No server URL configured">Set <code>VIGARA_PUBLIC_URL</code> to the HTTPS address agents can reach. On a trusted private network or Tailscale, you can instead set <code>VIGARA_ALLOW_INSECURE_AGENT_HTTP=true</code> and use an <code>http://</code> address on a private (LAN or Tailscale) IP or name. Add more addresses with <code>VIGARA_PUBLIC_URLS</code>.</Alert>}
       {availability.serverUrls.length === 1 && <Text size="sm">Agents will connect to <b>{availability.serverUrls[0].url}</b>.</Text>}
       {availability.serverUrls.length > 1 && <Select label="Server address the agent will connect to" description="Pick an address the new device can reach, such as the LAN or Tailscale address." value={serverUrl} onChange={setServerUrl} allowDeselect={false} data={availability.serverUrls.map((option) => ({ value: option.url, label: option.secure ? option.url : `${option.url} (unencrypted HTTP)` }))} />}
       {selectedOption && !selectedOption.secure && <Alert color="yellow" title="This connection is not encrypted">The agent will use plain HTTP, so its credential, telemetry, and inventory can be read or altered by anyone who can see traffic on the network between the device and this server. Use this only on a trusted private network or over a VPN such as Tailscale, never across the internet. Prefer an HTTPS address when you have one.</Alert>}
