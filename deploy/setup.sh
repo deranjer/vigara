@@ -40,6 +40,60 @@ check_proxy_ports() {
   done
 }
 
+require_local_docker() {
+  local endpoint
+  if [[ -n ${DOCKER_CONTEXT:-} || -z ${DOCKER_HOST:-} ]]; then
+    endpoint=$(docker context inspect --format '{{.Endpoints.docker.Host}}')
+  else
+    endpoint=$DOCKER_HOST
+  fi
+  [[ $endpoint == unix://* ]] || fail 'Bind mounts and automatic proxy deployment require a local Unix Docker socket; remote Docker contexts are unsupported.'
+  socket=${endpoint#unix://}
+  [[ $socket =~ ^/[a-zA-Z0-9_./-]+$ && -S $socket ]] || fail 'Cannot access the local Docker socket.'
+}
+
+use_bind_storage() {
+  local directory=$1 line source target
+  # Convert only the known persistent mounts in our bundled templates. The
+  # top-level volume declarations are the final section in these templates.
+  while IFS= read -r line; do
+    case "$line" in
+      'volumes:') break;;
+      '      - postgres-data:/var/lib/postgresql/data') source=postgres; target=/var/lib/postgresql/data;;
+      '      - android-backups:/var/lib/vigira/android-backups') source=android-backups; target=/var/lib/vigira/android-backups;;
+      '      - caddy-data:/data') source=caddy; target=/data;;
+      '      - caddy-config:/config') source=config; target=/config;;
+      *) printf '%s\n' "$line"; continue;;
+    esac
+    mkdir -p -- "$directory/data/$source"
+    printf '      - type: bind\n        source: ./data/%s\n        target: %s\n        bind:\n          create_host_path: false\n' "$source" "$target"
+  done < "$directory/compose.yml" > "$directory/compose.bind.yml"
+  mv -- "$directory/compose.bind.yml" "$directory/compose.yml"
+  if [[ -d "$directory/data/android-backups" ]]; then
+    # The API runs as UID/GID 10001. PostgreSQL and Caddy initialize their own
+    # fresh bind directories; the API cannot chown its Android upload directory.
+    cat > "$directory/prepare-storage.sh" <<'BASH'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
+if [[ -n ${DOCKER_CONTEXT:-} || -z ${DOCKER_HOST:-} ]]; then
+  endpoint=$(docker context inspect --format '{{.Endpoints.docker.Host}}')
+else
+  endpoint=$DOCKER_HOST
+fi
+[[ $endpoint == unix://* && -S ${endpoint#unix://} ]] || { echo 'Bind storage preparation requires a local Docker socket.' >&2; exit 1; }
+[[ -d data/android-backups && ! -L data/android-backups ]] || { echo 'Expected a real Android data directory.' >&2; exit 1; }
+data_dir="$(pwd -P)/data/android-backups"
+# Mount over the helper image's declared data volume so no anonymous volume is
+# created. Change only this directory's owner, without recursive chmod/chown.
+docker run --rm --user 0:0 --entrypoint chown \
+  --mount "type=bind,source=$data_dir,target=/var/lib/postgresql/data" \
+  postgres:17-alpine 10001:10001 /var/lib/postgresql/data
+BASH
+    chmod 700 "$directory/prepare-storage.sh"
+  fi
+}
+
 [[ $# == 0 ]] || fail 'Usage: bash deploy/setup.sh (interactive initial setup only)'
 [[ $(uname -s) == Linux ]] || fail 'This setup script supports Linux servers.'
 for tool in docker openssl sed grep mktemp; do
@@ -74,10 +128,22 @@ destination="$stacks_root/$project"
 if docker volume inspect "${project}_postgres-data" >/dev/null 2>&1; then
   fail 'A database volume already exists for that project. Use its existing deployment configuration.'
 fi
+for container in "${project}-app" "${project}-postgres"; do
+  if docker container inspect "$container" >/dev/null 2>&1; then
+    fail "Container name $container already exists. Choose another project name or use its existing configuration."
+  fi
+done
 
 printf '\nUse a release tag or sha tag to pin production. The default staging tag moves with main.\n'
 ask image 'Container image' ghcr.io/deranjer/vigara:staging
 [[ $image =~ ^[a-zA-Z0-9][a-zA-Z0-9._/:@-]*$ ]] || fail 'Invalid image reference.'
+
+storage=volumes
+if yesno 'Use bind-mounted data directories instead of Docker named volumes?'; then
+  storage=bind
+  require_local_docker
+  [[ $stacks_root != *,* ]] || fail 'Choose a Compose root without commas for bind storage.'
+fi
 
 mode=direct
 proxy_action=none
@@ -91,6 +157,7 @@ if yesno 'Use Caddy Docker Proxy labels for automatic HTTPS?'; then
   [[ $network =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] || fail 'Invalid network name.'
   ask proxy 'Caddy proxy container name (existing or new)' caddy-proxy
   [[ $proxy =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] || fail 'Invalid container name.'
+  [[ $proxy != "$project-app" && $proxy != "$project-postgres" ]] || fail 'The proxy name conflicts with a Vigara container name.'
   proxy_running=$(docker inspect --format '{{.State.Running}}' "$proxy" 2>/dev/null) || proxy_running=missing
   case "$proxy_running" in
     true)
@@ -116,14 +183,7 @@ if yesno 'Use Caddy Docker Proxy labels for automatic HTTPS?'; then
       [[ -z $(docker ps -aq --filter "label=com.docker.compose.project=$proxy_project") ]] || fail 'The proxy Compose project already has containers.'
       [[ -z $(docker volume ls -q --filter "label=com.docker.compose.project=$proxy_project") ]] || fail 'The proxy Compose project already has volumes.'
       check_proxy_ports
-      if [[ -n ${DOCKER_CONTEXT:-} || -z ${DOCKER_HOST:-} ]]; then
-        endpoint=$(docker context inspect --format '{{.Endpoints.docker.Host}}')
-      else
-        endpoint=$DOCKER_HOST
-      fi
-      [[ $endpoint == unix://* ]] || fail 'Automatic proxy deployment requires a local Unix Docker socket; remote Docker contexts are unsupported.'
-      socket=${endpoint#unix://}
-      [[ $socket =~ ^/[a-zA-Z0-9_./-]+$ && -S $socket ]] || fail 'Cannot access the local Docker socket for the Caddy bind mount.'
+      require_local_docker
       ask proxy_image 'Caddy Docker Proxy image' lucaslorentz/caddy-docker-proxy:alpine
       [[ $proxy_image =~ ^[a-zA-Z0-9][a-zA-Z0-9._/:@-]*$ ]] || fail 'Invalid proxy image reference.'
       ;;
@@ -185,13 +245,17 @@ backup_key=$(openssl rand -base64 32)
 unset password backup_key
 if [[ $mode == caddy ]]; then
   # Forward generated application settings without changing the shared template.
-  sed '/      VIGARA_ADDR:/i\      VIGARA_BACKUP_MASTER_KEY: ${VIGARA_BACKUP_MASTER_KEY:?Set VIGARA_BACKUP_MASTER_KEY}' \
+  sed -e 's/\r$//' -e '/      VIGARA_ADDR:/i\      VIGARA_BACKUP_MASTER_KEY: ${VIGARA_BACKUP_MASTER_KEY:?Set VIGARA_BACKUP_MASTER_KEY}' \
     "$script_dir/compose.caddy.example.yml" > "$temporary/compose.yml"
 else
-  sed -e 's/env_file: .env.staging/env_file: .env/g' \
+  sed -e 's/\r$//' -e 's/env_file: .env.staging/env_file: .env/g' \
     -e 's/"${VIGARA_PORT:-8080}:8080"/"${VIGARA_BIND_ADDRESS:-127.0.0.1}:${VIGARA_PORT:-8080}:8080"/' \
     "$script_dir/compose.staging.yml" > "$temporary/compose.yml"
 fi
+sed -i -e "/^  app:$/a\    container_name: ${project}-app" \
+  -e "/^  db:$/a\    container_name: ${project}-postgres" \
+  -e "/^  postgres:$/a\    container_name: ${project}-postgres" "$temporary/compose.yml"
+if [[ $storage == bind ]]; then use_bind_storage "$temporary"; fi
 write_helper "$temporary" "$project"
 readiness_url=${mcp_origin:-$url}
 cp -- "$script_dir/check-ready.sh" "$temporary/check-ready.sh"
@@ -204,10 +268,11 @@ chmod 700 "$temporary/check.sh" "$temporary/check-ready.sh"
 bash "$temporary/compose.sh" config --quiet
 if [[ $proxy_action == create ]]; then
   mkdir "$temporary/proxy"
-  cp -- "$script_dir/compose.caddy-proxy.example.yml" "$temporary/proxy/compose.yml"
+  sed 's/\r$//' "$script_dir/compose.caddy-proxy.example.yml" > "$temporary/proxy/compose.yml"
   printf 'VIGARA_CADDY_IMAGE=%s\nVIGARA_CADDY_CONTAINER=%s\nVIGARA_PROXY_NETWORK=%s\nVIGARA_DOCKER_SOCKET=%s\n' \
     "$proxy_image" "$proxy" "$network" "$socket" > "$temporary/proxy/.env"
   write_helper "$temporary/proxy" "$proxy_project"
+  if [[ $storage == bind ]]; then use_bind_storage "$temporary/proxy"; fi
   bash "$temporary/proxy/compose.sh" config --quiet
   mv -T -- "$temporary/proxy" "$proxy_destination"
 fi
@@ -217,6 +282,11 @@ trap - EXIT
 printf '\nConfiguration validated and saved to %s\nProject: %s\nImage: %s\nAccess: %s\n' "$destination" "$project" "$image" "$url"
 printf 'Back up .env securely: it contains the database password and backup master key.\n'
 printf 'Shared Compose root: %s\n' "$stacks_root"
+printf 'Persistent storage: %s\nContainer names: %s-app, %s-postgres\n' "$storage" "$project" "$project"
+if [[ $storage == bind ]]; then
+  printf 'Vigara data: %s/data\n' "$destination"
+  [[ $proxy_action != create ]] || printf 'Caddy data: %s/data\n' "$proxy_destination"
+fi
 printf 'When enrolling the host agent, set VIGARA_COMPOSE_MANAGED_ROOT=%q for new managed stacks.\n' "$stacks_root"
 if [[ -n $mcp_origin ]]; then
   printf 'MCP endpoint: %s/mcp\nConnection instructions: Account settings > Claude and ChatGPT.\n' "$mcp_origin"
@@ -228,7 +298,9 @@ if ! yesno 'Pull images and start Vigara (and the approved proxy) now?'; then
   elif [[ $proxy_action == start ]]; then
     printf 'Start Caddy first: docker start %q\n' "$proxy"
   fi
-  printf 'Start later:\n  bash %q/compose.sh pull\n  bash %q/compose.sh up -d --wait --wait-timeout 120\n' "$destination" "$destination"
+  printf 'Start later:\n  bash %q/compose.sh pull\n' "$destination"
+  [[ ! -f "$destination/prepare-storage.sh" ]] || printf '  bash %q/prepare-storage.sh\n' "$destination"
+  printf '  bash %q/compose.sh up -d --wait --wait-timeout 120\n' "$destination"
   printf 'Verify readiness afterward: bash %q/check.sh\n' "$destination"
   exit 0
 fi
@@ -240,6 +312,9 @@ elif [[ $proxy_action == start ]]; then
   docker start "$proxy" >/dev/null || fail 'Could not start the existing proxy. Inspect its logs and port bindings.'
 fi
 bash "$destination/compose.sh" pull || fail "Image pull failed. For private GHCR images, run docker login ghcr.io, then retry with $destination/compose.sh pull."
+if [[ -f "$destination/prepare-storage.sh" ]]; then
+  bash "$destination/prepare-storage.sh" || fail "Could not prepare bind storage permissions. Retry with: bash $destination/prepare-storage.sh"
+fi
 if ! bash "$destination/compose.sh" up -d --wait --wait-timeout 120; then
   bash "$destination/compose.sh" ps
   fail "Startup failed. Inspect with: bash $destination/compose.sh logs --tail 100"

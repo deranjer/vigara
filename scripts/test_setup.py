@@ -24,6 +24,8 @@ case "$*" in
   'ps -q '*) [[ ${BUSY_DOCKER_PORT:-0} != 1 ]] || echo existing-port-owner;;
   'volume ls '*) [[ ${EXISTING_VOLUME:-0} != 1 ]] || echo existing-volume;;
   'volume inspect '*) exit 1;;
+  'container inspect '*) [[ ${CONFLICT_NAME:-0} == 1 ]];;
+  'run '*) [[ ${FAIL_PERMISSIONS:-0} != 1 ]];;
   'network inspect --format '*) echo caddy-proxy;;
   'network inspect '*) [[ ${FAIL_NETWORK:-0} != 1 ]];;
   'inspect --format {{range '*) echo web;;
@@ -88,7 +90,7 @@ esac
         self.environment = dict(os.environ, PATH=str(binary) + os.pathsep + os.environ["PATH"],
                                 CALLS=str(self.calls), HOME=str(self.root), TEST_SOCKET=str(self.root / 'docker.sock'))
 
-    def run_setup(self, answers, root_answer='', mcp_answer='n', proxy_answers=None, **environment):
+    def run_setup(self, answers, root_answer='', mcp_answer='n', proxy_answers=None, storage_answer='n', **environment):
         # Fixtures below describe the original project/image/network prompts.
         # Add the shared-root answer and MCP opt-in before the startup answer.
         lines = answers.splitlines()
@@ -98,6 +100,8 @@ esac
                 lines.insert(6, proxy_answers)
         if lines:
             lines.insert(1, root_answer)
+        if len(lines) >= 3:
+            lines.insert(3, storage_answer)
         answers = '\n'.join(lines) + ('\n' if lines else '')
         return subprocess.run(["bash", str(self.deploy / "setup.sh")], input=answers,
                               text=True, capture_output=True, cwd=self.root,
@@ -116,6 +120,10 @@ esac
         compose = (production / "compose.yml").read_text()
         self.assertIn('env_file: .env', compose)
         self.assertIn('${VIGARA_BIND_ADDRESS:-127.0.0.1}', compose)
+        self.assertIn('container_name: vigara-app', compose)
+        self.assertIn('container_name: vigara-postgres', compose)
+        self.assertIn('postgres-data:/var/lib/postgresql/data', compose)
+        self.assertFalse((production / 'data').exists())
         self.assertNotIn(' up -d ', self.calls.read_text())
         self.assertNotIn('pull', self.calls.read_text())
         self.assertNotIn(env.splitlines()[0], result.stdout)
@@ -336,6 +344,91 @@ esac
         self.assertLess(calls.index(' pull'), calls.index(' up -d'))
         self.assertIn('Open your external HTTPS URL', result.stdout)
         self.assertNotIn(' down', calls)
+
+    def test_explicit_container_name_conflict(self):
+        result = self.run_setup('\n', CONFLICT_NAME='1')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Container name vigara-app already exists', result.stderr)
+        self.assertFalse(self.production.exists())
+
+    def test_proxy_name_cannot_match_app(self):
+        result = self.run_setup('\n\ny\nvigara.example.com\n\nvigara-app\nn\n')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('proxy name conflicts', result.stderr)
+
+    def test_bind_storage_direct(self):
+        result = self.run_setup('\n\nn\n\n\nn\nn\n', storage_answer='y', root_answer='~/shared stacks')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        production = self.root / 'shared stacks' / 'vigara'
+        self.assertTrue((production / 'data' / 'postgres').is_dir())
+        self.assertTrue((production / 'data' / 'android-backups').is_dir())
+        compose = (production / 'compose.yml').read_text()
+        self.assertNotIn('\nvolumes:\n', compose)
+        self.assertIn('source: ./data/postgres', compose)
+        self.assertIn('source: ./data/android-backups', compose)
+        self.assertIn('create_host_path: false', compose)
+        self.assertIn('container_name: vigara-app', compose)
+        self.assertIn('container_name: vigara-postgres', compose)
+        self.assertTrue((production / 'prepare-storage.sh').exists())
+        self.assertIn('prepare-storage.sh', result.stdout)
+        self.assertNotIn('run --rm', self.calls.read_text())
+
+    def test_bind_storage_initializes_permissions_before_start(self):
+        result = self.run_setup('\n\nn\n\n\nn\ny\n', storage_answer='y')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls.read_text()
+        self.assertIn('--entrypoint chown', calls)
+        self.assertIn('10001:10001 /var/lib/postgresql/data', calls)
+        self.assertLess(calls.index('run --rm'), calls.index(' up -d'))
+        self.assertNotIn('chown -R', calls)
+
+    def test_permission_failure_retains_bind_configuration(self):
+        result = self.run_setup('\n\nn\n\n\nn\ny\n', storage_answer='y', FAIL_PERMISSIONS='1')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Could not prepare bind storage permissions', result.stderr)
+        self.assertTrue((self.production / '.env').exists())
+        self.assertNotIn(' up -d ', self.calls.read_text())
+
+    def test_bind_storage_rejects_remote_daemon(self):
+        result = self.run_setup('\n\nn\n\n\nn\nn\n', storage_answer='y', TEST_ENDPOINT='tcp://remote.example:2376')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.production.exists())
+
+    def test_bind_mounts_and_names_with_real_compose(self):
+        available = subprocess.run(['docker', 'compose', 'version'], capture_output=True)
+        if available.returncode:
+            self.skipTest('A real Docker Compose CLI is unavailable')
+        for caddy in (False, True):
+            with self.subTest(caddy=caddy):
+                answers = ('vigara-prod\n\ny\nvigara.example.com\n\n\nn\n' if caddy
+                           else 'vigara-prod\n\nn\n\n\nn\nn\n')
+                result = self.run_setup(answers, storage_answer='y', root_answer='~/shared stacks',
+                                        proxy_answers='y\n' if caddy else None, PROXY_STATE='missing')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                runtime = self.root / 'shared stacks'
+                directories = [runtime / 'vigara-prod']
+                if caddy:
+                    directories.append(runtime / 'vigara-prod-caddy')
+                for directory in directories:
+                    parsed = subprocess.run(['bash', str(directory / 'compose.sh'), 'config', '--format', 'json'],
+                                            capture_output=True, text=True)
+                    self.assertEqual(parsed.returncode, 0, parsed.stderr)
+                    config = json.loads(parsed.stdout)
+                    self.assertFalse(config.get('volumes'))
+                    for service in config['services'].values():
+                        for mount in service.get('volumes', []):
+                            self.assertEqual(mount['type'], 'bind')
+                            if mount['target'] != '/var/run/docker.sock':
+                                self.assertFalse(mount.get('bind', {}).get('create_host_path', False))
+                                self.assertTrue(Path(mount['source']).is_dir())
+                    if directory.name == 'vigara-prod':
+                        self.assertEqual(config['services']['app']['container_name'], 'vigara-prod-app')
+                        db = config['services']['postgres' if caddy else 'db']
+                        self.assertEqual(db['container_name'], 'vigara-prod-postgres')
+                    else:
+                        self.assertEqual(config['services']['caddy']['container_name'], 'caddy-proxy')
+                for directory in directories:
+                    shutil.rmtree(directory)
 
     def test_early_eof(self):
         self.assertNotEqual(self.run_setup('').returncode, 0)
