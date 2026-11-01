@@ -64,7 +64,9 @@ func EncryptDotenv(ctx context.Context, sopsBinary string, plaintext []byte, rec
 	if err != nil {
 		return nil, err
 	}
-	args := []string{"encrypt", "--input-type", "binary", "--output-type", "binary", "--filename-override", "vigara.env", "--age", strings.Join(clean, ",")}
+	// Explicit stdin plus the retained global flags also supports the SOPS
+	// package shipped by the Linux runtime image (3.9), without a plaintext file.
+	args := []string{"--encrypt", "--input-type", "binary", "--output-type", "binary", "--filename-override", "vigara.env", "--age", strings.Join(clean, ","), "/dev/stdin"}
 	out, err := runSOPS(ctx, sopsBinary, "", plaintext, args...)
 	if err != nil {
 		if errors.Is(err, ErrOutputTooLarge) {
@@ -167,12 +169,12 @@ func DecryptDotenv(ctx context.Context, sopsBinary, identityFile string, ciphert
 	if len(ciphertext) == 0 || len(ciphertext) > maxDocumentBytes {
 		return nil, ErrInvalidDocument
 	}
-	args := []string{"decrypt", "--input-type", "binary", "--output-type", "binary"}
+	args := []string{"--decrypt", "--input-type", "binary", "--output-type", "binary", "/dev/stdin"}
 	if !isSOPSBinary(ciphertext) {
 		if !isSOPSDotenv(ciphertext) {
 			return nil, ErrInvalidDocument
 		}
-		args = []string{"decrypt", "--input-type", "dotenv", "--output-type", "dotenv"}
+		args = []string{"--decrypt", "--input-type", "dotenv", "--output-type", "dotenv", "/dev/stdin"}
 	}
 	identityFile, err := filepath.Abs(identityFile)
 	if err != nil || validateIdentityFile(identityFile) != nil {
@@ -253,6 +255,18 @@ func isSOPSBinary(doc []byte) bool {
 	for key := range metadata {
 		switch key {
 		case "age", "lastmodified", "mac", "version":
+		case "kms", "gcp_kms", "azure_kv", "hc_vault", "pgp":
+			// Older SOPS versions serialize absent providers. Never allow a
+			// configured backend: that could contact an untrusted key service.
+			value := bytes.TrimSpace(metadata[key])
+			if !bytes.Equal(value, []byte("null")) && !bytes.Equal(value, []byte("[]")) {
+				return false
+			}
+		case "unencrypted_suffix":
+			var suffix string
+			if json.Unmarshal(metadata[key], &suffix) != nil || suffix != "_unencrypted" {
+				return false
+			}
 		default:
 			return false
 		}

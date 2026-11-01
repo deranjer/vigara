@@ -45,7 +45,19 @@ func TestSOPSArtifactClassifierRejectsExternalProviders(t *testing.T) {
 	if !IsEncryptedBinaryArtifact(good) {
 		t.Fatal("age-only SOPS binary artifact rejected")
 	}
-	withKMS := bytes.Replace(good, []byte(`"version":"3.13.3"`), []byte(`"version":"3.13.3","kms":[]`), 1)
+	for _, provider := range []string{"kms", "gcp_kms", "azure_kv", "hc_vault", "pgp"} {
+		for _, empty := range []string{"null", "[]"} {
+			placeholder := bytes.Replace(good, []byte(`"version":"3.13.3"`), []byte(`"version":"3.9.4","`+provider+`":`+empty+`,"unencrypted_suffix":"_unencrypted"`), 1)
+			if !IsEncryptedBinaryArtifact(placeholder) {
+				t.Fatalf("legacy empty %s placeholder rejected", provider)
+			}
+		}
+		configured := bytes.Replace(good, []byte(`"version":"3.13.3"`), []byte(`"version":"3.13.3","`+provider+`":[{"arn":"untrusted"}]`), 1)
+		if IsEncryptedBinaryArtifact(configured) {
+			t.Fatalf("configured external provider %s accepted", provider)
+		}
+	}
+	withKMS := bytes.Replace(good, []byte(`"version":"3.13.3"`), []byte(`"version":"3.13.3","kms":[{"arn":"untrusted"}]`), 1)
 	if IsEncryptedBinaryArtifact(withKMS) {
 		t.Fatal("SOPS artifact with KMS metadata accepted")
 	}
@@ -107,7 +119,7 @@ func TestSOPSAgeRoundTripRotationAndRecovery(t *testing.T) {
 	}
 
 	// Independently invoke SOPS, the same interoperable tool used by operators.
-	cmd := exec.Command(sops, "decrypt", "--input-type", "binary", "--output-type", "binary")
+	cmd := exec.Command(sops, "--decrypt", "--input-type", "binary", "--output-type", "binary", "/dev/stdin")
 	cmd.Stdin = bytes.NewReader(ciphertext)
 	cmd.Env = []string{"HOME=" + t.TempDir(), "SOPS_AGE_KEY_FILE=" + recovery.PrivatePath}
 	independent, err := cmd.Output()
