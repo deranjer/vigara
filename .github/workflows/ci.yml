@@ -6,6 +6,11 @@ on:
 permissions:
   contents: read
 jobs:
+  deployment:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/test_deployment_env.py
   go:
     runs-on: ubuntu-latest
     services:

@@ -12,17 +12,17 @@ services:
       retries: 20
 
   app:
-    image: ${VIGIRA_IMAGE:-ghcr.io/deranjer/vigara:staging}
+    image: ${VIGARA_IMAGE:-ghcr.io/deranjer/vigara:staging}
     restart: unless-stopped
     env_file: .env.staging
     environment:
-      VIGIRA_ADDR: ":8080"
-      VIGIRA_DATABASE_URL: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}?sslmode=disable"
+      VIGARA_ADDR: ":8080"
+      VIGARA_DATABASE_URL: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}?sslmode=disable"
     depends_on:
       db:
         condition: service_healthy
     ports:
-      - "${VIGIRA_PORT:-8080}:8080"
+      - "${VIGARA_PORT:-8080}:8080"
     volumes:
       - android-backups:/var/lib/vigira/android-backups
 
