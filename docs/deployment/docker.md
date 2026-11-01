@@ -12,8 +12,8 @@ For a new server deployment, run from your cloned repository:
 bash deploy/setup.sh
 ```
 
-The script checks Docker access and Compose support, asks for an image and
-project name, and offers either Caddy Docker Proxy labels or a published IPv4
+The script checks Docker access and Compose support, asks for an image,
+project name and shared Compose root, and offers Caddy Docker Proxy labels or a published IPv4
 port. For Caddy it asks for the hostname, existing network and running proxy
 container, and checks the container's network attachment. Start your Caddy
 project first. DNS and inbound ports 80/443 must already route to your proxy.
@@ -21,16 +21,32 @@ For direct access, it defaults to loopback port 8080 and asks whether a separate
 HTTPS proxy will serve it, enabling secure cookies when appropriate.
 
 It generates a database password and backup master key, writes private files
-under `deploy/production/` (ignored by Git), and validates Compose before asking
+under `<compose-root>/<project>/`, and validates Compose before asking
 whether to pull images and start. No credentials are printed. The script stops
-if that directory or the selected project's containers or volumes already
+if that deployment directory or the selected project's containers or volumes already
 exist; it is an initial installer, not an adoption or migration tool.
 
-After setup, use the generated helper from any working directory:
+The shared root defaults to `~/dockers/compose-stacks`, so the default Vigara
+deployment lives in `~/dockers/compose-stacks/vigara/`, outside the cloned source
+repository. You can choose another absolute path, including paths with spaces.
+Other stacks can live alongside Vigara in their own subdirectories. Existing
+stack directories are left in place. The installer refuses a root within the
+Vigara source checkout.
+
+When configuring the host agent for new managed stacks, set its
+`VIGARA_COMPOSE_MANAGED_ROOT` to this same absolute root and grant the agent
+write access through both filesystem permissions and its service sandbox. This
+is an **agent** setting, not an API server setting. The installer prints the
+selected value; agent installation/enrollment remains a separate step. Existing
+stacks still require explicit target configuration; choosing a root does not
+automatically adopt or relocate them.
+
+After setup, use the generated helper from any working directory (substitute
+your chosen root and project):
 
 ```sh
-bash deploy/production/compose.sh ps
-bash deploy/production/compose.sh logs --tail 100
+bash ~/dockers/compose-stacks/vigara/compose.sh ps
+bash ~/dockers/compose-stacks/vigara/compose.sh logs --tail 100
 ```
 
 The helper keeps the project name, environment file and Compose file together.
@@ -38,6 +54,15 @@ It clears exported `VIGARA_*`, `VIGIRA_*`, `POSTGRES_*` and `COMPOSE_*` variable
 so the generated `.env` remains authoritative. Edit that file for later changes.
 Back it up securely; losing or replacing the backup master key can make managed
 backup credentials unrecoverable. Keep the generated Compose file too.
+
+Installations previously created under `deploy/production/` can keep using their
+existing helper. This installer does not migrate them or change their storage.
+
+The installer also offers read-only MCP access for ChatGPT and Claude. For Caddy,
+it uses the selected HTTPS hostname. Direct-port deployments need an existing
+HTTPS proxy and its public origin. MCP remains disabled unless you opt in.
+After startup, open **Account settings → Claude and ChatGPT** for the connection
+URL, OAuth instructions for each client, and application revocation.
 
 If a pull fails for a private image, authenticate with `docker login ghcr.io`,
 then retry `compose.sh pull` and `compose.sh up -d --wait --wait-timeout 120`.

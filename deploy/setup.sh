@@ -33,12 +33,20 @@ while IFS= read -r variable; do
 done < <(compgen -e)
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
-destination="$script_dir/production"
-[[ ! -e "$destination" && ! -L "$destination" ]] || fail "Setup already exists at $destination. Use its compose.sh helper; setup never overwrites credentials."
+repo_dir=$(cd -- "$script_dir/.." && pwd -P)
 printf '\nVigara initial server setup\n'
 printf 'This creates a new deployment. Existing deployments should keep their original project and database storage.\n'
 ask project 'New Compose project name' vigara
 [[ $project =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail 'Project names must use lowercase letters, numbers, underscores or hyphens.'
+ask stacks_root 'Shared directory for all Compose stacks (including Vigara)' "$HOME/dockers/compose-stacks"
+case "$stacks_root" in '~') stacks_root=$HOME;; '~/'*) stacks_root="$HOME/${stacks_root:2}";; esac
+[[ $stacks_root == /* ]] || fail 'Choose an absolute path or a path starting with ~/.'
+[[ $stacks_root != *$'\n'* && $stacks_root != *$'\r'* ]] || fail 'The path must not contain line breaks.'
+mkdir -p -- "$stacks_root" || fail 'Cannot create the Compose root. Check its ownership and permissions.'
+stacks_root=$(cd -- "$stacks_root" && pwd -P)
+[[ $stacks_root != "$repo_dir" && $stacks_root != "$repo_dir/"* ]] || fail 'Choose a Compose root outside the Vigara source checkout.'
+destination="$stacks_root/$project"
+[[ ! -e "$destination" && ! -L "$destination" ]] || fail "Setup already exists at $destination. Use its compose.sh helper; setup never overwrites credentials."
 [[ -z $(docker ps -aq --filter "label=com.docker.compose.project=$project") ]] || fail 'That Compose project already has containers. Use its existing deployment configuration.'
 [[ -z $(docker volume ls -q --filter "label=com.docker.compose.project=$project") ]] || fail 'That project already has persistent volumes. Preserve its existing deployment configuration.'
 if docker volume inspect "${project}_postgres-data" >/dev/null 2>&1; then
@@ -85,13 +93,28 @@ else
   url="http://$host:$port"
 fi
 
-temporary=$(mktemp -d "$script_dir/.setup.XXXXXXXX")
+mcp_origin=''
+if yesno 'Enable read-only MCP connections for ChatGPT and Claude?'; then
+  printf 'Use a public HTTPS origin reachable by both services; Vigara supplies OAuth sign-in.\n'
+  default_origin=''
+  [[ $mode != caddy ]] || default_origin="https://$domain"
+  ask mcp_origin 'Public Vigara origin (https://hostname, without /mcp)' "$default_origin"
+  [[ $mcp_origin =~ ^https://[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?(:[0-9]{1,5})?$ ]] || fail 'MCP requires an HTTPS origin without a path, query or credentials.'
+  if [[ $mode == caddy ]]; then
+    [[ $mcp_origin == "https://$domain" ]] || fail 'Use the same origin as the Caddy hostname.'
+  else
+    [[ $secure == true ]] || fail 'Configure an HTTPS reverse proxy before enabling MCP.'
+  fi
+fi
+
+temporary=$(mktemp -d "$stacks_root/.vigara-setup.XXXXXXXX")
 trap 'rm -rf -- "$temporary"' EXIT
 password=$(openssl rand -hex 32)
 backup_key=$(openssl rand -base64 32)
 {
   printf 'POSTGRES_PASSWORD=%s\nVIGARA_IMAGE=%s\n' "$password" "$image"
   printf 'VIGARA_BACKUP_MASTER_KEY=%s\n' "$backup_key"
+  printf 'VIGARA_MCP_URL=%s\n' "$mcp_origin"
   if [[ $mode == caddy ]]; then
     printf 'VIGARA_DOMAIN=%s\nVIGARA_PROXY_NETWORK=%s\n' "$domain" "$network"
   else
@@ -102,7 +125,7 @@ backup_key=$(openssl rand -base64 32)
 unset password backup_key
 if [[ $mode == caddy ]]; then
   # Forward generated application settings without changing the shared template.
-  sed '/    environment:/a\      VIGARA_BACKUP_MASTER_KEY: ${VIGARA_BACKUP_MASTER_KEY:?Set VIGARA_BACKUP_MASTER_KEY}' \
+  sed '/      VIGARA_ADDR:/i\      VIGARA_BACKUP_MASTER_KEY: ${VIGARA_BACKUP_MASTER_KEY:?Set VIGARA_BACKUP_MASTER_KEY}' \
     "$script_dir/compose.caddy.example.yml" > "$temporary/compose.yml"
 else
   sed -e 's/env_file: .env.staging/env_file: .env/g' \
@@ -125,6 +148,11 @@ trap - EXIT
 
 printf '\nConfiguration validated and saved to %s\nProject: %s\nImage: %s\nAccess: %s\n' "$destination" "$project" "$image" "$url"
 printf 'Back up .env securely: it contains the database password and backup master key.\n'
+printf 'Shared Compose root: %s\n' "$stacks_root"
+printf 'When enrolling the host agent, set VIGARA_COMPOSE_MANAGED_ROOT=%q for new managed stacks.\n' "$stacks_root"
+if [[ -n $mcp_origin ]]; then
+  printf 'MCP endpoint: %s/mcp\nConnection instructions: Account settings > Claude and ChatGPT.\n' "$mcp_origin"
+fi
 printf 'Manage this deployment with: bash %q/compose.sh ps\n' "$destination"
 if ! yesno 'Pull images and start Vigara now?'; then
   printf 'Start later:\n  bash %q/compose.sh pull\n  bash %q/compose.sh up -d --wait --wait-timeout 120\n' "$destination" "$destination"

@@ -86,6 +86,13 @@ class DeploymentEnvironmentTests(unittest.TestCase):
         self.assertIn("VIGARA_AGENT_RELEASE_HOST_DIR", self.render(
             {"VIGARA_PUBLIC_URL": "https://vigara.example.com"}, downloads=True, success=False))
 
+    def test_caddy_mcp_environment(self):
+        for origin in ('', 'https://vigara.example.com'):
+            with self.subTest(origin=origin):
+                app = self.render({'VIGARA_DOMAIN': 'vigara.example.com',
+                                   'VIGARA_MCP_URL': origin}, caddy=True)['services']['app']
+                self.assertEqual(app['environment']['VIGARA_MCP_URL'], origin)
+
 
 if __name__ == "__main__":
     unittest.main()
