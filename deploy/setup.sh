@@ -18,6 +18,28 @@ yesno() {
   done
 }
 
+write_helper() {
+  local directory=$1 name=$2
+  {
+    printf '#!/usr/bin/env bash\nset -Eeuo pipefail\n'
+    printf 'cd -- "$(dirname -- "${BASH_SOURCE[0]}")"\n'
+    printf 'while IFS= read -r variable; do\n'
+    printf '  case "$variable" in VIGARA_*|VIGIRA_*|POSTGRES_*|COMPOSE_*) unset "$variable";; esac\n'
+    printf 'done < <(compgen -e)\n'
+    printf 'exec docker compose -p %q --env-file .env -f compose.yml "$@"\n' "$name"
+  } > "$directory/compose.sh"
+  chmod 700 "$directory/compose.sh"
+}
+
+check_proxy_ports() {
+  command -v ss >/dev/null || fail 'Install iproute2 (ss) to check ports before deploying Caddy.'
+  local port
+  for port in 80 443; do
+    [[ -z $(ss -H -ltn "sport = :$port") ]] || fail "Port $port is already listening. Use the existing proxy or free the port first."
+    [[ -z $(docker ps -q --filter "publish=$port") ]] || fail "Docker already publishes port $port. Use the existing proxy or free the port first."
+  done
+}
+
 [[ $# == 0 ]] || fail 'Usage: bash deploy/setup.sh (interactive initial setup only)'
 [[ $(uname -s) == Linux ]] || fail 'This setup script supports Linux servers.'
 for tool in docker openssl sed grep mktemp; do
@@ -58,18 +80,55 @@ ask image 'Container image' ghcr.io/deranjer/vigara:staging
 [[ $image =~ ^[a-zA-Z0-9][a-zA-Z0-9._/:@-]*$ ]] || fail 'Invalid image reference.'
 
 mode=direct
-if yesno 'Use HTTPS labels for an existing caddy-docker-proxy?'; then
+proxy_action=none
+proxy_destination=''
+if yesno 'Use Caddy Docker Proxy labels for automatic HTTPS?'; then
   mode=caddy
+  command -v curl >/dev/null || fail 'Install curl to verify HTTPS readiness.'
   ask domain 'Vigara hostname (without https:// or a path)' ''
   [[ ${#domain} -le 253 && $domain == *.* && $domain != *..* && $domain =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$ ]] || fail 'Enter a valid DNS hostname.'
-  ask network 'Existing Caddy Docker network' web
+  ask network 'Shared Caddy Docker network' web
   [[ $network =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] || fail 'Invalid network name.'
-  docker network inspect "$network" >/dev/null 2>&1 || fail 'Proxy network does not exist. Start your Caddy project first.'
-  ask proxy 'Running Caddy proxy container name' caddy-proxy
+  ask proxy 'Caddy proxy container name (existing or new)' caddy-proxy
   [[ $proxy =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] || fail 'Invalid container name.'
-  [[ $(docker inspect --format '{{.State.Running}}' "$proxy" 2>/dev/null) == true ]] || fail 'Start the Caddy proxy before continuing.'
-  docker network inspect --format '{{range .Containers}}{{println .Name}}{{end}}' "$network" |
-    grep -Fxq "$proxy" || fail 'The Caddy container is not attached to the selected network.'
+  proxy_running=$(docker inspect --format '{{.State.Running}}' "$proxy" 2>/dev/null) || proxy_running=missing
+  case "$proxy_running" in
+    true)
+      docker network inspect "$network" >/dev/null 2>&1 || fail 'The existing proxy network is unavailable.'
+      docker network inspect --format '{{range .Containers}}{{println .Name}}{{end}}' "$network" |
+        grep -Fxq "$proxy" || fail 'The Caddy container is not attached to the selected network.'
+      printf 'Using running proxy %s.\n' "$proxy"
+      ;;
+    false)
+      yesno "Start the existing stopped Caddy container $proxy during startup?" || fail 'Start your Caddy proxy, then rerun setup.'
+      docker inspect --format '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' "$proxy" |
+        grep -Fxq "$network" || fail 'The stopped proxy is not configured for the selected network.'
+      check_proxy_ports
+      proxy_action=start
+      ;;
+    missing)
+      printf 'No container named %s exists. A new proxy will publish ports 80/443 and access the Docker socket to read routing labels. Docker socket access is privileged.\n' "$proxy"
+      yesno 'Deploy a new Caddy Docker Proxy stack during startup?' || fail 'Caddy deployment declined. Start your own proxy before rerunning setup.'
+      proxy_action=create
+      proxy_project="${project}-caddy"
+      proxy_destination="$stacks_root/$proxy_project"
+      [[ ! -e "$proxy_destination" && ! -L "$proxy_destination" ]] || fail 'The proxy deployment directory already exists. Use its existing configuration.'
+      [[ -z $(docker ps -aq --filter "label=com.docker.compose.project=$proxy_project") ]] || fail 'The proxy Compose project already has containers.'
+      [[ -z $(docker volume ls -q --filter "label=com.docker.compose.project=$proxy_project") ]] || fail 'The proxy Compose project already has volumes.'
+      check_proxy_ports
+      if [[ -n ${DOCKER_CONTEXT:-} || -z ${DOCKER_HOST:-} ]]; then
+        endpoint=$(docker context inspect --format '{{.Endpoints.docker.Host}}')
+      else
+        endpoint=$DOCKER_HOST
+      fi
+      [[ $endpoint == unix://* ]] || fail 'Automatic proxy deployment requires a local Unix Docker socket; remote Docker contexts are unsupported.'
+      socket=${endpoint#unix://}
+      [[ $socket =~ ^/[a-zA-Z0-9_./-]+$ && -S $socket ]] || fail 'Cannot access the local Docker socket for the Caddy bind mount.'
+      ask proxy_image 'Caddy Docker Proxy image' lucaslorentz/caddy-docker-proxy:alpine
+      [[ $proxy_image =~ ^[a-zA-Z0-9][a-zA-Z0-9._/:@-]*$ ]] || fail 'Invalid proxy image reference.'
+      ;;
+    *) fail 'Could not determine the proxy state.';;
+  esac
   printf 'Point %s at your proxy and route ports 80/443 to it. Caddy will discover the labels.\n' "$domain"
   url="https://$domain"
 else
@@ -95,6 +154,7 @@ fi
 
 mcp_origin=''
 if yesno 'Enable read-only MCP connections for ChatGPT and Claude?'; then
+  command -v curl >/dev/null || fail 'Install curl to verify MCP readiness.'
   printf 'Use a public HTTPS origin reachable by both services; Vigara supplies OAuth sign-in.\n'
   default_origin=''
   [[ $mode != caddy ]] || default_origin="https://$domain"
@@ -132,17 +192,25 @@ else
     -e 's/"${VIGARA_PORT:-8080}:8080"/"${VIGARA_BIND_ADDRESS:-127.0.0.1}:${VIGARA_PORT:-8080}:8080"/' \
     "$script_dir/compose.staging.yml" > "$temporary/compose.yml"
 fi
+write_helper "$temporary" "$project"
+readiness_url=${mcp_origin:-$url}
+cp -- "$script_dir/check-ready.sh" "$temporary/check-ready.sh"
 {
   printf '#!/usr/bin/env bash\nset -Eeuo pipefail\n'
-  printf 'cd -- "$(dirname -- "${BASH_SOURCE[0]}")"\n'
-  printf 'while IFS= read -r variable; do\n'
-  printf '  case "$variable" in VIGARA_*|VIGIRA_*|POSTGRES_*|COMPOSE_*) unset "$variable";; esac\n'
-  printf 'done < <(compgen -e)\n'
-  printf 'exec docker compose -p %q --env-file .env -f compose.yml "$@"\n' "$project"
-} > "$temporary/compose.sh"
+  printf 'exec bash "$(dirname -- "${BASH_SOURCE[0]}")/check-ready.sh" %q %q\n' "$readiness_url" "$mcp_origin"
+} > "$temporary/check.sh"
 chmod 600 "$temporary/.env"
-chmod 700 "$temporary/compose.sh"
+chmod 700 "$temporary/check.sh" "$temporary/check-ready.sh"
 bash "$temporary/compose.sh" config --quiet
+if [[ $proxy_action == create ]]; then
+  mkdir "$temporary/proxy"
+  cp -- "$script_dir/compose.caddy-proxy.example.yml" "$temporary/proxy/compose.yml"
+  printf 'VIGARA_CADDY_IMAGE=%s\nVIGARA_CADDY_CONTAINER=%s\nVIGARA_PROXY_NETWORK=%s\nVIGARA_DOCKER_SOCKET=%s\n' \
+    "$proxy_image" "$proxy" "$network" "$socket" > "$temporary/proxy/.env"
+  write_helper "$temporary/proxy" "$proxy_project"
+  bash "$temporary/proxy/compose.sh" config --quiet
+  mv -T -- "$temporary/proxy" "$proxy_destination"
+fi
 mv -T -- "$temporary" "$destination"
 trap - EXIT
 
@@ -154,9 +222,22 @@ if [[ -n $mcp_origin ]]; then
   printf 'MCP endpoint: %s/mcp\nConnection instructions: Account settings > Claude and ChatGPT.\n' "$mcp_origin"
 fi
 printf 'Manage this deployment with: bash %q/compose.sh ps\n' "$destination"
-if ! yesno 'Pull images and start Vigara now?'; then
+if ! yesno 'Pull images and start Vigara (and the approved proxy) now?'; then
+  if [[ $proxy_action == create ]]; then
+    printf 'Start Caddy first:\n  docker network inspect %q >/dev/null 2>&1 || docker network create %q\n  bash %q/compose.sh pull\n  bash %q/compose.sh up -d --wait --wait-timeout 120\n' "$network" "$network" "$proxy_destination" "$proxy_destination"
+  elif [[ $proxy_action == start ]]; then
+    printf 'Start Caddy first: docker start %q\n' "$proxy"
+  fi
   printf 'Start later:\n  bash %q/compose.sh pull\n  bash %q/compose.sh up -d --wait --wait-timeout 120\n' "$destination" "$destination"
+  printf 'Verify readiness afterward: bash %q/check.sh\n' "$destination"
   exit 0
+fi
+if [[ $proxy_action == create ]]; then
+  bash "$proxy_destination/compose.sh" pull || fail "Proxy image pull failed. Retry with $proxy_destination/compose.sh pull. Configuration is retained."
+  docker network inspect "$network" >/dev/null 2>&1 || docker network create "$network" >/dev/null
+  bash "$proxy_destination/compose.sh" up -d --wait --wait-timeout 120 || fail "Proxy startup failed. Inspect with: bash $proxy_destination/compose.sh logs --tail 100"
+elif [[ $proxy_action == start ]]; then
+  docker start "$proxy" >/dev/null || fail 'Could not start the existing proxy. Inspect its logs and port bindings.'
 fi
 bash "$destination/compose.sh" pull || fail "Image pull failed. For private GHCR images, run docker login ghcr.io, then retry with $destination/compose.sh pull."
 if ! bash "$destination/compose.sh" up -d --wait --wait-timeout 120; then
@@ -165,11 +246,9 @@ if ! bash "$destination/compose.sh" up -d --wait --wait-timeout 120; then
 fi
 bash "$destination/compose.sh" ps
 if command -v curl >/dev/null; then
-  if curl --fail --silent --show-error --max-time 10 --retry 5 --retry-delay 2 --retry-connrefused "$url/healthz"; then
-    printf '\nHealth check passed.\n'
-  else
-    printf '\nHealth endpoint could not be reached. Check routing, DNS/TLS and app logs.\n' >&2
-  fi
+  bash "$destination/check.sh" || fail "Containers started, but readiness was not confirmed. Fix DNS/routing or inspect logs, then rerun: bash $destination/check.sh"
+else
+  printf 'curl is unavailable; readiness was not verified. Install curl, then run: bash %q/check.sh\n' "$destination"
 fi
 if [[ $mode == direct && $secure == true ]]; then
   printf 'Open your external HTTPS URL to sign in; secure cookies are enabled.\n'

@@ -1,1 +1,2 @@
 deploy/setup.sh text eol=lf
+deploy/check-ready.sh text eol=lf

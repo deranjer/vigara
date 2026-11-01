@@ -11,6 +11,12 @@ Caddy it uses the HTTPS hostname you selected. The script also asks for a shared
 Compose root; its generated files live in `<compose-root>/<project>/`, outside
 the source repository.
 
+The installer can also deploy Caddy Docker Proxy with your approval when the
+named proxy is missing, or start an existing stopped proxy. It starts the proxy
+before Vigara, then verifies HTTPS and OAuth discovery. Configure public DNS and
+forward TCP 80/443 to the server first. If verification fails, fix routing or TLS
+and run the generated `check.sh`; do not rerun initial setup or replace credentials.
+
 Open **Account settings → Claude and ChatGPT** for setup guidance even when MCP
 is disabled. When enabled, the page displays the configured server URL with a
 copy button and separate ChatGPT and Claude instructions. An enabled status

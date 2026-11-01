@@ -24,7 +24,8 @@ Go integration tests run when `VIGIRA_TEST_DATABASE_URL` points to a test Postgr
 
 For an interactive initial Linux server deployment, run `bash deploy/setup.sh`.
 It checks prerequisites, generates private configuration, and offers Caddy proxy
-labels or direct port access. See the [setup guide](docs/deployment/docker.md#interactive-linux-setup).
+labels or direct port access. With approval it can deploy Caddy, then verify HTTPS
+and MCP discovery. See the [setup guide](docs/deployment/docker.md#interactive-linux-setup).
 
 The [documentation site](https://deranjer.github.io/vigara/docs/) is built with Docusaurus from the Markdown files in `docs`. Run `pnpm docs:dev` to preview it locally or `pnpm docs:build` to check the production build. GitHub Actions deploys it to GitHub Pages when changes reach `main`.
 

@@ -14,9 +14,12 @@ bash deploy/setup.sh
 
 The script checks Docker access and Compose support, asks for an image,
 project name and shared Compose root, and offers Caddy Docker Proxy labels or a published IPv4
-port. For Caddy it asks for the hostname, existing network and running proxy
-container, and checks the container's network attachment. Start your Caddy
-project first. DNS and inbound ports 80/443 must already route to your proxy.
+port. For Caddy it asks for the hostname, shared network and proxy container name.
+A running proxy is reused after checking its network attachment. A stopped proxy
+can be started with your approval. If the named container does not exist, the
+script asks permission to deploy a new Caddy Docker Proxy stack alongside Vigara.
+DNS and inbound TCP ports 80/443 must route to this server; the script cannot
+change your DNS provider, router or firewall.
 For direct access, it defaults to loopback port 8080 and asks whether a separate
 HTTPS proxy will serve it, enabling secure cookies when appropriate.
 
@@ -25,6 +28,57 @@ under `<compose-root>/<project>/`, and validates Compose before asking
 whether to pull images and start. No credentials are printed. The script stops
 if that deployment directory or the selected project's containers or volumes already
 exist; it is an initial installer, not an adoption or migration tool.
+
+### Optional Caddy bootstrap
+
+When you approve a new proxy, the installer checks that TCP ports 80 and 443 are
+free, including Docker-published ports, and that the selected proxy project has
+no existing containers, volumes or deployment directory. It requires `ss`
+(normally supplied by `iproute2`), `curl`, and a local Unix Docker socket. Remote
+Docker contexts are rejected for automatic proxy deployment.
+
+With the default project name, the proxy files are written under
+`<compose-root>/vigara-caddy/` and Vigara under `<compose-root>/vigara/`. The proxy
+uses the separate `vigara-caddy` Compose project, the chosen container name, and
+the published `lucaslorentz/caddy-docker-proxy:alpine` release image by default;
+you can choose a pinned image in the prompt. Persistent volumes retain `/data`
+(certificates and ACME state) and `/config`. Preserve those volumes on upgrades.
+
+The proxy gets access to the Docker socket to discover labels across the host.
+This is privileged Docker access even though the socket mount is marked
+read-only. Review the deployment prompt before approving. The installer does
+not replace an existing proxy container or change its Caddyfile.
+
+After configuration validation and the final startup approval, setup pulls the
+proxy image, creates the shared network if missing, starts Caddy, then pulls and
+starts Vigara. If you defer startup, it prints the commands in that order.
+Failures retain both generated configurations for inspection and retry.
+
+### Verify HTTPS and MCP
+
+The generated `check.sh` verifies the health endpoint with normal TLS certificate
+validation and retries for up to approximately two minutes. With MCP enabled,
+it also checks public OAuth resource/issuer metadata and an unauthenticated
+`/mcp` request returning HTTP 401. A failed check returns a nonzero status and
+does not report setup as ready. The checks run from this server; cloud access
+and a live ChatGPT/Claude OAuth connection must still be verified separately.
+
+If HTTPS is not ready, check A and AAAA records, router forwarding/firewall rules
+for TCP 80/443, and the proxy/app logs. An incorrect AAAA record can prevent
+certificate issuance or connections even when the A record is correct. Retry
+verification without rerunning the installer or regenerating credentials:
+
+```sh
+bash ~/dockers/compose-stacks/vigara-caddy/compose.sh logs --tail 100
+bash ~/dockers/compose-stacks/vigara/compose.sh logs --tail 100
+bash ~/dockers/compose-stacks/vigara/check.sh
+```
+
+Substitute your selected root and project. For an existing externally managed
+proxy, use its own log commands. Direct access without MCP can run without curl,
+but the installer explicitly reports that readiness was not verified.
+
+### Deployment files and later management
 
 The shared root defaults to `~/dockers/compose-stacks`, so the default Vigara
 deployment lives in `~/dockers/compose-stacks/vigara/`, outside the cloned source
@@ -66,9 +120,9 @@ URL, OAuth instructions for each client, and application revocation.
 
 If a pull fails for a private image, authenticate with `docker login ghcr.io`,
 then retry `compose.sh pull` and `compose.sh up -d --wait --wait-timeout 120`.
-If startup fails, configuration is retained for inspection and retry. An optional
-HTTP health check follows startup; Caddy health checks also depend on DNS, TLS
-and routing. Complete the first administrator setup after opening the site.
+If startup fails, configuration is retained for inspection and retry. HTTPS and
+MCP checks follow startup as described above. Complete the first administrator
+setup after opening the site.
 Host-agent enrollment and management of existing Compose stacks are separate
 steps. This script does not configure agent downloads or optional Android storage.
 
