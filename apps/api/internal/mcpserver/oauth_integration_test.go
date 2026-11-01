@@ -222,6 +222,11 @@ func TestOAuthLifecycleAndMonitoring(t *testing.T) {
 	if w = f.refresh(c, next.Refresh, "devices.read alerts.read"); w.Code != 400 {
 		t.Fatal("refresh expanded consent")
 	}
+	for _, writeScope := range []string{"containers.manage", "stacks.deploy"} {
+		if w = f.refresh(c, next.Refresh, "devices.read "+writeScope); w.Code != 400 {
+			t.Fatalf("refresh added unapproved write scope %s", writeScope)
+		}
+	}
 	// Reusing a consumed refresh token invalidates the entire connection.
 	if w = f.refresh(c, issued.Refresh, ""); w.Code != 400 {
 		t.Fatal("refresh replay succeeded")

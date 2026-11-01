@@ -167,7 +167,7 @@ func TestToolSchemasProfileAndScopeEnforcement(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &listing); err != nil {
 		t.Fatal(err)
 	}
-	if len(listing.Result.Tools) != 5 {
+	if len(listing.Result.Tools) != 6 {
 		t.Fatalf("tool count %d: %s", len(listing.Result.Tools), w.Body)
 	}
 	for _, tool := range listing.Result.Tools {

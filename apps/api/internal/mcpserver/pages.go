@@ -60,7 +60,8 @@ var page = template.Must(template.New("page").Parse(`<!doctype html>
 <p><strong>{{.Client}}</strong> is requesting access to this Vigara instance.</p>
 <p>Sign in with your local Vigara account to approve this connection. The client name is supplied by the application; check the callback address before approving.</p>
 <p>Return address: <code>{{.Redirect}}</code></p>
-<p>This connection can read the following information for up to 30 days:</p><ul>{{range .Scopes}}<li>{{.}}</li>{{end}}</ul>
+<p>This connection requests the following access for up to 30 days:</p><ul>{{range .Scopes}}<li>{{.}}</li>{{end}}</ul>
+<p>Backup access is read-only. Approved container and stack permissions allow changes to your running services.</p>
 <p>You can disconnect it at <a href="/oauth/connections">Connected applications</a>. Your account permissions still apply.</p>
 {{if .Error}}<p role="alert">{{.Error}}</p>{{end}}
 <form method="post"><input type="hidden" name="csrf" value="{{.CSRF}}">
@@ -86,7 +87,7 @@ func renderPage(w http.ResponseWriter, data any) {
 }
 
 func (h *Handler) consentPage(w http.ResponseWriter, r *http.Request, a authorization, message string) {
-	labels := map[string]string{"devices.read": "Device names, platforms, and monitoring status", "containers.read": "Container names, images, and observed state", "backups.read": "Backup results and status messages", "alerts.read": "Alert incidents and recent failures"}
+	labels := map[string]string{"devices.read": "Device names, platforms, and monitoring status", "containers.read": "Container names, images, and observed state", "containers.manage": "Start, stop, restart and remove containers; manage Docker images, networks and volumes", "stacks.deploy": "Read Compose source, create and edit stacks, encrypted environment inputs, Git settings and placements; preview and deploy saved revisions", "backups.read": "Read backup results and settings only; no backup changes or deletion", "alerts.read": "Alert incidents and recent failures"}
 	scopes := []string{}
 	for _, scope := range a.Scopes {
 		scopes = append(scopes, labels[scope])

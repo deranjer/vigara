@@ -120,7 +120,7 @@ func main() {
 	channelMux := http.NewServeMux()
 	channelHub.RegisterAPI(channelMux, authService)
 	containersMux := http.NewServeMux()
-	containers.RegisterAPI(containersMux, containers.Config{Hub: channelHub, Authz: authService, Audit: auditRecorder, Names: func(ctx context.Context) (map[string]string, error) {
+	containerConfig := containers.Config{Hub: channelHub, Authz: authService, Audit: auditRecorder, Names: func(ctx context.Context) (map[string]string, error) {
 		rows, err := database.Pool.Query(ctx, `SELECT ai.id::text, d.display_name FROM agent_identities ai JOIN devices d ON d.id = ai.device_id WHERE ai.revoked_at IS NULL`)
 		if err != nil {
 			return nil, err
@@ -135,7 +135,8 @@ func main() {
 			names[id] = name
 		}
 		return names, rows.Err()
-	}})
+	}}
+	containers.RegisterAPI(containersMux, containerConfig)
 	stackRepository, stackTargets, err := stacks.FromEnv()
 	if err != nil {
 		logger.Error("invalid stack configuration")
@@ -178,6 +179,7 @@ func main() {
 			os.Exit(1)
 		}
 		mcpMux := http.NewServeMux()
+		mcpHandler.ConfigureManagement(stackAPI.Config, containerConfig)
 		mcpHandler.Register(mcpMux)
 		router.Handle("/mcp", mcpMux)
 		router.Handle("/oauth/*", mcpMux)
