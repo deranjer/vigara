@@ -12,8 +12,8 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
-	"os"
 	"net/url"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -120,7 +120,7 @@ func (c *Client) Cycle(ctx context.Context) (time.Duration, error) {
 		}
 	}
 	telemetryErr := c.flushTelemetry(ctx)
-	request := protocol.AgentRequest{ProtocolVersion: protocol.CurrentVersion, AgentID: c.State.AgentID, AgentVersion: AgentVersion, Platform: runtime.GOOS, Architecture: runtime.GOARCH, Capabilities: c.capabilities(), SupportsBackupProgress: true}
+	request := protocol.AgentRequest{ProtocolVersion: protocol.CurrentVersion, AgentID: c.State.AgentID, AgentVersion: AgentVersion, Platform: runtime.GOOS, Architecture: runtime.GOARCH, Capabilities: c.capabilities(), SupportsBackupProgress: true, SupportsManagedBackups: c.State.ManagedBackups, ManagedBackupStatus: c.State.ManagedBackupStatus}
 	if c.State.Configuration != nil {
 		request.KnownConfigVersion = c.State.Configuration.Version
 	}
@@ -142,9 +142,15 @@ func (c *Client) Cycle(ctx context.Context) (time.Duration, error) {
 	if response.ProtocolVersion != protocol.CurrentVersion {
 		return 0, fmt.Errorf("server returned unsupported protocol %q", response.ProtocolVersion)
 	}
+	previousManagedProfile := c.State.ManagedBackupProfile
+	c.applyManagedBackup(ctx, response.ManagedBackup)
 	if response.Configuration != nil {
 		c.State.Configuration = response.Configuration
 		if err := Save(c.StatePath, c.State); err != nil {
+			if response.ManagedBackup != nil && c.State.ManagedBackups {
+				c.State.ManagedBackupProfile = previousManagedProfile
+				c.State.ManagedBackupStatus = &protocol.ManagedBackupStatus{Revision: response.ManagedBackup.Revision, ErrorCode: "state_unavailable"}
+			}
 			return 0, err
 		}
 	}
@@ -220,7 +226,7 @@ func (c *Client) Capabilities() []string { return c.capabilities() }
 
 func (c *Client) capabilities() []string {
 	capabilities := []string{}
-	if resticCapabilityEnabled(c.State.ResticProfiles) {
+	if c.State.ManagedBackups || resticCapabilityEnabled(c.State.ResticProfiles) {
 		capabilities = append(capabilities, resticCapability)
 	}
 	if c.tiersSuppressed.Load() {
@@ -289,7 +295,7 @@ func (c *Client) executeJob(parent context.Context, job protocol.Job, resultID s
 	for _, grant := range job.Permissions {
 		grants = append(grants, modules.PermissionGrant{Name: grant.Name, Scope: grant.Scope})
 	}
-	module := resticBackupModule{profiles: c.State.ResticProfiles}
+	module := resticBackupModule{profiles: c.backupProfiles()}
 	outcome, err := module.ExecuteWithProgress(ctx, modules.JobContext{JobID: job.ID, Configuration: configuration, Permissions: grants, StartedAt: started}, onProgress)
 	if err != nil {
 		code := err.Error()

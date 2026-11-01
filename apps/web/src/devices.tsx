@@ -6,6 +6,7 @@ import { DeviceInfo, DeviceSettings, MonitoringOverview } from './device-panels'
 import { DeviceMonitoring } from './device-monitoring'
 import { type HardwareInventory } from './device-info-utils'
 import { AddDevice } from './add-device'
+import { DeviceBackups } from './backup-config'
 import { chartRows, formatMetric, type MetricSeries, type RateUnit } from './metric-utils'
 
 type Metric = { name: string; value: number; unit: string; labels?: Record<string, string> }
@@ -301,7 +302,7 @@ export function Devices({ section, selectedId, onSelect }: { section: 'devices' 
           {!!selected.latest?.dockerContainers?.length && <Tabs.Tab value="containers">Containers</Tabs.Tab>}
         </Tabs.List>
         <Tabs.Panel value="info"><DeviceInfo device={selected} onReinstall={() => setReinstallDevice(selected)} /></Tabs.Panel>
-        <Tabs.Panel value="backups"><BackupHistory key={selected.id} refresh={refresh} deviceId={selected.id} /></Tabs.Panel>
+        <Tabs.Panel value="backups"><DeviceBackups key={`setup-${selected.id}`} deviceId={selected.id} /><BackupHistory key={selected.id} refresh={refresh} deviceId={selected.id} /></Tabs.Panel>
         <Tabs.Panel value="settings"><DeviceSettings key={selected.id} device={selected} onDeleted={() => { setAllDevices((current) => current.filter((item) => item.id !== selected.id)); onSelect(null); setRefresh((value) => value + 1) }} onSaved={() => setRefresh((value) => value + 1)} /></Tabs.Panel>
         <Tabs.Panel value="monitoring"><Stack gap="lg">
       {selected.collectionErrors && selected.collectionErrors.length > 0 && <Alert color="red" title="Collection errors">{selected.collectionErrors.map((item, index) => <Text key={`${item.capability}-${index}`} size="sm">{item.capability}: {item.message}</Text>)}</Alert>}

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/deranjer/vigara/apps/api/internal/auth"
+	"github.com/deranjer/vigara/apps/api/internal/backups"
 	"github.com/deranjer/vigara/apps/api/internal/inventory"
 	"github.com/deranjer/vigara/internal/protocol"
 	"github.com/jackc/pgx/v5"
@@ -27,9 +28,10 @@ const maxRequestBytes = 1 << 20
 // Handler serves the device-facing API. Device credentials are random bearer
 // secrets; only their SHA-256 hashes are stored in PostgreSQL.
 type Handler struct {
-	pool       *pgxpool.Pool
-	auth       *auth.Service
-	releaseDir string
+	pool           *pgxpool.Pool
+	auth           *auth.Service
+	releaseDir     string
+	managedBackups *backups.Manager
 	// serverURLs are the validated, operator-approved URLs for agent bundles; the
 	// first is the default. allowInsecureHTTP records the explicit plain-HTTP opt-in.
 	serverURLs        []string
@@ -308,9 +310,10 @@ func (h *Handler) enroll(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	var tokenID string
+	var managedBackup []byte
 	var replacementID *string
 	var allowed []string
-	err = tx.QueryRow(r.Context(), `SELECT id::text, capabilities, replacement_agent_id::text FROM agent_enrollment_tokens WHERE token_hash=$1 AND used_at IS NULL AND expires_at > now() FOR UPDATE`, hash(req.Token)).Scan(&tokenID, &allowed, &replacementID)
+	err = tx.QueryRow(r.Context(), `SELECT id::text, capabilities, replacement_agent_id::text, managed_backup FROM agent_enrollment_tokens WHERE token_hash=$1 AND used_at IS NULL AND expires_at > now() FOR UPDATE`, hash(req.Token)).Scan(&tokenID, &allowed, &replacementID, &managedBackup)
 	if errors.Is(err, pgx.ErrNoRows) {
 		http.Error(w, "invalid or expired enrollment token", http.StatusUnauthorized)
 		return
@@ -375,8 +378,15 @@ func (h *Handler) enroll(w http.ResponseWriter, r *http.Request) {
 			err = inventory.AttachSource(r.Context(), tx, deviceID, "agent", agentID, inventory.SourceProvenance("agent", agentID))
 		}
 	}
+	if err == nil && len(managedBackup) > 0 {
+		if !h.managedBackups.Available() {
+			http.Error(w, "managed backup key unavailable", 503)
+			return
+		}
+		err = h.managedBackups.Install(r.Context(), tx, agentID, deviceID, managedBackup)
+	}
 	if err == nil {
-		_, err = tx.Exec(r.Context(), `UPDATE agent_enrollment_tokens SET used_at=now() WHERE id=$1`, tokenID)
+		_, err = tx.Exec(r.Context(), `UPDATE agent_enrollment_tokens SET used_at=now()  ,managed_backup=NULL WHERE id=$1`, tokenID)
 	}
 	if err == nil {
 		_, err = tx.Exec(r.Context(), `UPDATE agent_download_sessions SET status='enrolled' WHERE id=$1 AND status='waiting' AND expires_at>now()`, tokenID)
@@ -438,7 +448,21 @@ func (h *Handler) poll(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not update agent status", http.StatusInternalServerError)
 		return
 	}
-	job, leaseErr := leaseBackupJob(r.Context(), h.pool, agentID)
+	var desired *protocol.ManagedBackup
+	ready := true
+	if req.SupportsManagedBackups && allowedSet["restic.backup"] && h.managedBackups.Available() {
+		var e error
+		desired, ready, e = h.managedBackups.Poll(r.Context(), agentID, req.ManagedBackupStatus)
+		if e != nil {
+			http.Error(w, "could not synchronize backups", 503)
+			return
+		}
+	}
+	var job *protocol.Job
+	var leaseErr error
+	if ready {
+		job, leaseErr = leaseBackupJob(r.Context(), h.pool, agentID, req.SupportsManagedBackups)
+	}
 	if leaseErr != nil {
 		http.Error(w, "could not coordinate backup job", http.StatusInternalServerError)
 		return
@@ -448,7 +472,7 @@ func (h *Handler) poll(w http.ResponseWriter, r *http.Request) {
 		job.Deadline = time.Now().UTC().Add(backupExecutionLimit)
 	}
 	configuration := &protocol.AgentConfiguration{Version: "backup-v1", GeneratedAt: time.Now().UTC(), Modules: []protocol.ModuleConfiguration{{ModuleID: "restic.backup", ModuleVersion: "1.0.0", Enabled: true}}}
-	writeJSON(w, protocol.AgentResponse{ProtocolVersion: protocol.CurrentVersion, ServerTime: time.Now().UTC(), PollAfterSeconds: 30, Configuration: configuration, Job: job, BackupProgressEnabled: req.SupportsBackupProgress})
+	writeJSON(w, protocol.AgentResponse{ProtocolVersion: protocol.CurrentVersion, ServerTime: time.Now().UTC(), PollAfterSeconds: 30, Configuration: configuration, Job: job, BackupProgressEnabled: req.SupportsBackupProgress, ManagedBackup: desired})
 }
 
 func (h *Handler) reports(w http.ResponseWriter, r *http.Request) {
