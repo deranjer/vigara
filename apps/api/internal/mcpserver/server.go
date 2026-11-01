@@ -23,7 +23,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-var supportedScopes = []string{"devices.read", "containers.read", "backups.read", "alerts.read"}
+var supportedScopes = []string{"devices.read", "containers.read", "containers.manage", "stacks.deploy", "backups.read", "alerts.read"}
 
 type Accounts interface {
 	Login(context.Context, string, string) (auth.Session, error)
@@ -32,12 +32,13 @@ type Accounts interface {
 }
 
 type Handler struct {
-	pool     *pgxpool.Pool
-	accounts Accounts
-	audit    *audit.Recorder
-	issuer   string
-	mcp      http.Handler
-	csrfKey  []byte
+	pool       *pgxpool.Pool
+	accounts   Accounts
+	audit      *audit.Recorder
+	issuer     string
+	mcp        http.Handler
+	csrfKey    []byte
+	management http.Handler
 }
 
 // ValidateURL requires a stable HTTPS origin. Loopback HTTP is supported only
@@ -183,7 +184,9 @@ func (h *Handler) serveMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-	ctx, cancel := context.WithTimeout(context.WithValue(r.Context(), principalKey{}, p), 30*time.Second)
+	// Image pulls and container recreation retain the feature handlers' bounded
+	// timeouts. A disconnect still cancels the request through r.Context().
+	ctx, cancel := context.WithTimeout(context.WithValue(r.Context(), principalKey{}, p), 30*time.Minute)
 	defer cancel()
 	h.mcp.ServeHTTP(w, r.WithContext(ctx))
 }

@@ -67,6 +67,16 @@ network path from its infrastructure to the endpoint. A LAN-only hostname or VPN
 connection on your laptop does not make it reachable by either service. Expose
 the HTTPS endpoint through an appropriate reverse proxy or tunnel before connecting.
 
+The same OAuth endpoint supports web and desktop MCP clients using public-client
+authorization code flow with S256 PKCE. Registered callbacks can use HTTPS or
+HTTP on localhost/127.0.0.1/::1; other HTTP callbacks and custom URI schemes are
+not supported. Callback matching is exact, including the port. Desktop clients
+must register their actual callback and support DCR or a pre-registered public
+client ID. This is remote Streamable HTTP MCP, not a local stdio server.
+Cloud-backed web and desktop apps both need a cloud-reachable server. Direct
+cross-origin browser JavaScript requests are not supported; web integrations
+should connect through their MCP backend.
+
 ## Connect ChatGPT
 
 1. Open ChatGPT's custom MCP app/plugin setup (developer mode or workspace access
@@ -105,19 +115,59 @@ Client interface names can change. The discovery documents are the source of tru
 | `list_devices` | `devices.read` | Devices, latest agent, heartbeat, and monitoring status |
 | `list_containers` | `containers.read` | Latest collected names, images, and states; no environment/configuration secrets |
 | `list_backup_status` | `backups.read` | Latest report per device and policy, including failures |
+| `list_backup_policies` | `backups.read` | Backup schedules, retention, source paths and destinations; no credentials |
 | `list_alerts` | `alerts.read` | Recent firing and resolved incidents |
+| `inspect_container`, `list_docker_resources`, `inspect_docker_resource` | `containers.read` | Live container and Docker resource details; container environment secrets remain masked |
+| `container_action` | `containers.manage` | Start, stop, restart, pause, unpause, kill or remove a container |
+| `recreate_container`, `pull_docker_image` | `containers.manage` | Recreate a container or pull an image; returns progress when complete |
+| `remove_docker_resource`, `prune_docker_resources` | `containers.manage` | Manage images, networks and volumes; prune supports dry-run previews |
+| `list_stacks`, `get_stack`, `get_stack_history`, `get_stack_setup` | `stacks.deploy` | Compose source, your draft, revisions and deployment targets |
+| `create_stack`, `update_stack_draft`, `discard_stack_draft`, `save_stack` | `stacks.deploy` | Create and edit stacks with draft version checks and Git validation |
+| `preview_stack_deployment`, `deploy_stack`, `list_stack_deployments`, `reconcile_stack_deployment` | `stacks.deploy` | Preview exact revisions, queue deployment and check outcomes |
+| `edit_stack_environment` | `stacks.deploy` | Encrypt an environment input for use in a draft |
+| `get_stack_settings`, `update_stack_settings` | `stacks.deploy` | Read or update Git repository configuration with version checks |
+| `get_stack_placements`, `save_stack_placements`, `bind_stack_profile` | `stacks.deploy` | Manage profiles and assignments with existing fencing checks |
 
-List tools accept `limit` (1–100; default 50) and `offset` (0–1000000), and return
+The monitoring and backup list tools accept `limit` (1–100; default 50) and `offset` (0–1000000), and return
 `items`, `limit`, `offset`, and `hasMore`. Device and container observations can be
 stale: use the returned timestamps when interpreting results. Backup status covers
 reports received by Vigara, not an independent verification of repository contents.
 
-All tools are read-only. Account roles are reloaded on every MCP request, and a
+Account roles are reloaded on every MCP request, and a
 tool requires both its connection scope and the corresponding current account
-permission. Viewer, operator, and administrator roles currently have these read
-permissions. Requests without an explicit scope ask for all four read scopes.
-The consent page lists the requested information. Tools do not accept a user ID
-or arbitrary SQL, paths, URLs, shell commands, or container actions.
+permission. Viewers retain read access. Operators can manage Docker containers
+and resources; administrators can also manage Compose stacks. Requests without
+an explicit scope ask for all six supported scopes, and consent lists the write
+capabilities explicitly. Clients can request only read scopes for monitoring.
+Existing grants do not gain write scopes automatically: disconnect and reconnect
+to approve `containers.manage` and `stacks.deploy`. Refresh cannot expand scopes.
+
+Stack tools accept `stackId` when targeting an existing stack, and write payloads
+under `body` as documented in each tool's schema. The normal workflow is
+`get_stack` → `update_stack_draft` with the exact draft version → `save_stack` →
+`preview_stack_deployment` with the saved commit → `deploy_stack` with the exact
+preview token and immutable image map. Poll `list_stack_deployments` afterward;
+queueing a job does not prove deployment succeeded. Git settings require the
+current settings version; placements require the current placement commit.
+Encrypted environment edits return ciphertext and manifest contents to include
+in a subsequent draft update. Plaintext dotenv files remain prohibited.
+
+Docker tools require `agentId`; container tools also require `containerId`.
+Resource tools select `kind` from `images`, `networks`, or `volumes`. For example,
+stopping a container uses `container_action` with
+`{"agentId":"<uuid>","containerId":"web","body":{"action":"stop"}}`.
+Agent-side Docker tier and deployment capability checks still apply. Image pulls
+and recreation can take several minutes; cancellation or an incomplete response
+requires checking current state before retrying.
+
+There are no backup write scopes or backup mutation tools: MCP cannot change
+backup policies, schedules or retention, or request backup deletion. Access to
+backup settings is read-only. The management bridge uses a fixed operation
+allowlist, never a client-selected URL or HTTP method. User/account management,
+host enrollment/removal, alert configuration, interactive terminals and arbitrary
+shell execution are not exposed by this tool set. Container and Compose control
+can affect workloads and their mounted data; read-only backup APIs do not provide
+filesystem isolation from those workload permissions.
 
 ## Disconnect and expiration
 
