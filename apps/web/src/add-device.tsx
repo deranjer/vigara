@@ -5,7 +5,7 @@ import { BackupFields, newBackupConfig } from './backup-config'
 import { isAbsoluteBackupPath } from './backup-path-utils'
 
 type ServerOption = { url: string; secure: boolean }
-type Availability = { serverUrl: string; serverUrls: ServerOption[]; allowInsecureHttp: boolean; targets: string[]; managedBackupsAvailable?: boolean; backupTargets?: string[] }
+type Availability = { serverUrl: string; serverUrls: ServerOption[]; allowInsecureHttp: boolean; targets: string[]; managedBackupsAvailable?: boolean; backupTargets?: string[]; releaseSync?: { enabled: boolean; state: string; tag?: string; error?: string } }
 type ReinstallDevice = { id: string; name: string; platform: string; architecture: string }
 type Props = { opened: boolean; onClose: () => void; device?: ReinstallDevice }
 
@@ -37,11 +37,23 @@ export function AddDevice({ opened, onClose, device }: Props) {
   useEffect(() => {
     if (!opened) return
     let active = true
-    void fetch('/api/agent-downloads/availability', { credentials: 'same-origin' }).then(async (response) => {
-      if (!response.ok) throw new Error((await response.text()).slice(0, 200) || 'Could not load available agent bundles.')
-      return response.json() as Promise<Availability>
-    }).then((value) => { if (active) { setAvailability(value); setServerUrl((current) => current && value.serverUrls.some((option) => option.url === current) ? current : value.serverUrl || null); setTarget((current) => current && value.targets.includes(current) ? current : value.targets[0] ?? null) } }).catch((cause: unknown) => { if (active) setError(cause instanceof Error ? cause.message : 'Could not load available agent bundles.') })
-    return () => { active = false }
+    let timer: number | undefined
+    const load = async () => {
+      try {
+        const response = await fetch('/api/agent-downloads/availability', { credentials: 'same-origin' })
+        if (!response.ok) throw new Error((await response.text()).slice(0, 200) || 'Could not load available agent bundles.')
+        const value = await response.json() as Availability
+        if (!active) return
+        setError(''); setAvailability(value)
+        setServerUrl((current) => current && value.serverUrls.some((option) => option.url === current) ? current : value.serverUrl || null)
+        setTarget((current) => current && value.targets.includes(current) ? current : value.targets[0] ?? null)
+        if (value.releaseSync?.enabled && value.releaseSync.state !== 'ready') timer = window.setTimeout(() => void load(), 5000)
+      } catch (cause) {
+        if (active) { setError(cause instanceof Error ? cause.message : 'Could not load available agent bundles.'); timer = window.setTimeout(() => void load(), 10000) }
+      }
+    }
+    void load()
+    return () => { active = false; window.clearTimeout(timer) }
   }, [opened])
 
   useEffect(() => {
@@ -98,7 +110,14 @@ export function AddDevice({ opened, onClose, device }: Props) {
         { value: 'linux-amd64', label: 'Linux · x64' },
         { value: 'linux-arm64', label: 'Linux · ARM64' },
       ].map((item) => ({ ...item, disabled: !availability.targets.includes(item.value) }))} placeholder="Choose a supported target" />
-      {availability.targets.length === 0 && <Alert color="yellow">Agent bundles are unavailable. The server operator must provision verified release artifacts.</Alert>}
+      {availability.targets.length === 0 && <Alert color={availability.releaseSync?.state === 'error' ? 'yellow' : 'blue'} title="Agent bundles">
+        {availability.releaseSync?.enabled ? availability.releaseSync.state === 'error'
+          ? `${availability.releaseSync.error} Check Admin → Scheduled tasks for the next retry or run the scan manually.`
+          : availability.releaseSync.state === 'pending'
+            ? 'The bundle cache is empty. Check the Scan agent bundles task in Admin → Scheduled tasks, or run it now.'
+            : 'The server is downloading and verifying compatible agent releases from GitHub. This list will refresh when they are ready.'
+          : 'Agent bundles are unavailable. Enable automatic release downloads or provision verified release artifacts on the server.'}
+      </Alert>}
       <TextInput readOnly={!!device} disabled={!!session} description={device ? 'Existing device name' : 'Use a unique name. To reinstall an existing device, open its Device info tab.'} label="Device name" value={name} onChange={(event) => setName(event.currentTarget.value)} maxLength={120} required />
       {!device && <><Checkbox disabled={!!session || !availability.managedBackupsAvailable || !availability.backupTargets?.includes(target ?? '')} checked={backupFeature} onChange={(event) => setBackupFeature(event.currentTarget.checked)} label="Enable managed backups" description="Bundles restic and lets administrators manage backup paths and schedules. On Linux, installs the backup-enabled service with root access." />
       {availability.managedBackupsAvailable && !availability.backupTargets?.includes(target ?? '') && <Text size="xs" c="dimmed">A backup-enabled bundle is unavailable for this platform. Rebuild server release artifacts to include restic.</Text>}

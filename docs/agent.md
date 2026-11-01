@@ -122,6 +122,10 @@ by the API process:
 python scripts/package_agent_releases.py 0.1.0 ./agent-releases
 ```
 
+Published server images can automatically fetch matching agent assets; see
+[automatic release downloads](deployment/docker.md#automatic-agent-release-downloads).
+The manual procedure below remains supported for offline or private deployments.
+
 Set `VIGARA_AGENT_RELEASE_DIR` to that directory and `VIGARA_PUBLIC_URL` to the
 reachable HTTPS base URL of this Vigara instance (for example
 `https://vigara.example`). The directory must contain the generated

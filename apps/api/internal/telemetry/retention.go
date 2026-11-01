@@ -194,3 +194,18 @@ func RunRetentionWorker(ctx context.Context, store Store, cfg RetentionConfig, l
 		}
 	}
 }
+
+func RetentionPass(ctx context.Context, store Store, cfg RetentionConfig, logger *slog.Logger) error {
+	work, cancel := context.WithTimeout(ctx, 45*time.Second)
+	started := time.Now()
+	err := store.Retain(work, cfg, started.UTC())
+	cancel()
+	if reporter, ok := store.(interface {
+		LogStorageHealth(context.Context, RetentionConfig, *slog.Logger)
+	}); ok && ctx.Err() == nil {
+		health, cancelHealth := context.WithTimeout(ctx, 5*time.Second)
+		reporter.LogStorageHealth(health, cfg, logger.With("retention_duration_ms", time.Since(started).Milliseconds()))
+		cancelHealth()
+	}
+	return err
+}

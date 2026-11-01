@@ -74,8 +74,11 @@ func (h *Handler) selectServerURL(requested string) (string, bool) {
 }
 
 type releaseManifest struct {
-	ResticVersion   string `json:"resticVersion"`
-	ResticArtifacts map[string]struct {
+	ProtocolVersion     string `json:"protocolVersion"`
+	SourceRevision      string `json:"sourceRevision"`
+	ResticLicenseSHA256 string `json:"resticLicenseSha256"`
+	ResticVersion       string `json:"resticVersion"`
+	ResticArtifacts     map[string]struct {
 		File   string `json:"file"`
 		SHA256 string `json:"sha256"`
 	} `json:"resticArtifacts"`
@@ -115,10 +118,13 @@ func (w *boundedBundleWriter) Write(p []byte) (int, error) {
 }
 
 func (h *Handler) verifiedArtifact(target string) ([]byte, string, error) {
-	if _, ok := supportedDownloads[target]; !ok || h.releaseDir == "" {
+	h.releaseFilesMu.RLock()
+	defer h.releaseFilesMu.RUnlock()
+	directory := h.artifactDirectory()
+	if _, ok := supportedDownloads[target]; !ok || directory == "" {
 		return nil, "", os.ErrNotExist
 	}
-	manifestPath := filepath.Join(h.releaseDir, "manifest.json")
+	manifestPath := filepath.Join(directory, "manifest.json")
 	manifestBytes, err := readBoundedFile(manifestPath, 1<<20)
 	if err != nil {
 		return nil, "", err
@@ -138,7 +144,7 @@ func (h *Handler) verifiedArtifact(target string) ([]byte, string, error) {
 			return nil, "", errors.New("invalid release digest")
 		}
 	}
-	artifactPath := filepath.Join(h.releaseDir, entry.File)
+	artifactPath := filepath.Join(directory, entry.File)
 	data, err := readBoundedFile(artifactPath, 128<<20)
 	if err != nil {
 		return nil, "", err
@@ -179,7 +185,7 @@ func (h *Handler) downloadAvailability(w http.ResponseWriter, r *http.Request) {
 		if _, _, err := h.verifiedArtifact(target); err == nil {
 			available = append(available, target)
 			if _, e := h.verifiedRestic(target); e == nil {
-				if _, e = readBoundedFile(filepath.Join(h.releaseDir, "restic.LICENSE"), 1<<20); e == nil {
+				if _, e = h.releaseLicense(); e == nil {
 					backupTargets = append(backupTargets, target)
 				}
 			}
@@ -197,7 +203,7 @@ func (h *Handler) downloadAvailability(w http.ResponseWriter, r *http.Request) {
 		}
 		options = append(options, serverOption{URL: candidate, Secure: serverurl.IsSecure(candidate)})
 	}
-	writeJSON(w, map[string]any{"serverUrl": primary, "serverUrls": options, "allowInsecureHttp": h.allowInsecureHTTP, "targets": available, "managedBackupsAvailable": h.managedBackups.Available(), "backupTargets": backupTargets})
+	writeJSON(w, map[string]any{"serverUrl": primary, "serverUrls": options, "allowInsecureHttp": h.allowInsecureHTTP, "targets": available, "managedBackupsAvailable": h.managedBackups.Available(), "backupTargets": backupTargets, "releaseSync": h.releaseStatus()})
 }
 
 type agentDownloadRequest struct {
@@ -321,7 +327,7 @@ func (h *Handler) createAgentDownload(w http.ResponseWriter, r *http.Request) {
 	if managedEnabled {
 		bundledRestic, err = h.verifiedRestic(req.Target)
 		if err == nil {
-			resticLicense, err = readBoundedFile(filepath.Join(h.releaseDir, "restic.LICENSE"), 1<<20)
+			resticLicense, err = h.releaseLicense()
 		}
 		if err != nil {
 			http.Error(w, "verified restic artifact is unavailable; rebuild agent releases", 503)

@@ -32,6 +32,7 @@ import (
 	"github.com/deranjer/vigara/apps/api/internal/mcpserver"
 	"github.com/deranjer/vigara/apps/api/internal/notifications"
 	"github.com/deranjer/vigara/apps/api/internal/notifytransport"
+	"github.com/deranjer/vigara/apps/api/internal/scheduledtasks"
 	"github.com/deranjer/vigara/apps/api/internal/stacks"
 	"github.com/deranjer/vigara/apps/api/internal/telemetry"
 	"github.com/deranjer/vigara/apps/api/migrations"
@@ -167,6 +168,9 @@ func main() {
 			}
 		}
 	}
+	if err := agentHandler.ConfigureReleaseSync(envcompat.Getenv("VIGARA_AGENT_RELEASE_CACHE"), envcompat.Getenv("VIGARA_AGENT_RELEASE_TAG"), revision); err != nil {
+		logger.Warn("automatic agent release downloads disabled", "reason", err.Error())
+	}
 	router.Use(auth.NewAttemptLimiter().Middleware)
 	router.Use(authService.SessionMiddleware)
 	router.Use(authService.WriteGuard)
@@ -236,11 +240,35 @@ func main() {
 	server := &http.Server{Addr: cfg.Address, Handler: router, ReadHeaderTimeout: 5 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if mcpHandler != nil {
-		go mcpHandler.RunCleanup(ctx)
-	}
 	retention := telemetry.RetentionConfig{RawAge: time.Duration(cfg.TelemetryRawRetentionHours) * time.Hour, RollupAge: time.Duration(cfg.TelemetryRollupRetentionDays) * 24 * time.Hour}
-	go telemetry.RunRetentionWorker(ctx, telemetryStore, retention, logger)
+	tasks := scheduledtasks.New(database.Pool, logger, []scheduledtasks.Definition{
+		{ID: "agent-bundles", Name: "Scan agent bundles", Description: "Download the newest compatible published agent bundles and apply cache retention.", Interval: 24 * time.Hour, Timeout: 30 * time.Minute, Available: agentHandler.ReleaseSyncEnabled(), Defaults: json.RawMessage(`{"purgeOld":true,"keepVersions":2}`),
+			Validate: func(raw json.RawMessage) error { _, err := agent.ParseReleaseRetentionSettings(raw); return err },
+			Run: func(ctx context.Context, raw json.RawMessage) error {
+				settings, err := agent.ParseReleaseRetentionSettings(raw)
+				if err != nil {
+					return err
+				}
+				return agentHandler.RefreshReleases(ctx, settings.PurgeOld, settings.KeepVersions)
+			}},
+		{ID: "telemetry-retention", Name: "Telemetry retention", Description: "Roll up expired raw telemetry and purge expired history.", Interval: time.Minute, Timeout: 55 * time.Second, Available: true, Run: func(ctx context.Context, _ json.RawMessage) error {
+			return telemetry.RetentionPass(ctx, telemetryStore, retention, logger)
+		}},
+		{ID: "alert-evaluation", Name: "Evaluate alerts", Description: "Evaluate configured alert rules against current observations.", Interval: 30 * time.Second, Timeout: 25 * time.Second, Available: true, Run: func(ctx context.Context, _ json.RawMessage) error { return alerts.Evaluate(ctx, database.Pool) }},
+		{ID: "backup-scheduling", Name: "Schedule due backups", Description: "Queue due backup policies; individual policy schedules remain in backup settings.", Interval: 30 * time.Second, Timeout: 25 * time.Second, Available: true, Run: func(ctx context.Context, _ json.RawMessage) error {
+			_, err := backups.ScheduleOnce(ctx, database.Pool, time.Now().UTC())
+			return err
+		}},
+		{ID: "oauth-cleanup", Name: "OAuth expiration cleanup", Description: "Expire old MCP authorization codes and grants.", Interval: time.Hour, Timeout: 10 * time.Second, Available: mcpHandler != nil, Run: func(ctx context.Context, _ json.RawMessage) error { return mcpHandler.Cleanup(ctx) }},
+	})
+	if err := tasks.Start(ctx); err != nil {
+		logger.Error("scheduled task initialization failed", "error", err)
+		os.Exit(1)
+	}
+	defer tasks.Close()
+	tasksMux := http.NewServeMux()
+	tasks.Register(tasksMux, authService, auditRecorder)
+	router.Handle("/api/admin/*", tasksMux)
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -251,8 +279,6 @@ func main() {
 	}()
 	go stackAPI.Run(ctx)
 	go notifications.Run(ctx, database.Pool, destinations, logger)
-	go alerts.Run(ctx, database.Pool, logger)
-	go backups.RunScheduler(ctx, database.Pool, logger)
 	logger.Info("starting Vigara API", "addr", cfg.Address)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("server failed", "error", err)

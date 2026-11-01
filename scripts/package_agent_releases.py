@@ -20,8 +20,8 @@ TARGETS = {
 
 
 def main() -> int:
-    if len(sys.argv) != 3:
-        print("usage: package_agent_releases.py VERSION OUTPUT_DIRECTORY", file=sys.stderr)
+    if len(sys.argv) not in (3, 4):
+        print("usage: package_agent_releases.py VERSION OUTPUT_DIRECTORY [SOURCE_REVISION]", file=sys.stderr)
         return 2
     version = sys.argv[1].strip()
     if not version or len(version) > 80 or any(ord(c) < 32 or c.isspace() for c in version):
@@ -29,8 +29,13 @@ def main() -> int:
         return 2
     output = Path(sys.argv[2]).resolve()
     output.mkdir(parents=True, exist_ok=True)
+    revision = sys.argv[3] if len(sys.argv) == 4 else subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    if not re.fullmatch(r"[a-f0-9]{40}", revision):
+        print("invalid source revision", file=sys.stderr)
+        return 2
     restic_version = re.search(r'const PinnedVersion = "([^"\n]+)"', (ROOT / "internal/restic/runner.go").read_text()).group(1)
-    manifest = {"version": version, "artifacts": {}, "resticVersion": restic_version, "resticArtifacts": {}}
+    protocol_version = re.search(r'const CurrentVersion = "([^"\n]+)"', (ROOT / "internal/protocol/protocol.go").read_text()).group(1)
+    manifest = {"version": version, "sourceRevision": revision, "protocolVersion": protocol_version, "artifacts": {}, "resticVersion": restic_version, "resticArtifacts": {}}
     for target, (goos, goarch, filename) in TARGETS.items():
         path = output / filename
         env = os.environ.copy()
@@ -49,6 +54,7 @@ def main() -> int:
         manifest["resticArtifacts"][target] = {"file": restic_name, "sha256": hashlib.sha256((output / restic_name).read_bytes()).hexdigest()}
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         manifest["artifacts"][target] = {"file": filename, "sha256": digest}
+    manifest["resticLicenseSha256"] = hashlib.sha256((output / "restic.LICENSE").read_bytes()).hexdigest()
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     print(f"Wrote {output / 'manifest.json'}")
     return 0

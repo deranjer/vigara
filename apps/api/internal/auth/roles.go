@@ -23,13 +23,14 @@ const (
 	PermHostsManage      Permission = "hosts.manage"
 	PermUsersManage      Permission = "users.manage"
 	PermAuditRead        Permission = "audit.read"
+	PermTasksManage      Permission = "system.tasks.manage"
 )
 
 var rolePermissions = map[string]map[Permission]bool{
 	RoleViewer:   {PermDevicesRead: true, PermBackupsRead: true, PermAlertsRead: true, PermContainersRead: true},
 	RoleOperator: {PermDevicesRead: true, PermBackupsRead: true, PermAlertsRead: true, PermContainersRead: true, PermContainersManage: true, PermContainersExec: true},
 	RoleAdmin: {PermDevicesRead: true, PermBackupsRead: true, PermAlertsRead: true, PermContainersRead: true, PermContainersManage: true, PermContainersExec: true, PermStacksDeploy: true,
-		PermSecretsReveal: true, PermHostsManage: true, PermUsersManage: true, PermAuditRead: true},
+		PermSecretsReveal: true, PermHostsManage: true, PermUsersManage: true, PermAuditRead: true, PermTasksManage: true},
 }
 
 // ValidRole reports whether role is one of the defined roles.

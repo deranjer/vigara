@@ -82,7 +82,7 @@ class DeploymentEnvironmentTests(unittest.TestCase):
     def test_required_settings(self):
         for settings in ({}, {"VIGARA_DOMAIN": "", "VIGIRA_DOMAIN": ""}):
             self.assertIn("VIGARA_DOMAIN", self.render(settings, caddy=True, success=False))
-        self.assertIn("VIGARA_PUBLIC_URL", self.render({}, downloads=True, success=False))
+        self.assertIn("VIGARA_PUBLIC_URL", self.render({"VIGARA_AGENT_RELEASE_HOST_DIR": "./releases"}, downloads=True, success=False))
         self.assertIn("VIGARA_AGENT_RELEASE_HOST_DIR", self.render(
             {"VIGARA_PUBLIC_URL": "https://vigara.example.com"}, downloads=True, success=False))
 

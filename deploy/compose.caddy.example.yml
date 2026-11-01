@@ -20,6 +20,11 @@ services:
       VIGARA_DATABASE_URL: postgres://vigara:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/vigara?sslmode=disable
       VIGARA_COOKIE_SECURE: "true"
       VIGARA_MCP_URL: ${VIGARA_MCP_URL:-}
+      VIGARA_PUBLIC_URL: ${VIGARA_PUBLIC_URL:-}
+      VIGARA_AGENT_RELEASE_TAG: ${VIGARA_AGENT_RELEASE_TAG:-auto}
+      VIGARA_AGENT_RELEASE_CACHE: /var/lib/vigira/agent-releases
+    volumes:
+      - agent-releases:/var/lib/vigira/agent-releases
     # Caddy connects over the proxy network; no host port is published.
     labels:
       caddy: ${VIGARA_DOMAIN:?Set VIGARA_DOMAIN to your public hostname}
@@ -46,4 +51,5 @@ services:
 
 volumes:
   postgres-data:
+  agent-releases:
 
