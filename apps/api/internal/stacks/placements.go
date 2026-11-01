@@ -7,11 +7,12 @@ import (
 
 	"github.com/deranjer/vigara/apps/api/internal/audit"
 	"github.com/deranjer/vigara/internal/placement"
+	"github.com/deranjer/vigara/internal/stack"
 	"github.com/deranjer/vigara/internal/stackgit"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-var errPlacementInactive = errors.New("This stack has an enabled profile assignment. Assignment deployment and fenced agent bindings are not available yet; the direct deployment path cannot apply its requirements.")
+var errPlacementInactive = errors.New("This profile assignment requires an initial binding to its existing approved device, exclusive ownership at epoch 1, and an updated agent. Replacement and replica deployment require a separate fenced transfer.")
 
 func (a *API) getPlacements(w http.ResponseWriter, r *http.Request) {
 	if _, ok := a.authorize(w, r, false); !ok {
@@ -46,7 +47,12 @@ func (a *API) getPlacements(w http.ResponseWriter, r *http.Request) {
 	if validation != nil {
 		message = validation.Error()
 	}
-	respond(w, 200, map[string]any{"commit": p.Commit, "files": p.Files, "catalog": c, "validationError": message, "branch": repo.Branch, "activationSupported": false})
+	bindings, err := a.profileBindings(ctx)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	respond(w, 200, map[string]any{"commit": p.Commit, "files": p.Files, "catalog": c, "validationError": message, "branch": repo.Branch, "activationSupported": true, "bindings": bindings})
 }
 
 func (a *API) savePlacements(w http.ResponseWriter, r *http.Request) {
@@ -63,11 +69,9 @@ func (a *API) savePlacements(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	for _, assignment := range c.Assignments {
-		if assignment.Enabled {
-			http.Error(w, "Save assignments with enabled: false. Activation requires profile-to-agent bindings and assignment-aware deployment, which are not available yet.", 422)
-			return
-		}
+	if a.Pool == nil {
+		http.Error(w, "Bind a saved profile before activating; keep enabled: false until then.", 422)
+		return
 	}
 	ctx, cancel := stackgit.DefaultTimeout(r.Context())
 	defer cancel()
@@ -77,6 +81,10 @@ func (a *API) savePlacements(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer unlock()
+	if err = a.validateActivePlacements(ctx, p); err != nil {
+		fail(w, err)
+		return
+	}
 	repo, ok := a.requireRepository(w, ctx)
 	if !ok {
 		return
@@ -119,7 +127,7 @@ func directPlacement(ctx context.Context, repo *stackgit.Repository, id string) 
 	return nil
 }
 
-func (a *API) checkDirectDeployment(ctx context.Context, id string, conn *pgxpool.Conn) error {
+func (a *API) checkCapturedDeployment(ctx context.Context, captured stack.Snapshot, conn *pgxpool.Conn) error {
 	ctx, cancel := stackgit.DefaultTimeout(ctx)
 	defer cancel()
 	// The worker already holds its session lock on conn. Reuse that connection
@@ -141,5 +149,12 @@ func (a *API) checkDirectDeployment(ctx context.Context, id string, conn *pgxpoo
 	if s.Remote == "" {
 		return stackgit.ErrGit
 	}
-	return directPlacement(ctx, a.repositoryFromSettings(s), id)
+	actual, err := a.deploymentSnapshot(ctx, a.repositoryFromSettings(s), captured.ID, captured.Commit, conn)
+	if err != nil {
+		return err
+	}
+	if stack.Digest(actual) != stack.Digest(captured) {
+		return stackgit.ErrConflict
+	}
+	return nil
 }
