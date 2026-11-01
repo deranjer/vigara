@@ -40,8 +40,10 @@ class SetupTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
-        self.deploy = self.root / "deploy"
-        self.deploy.mkdir()
+        self.deploy = self.root / "source" / "deploy"
+        self.deploy.mkdir(parents=True)
+        self.stacks_root = self.root / 'dockers' / 'compose-stacks'
+        self.production = self.stacks_root / 'vigara'
         for name in ("setup.sh", "compose.staging.yml", "compose.caddy.example.yml"):
             shutil.copy(ROOT / "deploy" / name, self.deploy / name)
         binary = self.root / "bin"
@@ -55,9 +57,17 @@ class SetupTests(unittest.TestCase):
         (binary / "curl").chmod(0o700)
         self.calls = self.root / "calls"
         self.environment = dict(os.environ, PATH=str(binary) + os.pathsep + os.environ["PATH"],
-                                CALLS=str(self.calls))
+                                CALLS=str(self.calls), HOME=str(self.root))
 
-    def run_setup(self, answers, **environment):
+    def run_setup(self, answers, root_answer='', mcp_answer='n', **environment):
+        # Fixtures below describe the original project/image/network prompts.
+        # Add the shared-root answer and MCP opt-in before the startup answer.
+        lines = answers.splitlines()
+        if len(lines) >= 6:
+            lines.insert(6, mcp_answer)
+        if lines:
+            lines.insert(1, root_answer)
+        answers = '\n'.join(lines) + ('\n' if lines else '')
         return subprocess.run(["bash", str(self.deploy / "setup.sh")], input=answers,
                               text=True, capture_output=True, cwd=self.root,
                               env=dict(self.environment, **environment))
@@ -65,7 +75,7 @@ class SetupTests(unittest.TestCase):
     def test_direct_configuration_and_rerun(self):
         result = self.run_setup('\n\nn\n\n\nn\nn\n')
         self.assertEqual(result.returncode, 0, result.stderr)
-        production = self.deploy / "production"
+        production = self.production
         env = (production / ".env").read_text()
         self.assertIn('VIGARA_PORT=8080', env)
         self.assertIn('VIGARA_COOKIE_SECURE=false', env)
@@ -78,25 +88,63 @@ class SetupTests(unittest.TestCase):
         self.assertNotIn(' up -d ', self.calls.read_text())
         self.assertNotIn('pull', self.calls.read_text())
         self.assertNotIn(env.splitlines()[0], result.stdout)
-        self.assertNotEqual(self.run_setup('').returncode, 0)
+        self.assertIn('Setup already exists', self.run_setup('\n').stderr)
         self.assertEqual((production / ".env").read_text(), env)
 
     def test_caddy_configuration(self):
         result = self.run_setup('\n\ny\nvigara.example.com\n\n\nn\n')
         self.assertEqual(result.returncode, 0, result.stderr)
-        production = self.deploy / "production"
+        production = self.production
         self.assertIn('VIGARA_DOMAIN=vigara.example.com', (production / ".env").read_text())
         compose = (production / "compose.yml").read_text()
         self.assertIn('caddy.reverse_proxy:', compose)
         self.assertIn('VIGARA_BACKUP_MASTER_KEY:', compose)
+        self.assertEqual(compose.count('      VIGARA_BACKUP_MASTER_KEY:'), 1)
         self.assertNotIn('ports:', compose)
+        self.assertIn('VIGARA_MCP_URL=\n', (production / '.env').read_text())
+
+    def test_shared_root_outside_checkout(self):
+        existing = self.root / 'shared compose' / 'existing-stack' / 'compose.yml'
+        existing.parent.mkdir(parents=True)
+        existing.write_text('existing stack stays unchanged\n')
+        result = self.run_setup('\n\nn\n\n\nn\nn\n', root_answer='~/shared compose')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        destination = self.root / 'shared compose' / 'vigara'
+        self.assertTrue((destination / 'compose.yml').exists())
+        self.assertTrue((destination / 'compose.sh').exists())
+        self.assertFalse((self.deploy / 'production').exists())
+        self.assertEqual(existing.read_text(), 'existing stack stays unchanged\n')
+        self.assertIn('VIGARA_COMPOSE_MANAGED_ROOT=' + str(self.root / 'shared compose').replace(' ', r'\ '), result.stdout)
+
+    def test_reject_checkout_and_relative_roots(self):
+        for root in ('relative-path', str(self.deploy / 'runtime')):
+            with self.subTest(root=root):
+                self.assertNotEqual(self.run_setup('\n', root_answer=root).returncode, 0)
+
+    def test_caddy_mcp_opt_in(self):
+        result = self.run_setup('\n\ny\nvigara.example.com\n\n\nn\n', mcp_answer='y\n')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('VIGARA_MCP_URL=https://vigara.example.com\n', (self.production / '.env').read_text())
+        self.assertIn('https://vigara.example.com/mcp', result.stdout)
+
+    def test_mcp_requires_public_https_origin(self):
+        for origin in ('http://vigara.example.com', 'https://vigara.example.com/mcp', 'https://other.example.com'):
+            with self.subTest(origin=origin):
+                result = self.run_setup('\n\ny\nvigara.example.com\n\n\nn\n', mcp_answer='y\n' + origin)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(self.production.exists())
+
+    def test_direct_mcp_requires_https_proxy(self):
+        result = self.run_setup('\n\nn\n\n\nn\nn\n', mcp_answer='y\nhttps://vigara.example.com')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('HTTPS reverse proxy', result.stderr)
 
     def test_input_rejection(self):
         for answers in ('../bad\n', '\nimage$bad\n', '\n\ny\nhttps://bad.example\n',
                         '\n\nn\n999.0.0.1\n', '\n\nn\n\n65536\n'):
             with self.subTest(answers=answers):
                 self.assertNotEqual(self.run_setup(answers).returncode, 0)
-                self.assertFalse((self.deploy / "production").exists())
+                self.assertFalse((self.production).exists())
 
     def test_prerequisite_failures(self):
         for answers, environment in (
@@ -108,28 +156,28 @@ class SetupTests(unittest.TestCase):
         ):
             with self.subTest(environment=environment):
                 self.assertNotEqual(self.run_setup(answers, **environment).returncode, 0)
-                self.assertFalse((self.deploy / "production").exists())
-                self.assertEqual(list(self.deploy.glob('.setup.*')), [])
+                self.assertFalse((self.production).exists())
+                self.assertEqual(list(self.stacks_root.glob('.vigara-setup.*')), [])
 
     def test_pull_failure_preserves_config(self):
         result = self.run_setup('\n\nn\n\n\nn\ny\n', FAIL_PULL="1")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('docker login ghcr.io', result.stderr)
-        self.assertTrue((self.deploy / 'production' / '.env').exists())
+        self.assertTrue((self.production / '.env').exists())
         self.assertNotIn(' up -d ', self.calls.read_text())
 
     def test_start_failure_preserves_config(self):
         result = self.run_setup('\n\nn\n\n\nn\ny\n', FAIL_UP="1")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('logs --tail 100', result.stderr)
-        self.assertTrue((self.deploy / 'production' / '.env').exists())
+        self.assertTrue((self.production / '.env').exists())
         self.assertIn('up -d --wait --wait-timeout 120', self.calls.read_text())
 
     def test_custom_configuration_and_start(self):
         result = self.run_setup('vigara-prod\nexample/app:fixed\nn\n0.0.0.0\n18080\ny\ny\n',
                                 VIGARA_PORT='9999', VIGARA_IMAGE='ignored/app:wrong')
         self.assertEqual(result.returncode, 0, result.stderr)
-        env = (self.deploy / 'production' / '.env').read_text()
+        env = (self.stacks_root / 'vigara-prod' / '.env').read_text()
         self.assertIn('VIGARA_COOKIE_SECURE=true', env)
         self.assertIn('VIGARA_PORT=18080', env)
         self.assertIn('VIGARA_IMAGE=example/app:fixed', env)
@@ -141,7 +189,7 @@ class SetupTests(unittest.TestCase):
 
     def test_early_eof(self):
         self.assertNotEqual(self.run_setup('').returncode, 0)
-        self.assertFalse((self.deploy / 'production').exists())
+        self.assertFalse((self.production).exists())
 
     def test_generated_files_with_real_compose(self):
         # The other tests never require real Docker. CI also parses both generated
@@ -149,11 +197,15 @@ class SetupTests(unittest.TestCase):
         available = subprocess.run(['docker', 'compose', 'version'], capture_output=True)
         if available.returncode:
             self.skipTest('A real Docker Compose CLI is unavailable')
-        for answers in ('\n\nn\n\n\nn\nn\n', '\n\ny\nvigara.example.com\n\n\nn\n'):
+        for answers, mcp_answer in (
+            ('\n\nn\n\n\nn\nn\n', 'n'),
+            ('\n\ny\nvigara.example.com\n\n\nn\n', 'y\n'),
+            ('\n\nn\n\n\ny\nn\n', 'y\nhttps://vigara.example.com'),
+        ):
             with self.subTest(answers=answers):
-                result = self.run_setup(answers)
+                result = self.run_setup(answers, mcp_answer=mcp_answer)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                production = self.deploy / 'production'
+                production = self.production
                 result = subprocess.run(['bash', str(production / 'compose.sh'), 'config', '--quiet'],
                                         capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)

@@ -6,6 +6,16 @@ No Google account, external identity provider, or OpenAI API key is required.
 
 ## Enable the server
 
+For a new deployment, `bash deploy/setup.sh` offers MCP as an opt-in step. With
+Caddy it uses the HTTPS hostname you selected. The script also asks for a shared
+Compose root; its generated files live in `<compose-root>/<project>/`, outside
+the source repository.
+
+Open **Account settings → Claude and ChatGPT** for setup guidance even when MCP
+is disabled. When enabled, the page displays the configured server URL with a
+copy button and separate ChatGPT and Claude instructions. An enabled status
+confirms configuration, not reachability from either provider.
+
 Set these variables on the **API server**, then restart it:
 
 ```dotenv
@@ -17,6 +27,27 @@ VIGARA_COOKIE_SECURE=true
 path. Leaving it unset disables the MCP and OAuth routes. The original
 `VIGIRA_MCP_URL` spelling remains an alias. Database migrations run automatically
 at startup. Building the API now requires Go 1.25 or newer.
+
+For an existing Caddy deployment, adding a value to `.env` is insufficient unless
+the `app` service passes it into the container. The current Caddy example includes:
+
+```yaml
+services:
+  app:
+    environment:
+      VIGARA_MCP_URL: ${VIGARA_MCP_URL:-}
+```
+
+Keep your existing database and credentials. Edit the existing deployment files,
+then use its original Compose invocation or helper to recreate the API service:
+
+```sh
+bash ~/dockers/compose-stacks/vigara/compose.sh up -d --wait app
+```
+
+Substitute your actual deployment directory. The staging template already passes
+application settings through its `env_file`. Reload Account settings after the
+server restarts. To disable MCP, clear `VIGARA_MCP_URL` and recreate the API service.
 
 Use a trusted HTTPS reverse proxy and preserve the original `Host` header.
 Forward `/mcp`, `/oauth/*`, and `/.well-known/oauth-*` to the API without an

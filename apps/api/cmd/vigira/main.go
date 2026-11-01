@@ -169,15 +169,7 @@ func main() {
 	router.Use(auth.NewAttemptLimiter().Middleware)
 	router.Use(authService.SessionMiddleware)
 	router.Use(authService.WriteGuard)
-	router.Get("/api/mcp/status", func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := authService.UserFromRequest(r); !ok {
-			http.Error(w, "login required", http.StatusUnauthorized)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "no-store")
-		_ = json.NewEncoder(w).Encode(map[string]bool{"enabled": cfg.MCPURL != ""})
-	})
+	router.Get("/api/mcp/status", mcpserver.StatusHandler(authService, cfg.MCPURL))
 	var mcpHandler *mcpserver.Handler
 	if cfg.MCPURL != "" {
 		mcpHandler, err = mcpserver.New(database.Pool, authService, auditRecorder, cfg.MCPURL)
