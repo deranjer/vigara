@@ -29,6 +29,49 @@ whether to pull images and start. No credentials are printed. The script stops
 if that deployment directory or the selected project's containers or volumes already
 exist; it is an initial installer, not an adoption or migration tool.
 
+### Choose persistent storage and container names
+
+The installer asks whether to use bind-mounted data directories instead of
+Docker named volumes. Answer **no** (the default) to keep named volumes, or
+**yes** to keep data beside the generated Compose files:
+
+| Stack | Bind-mounted host directory | Container path |
+| --- | --- | --- |
+| Vigara | `<root>/<project>/data/postgres` | `/var/lib/postgresql/data` |
+| Vigara, direct-port setup | `<root>/<project>/data/android-backups` | `/var/lib/vigira/android-backups` |
+| New Caddy proxy | `<root>/<project>-caddy/data/caddy` | `/data` |
+| New Caddy proxy | `<root>/<project>-caddy/data/config` | `/config` |
+
+Bind storage requires a local Unix Docker context and a Compose root without
+commas. Paths with spaces are supported. The installer creates fresh private
+directories and generates explicit bind mounts with `create_host_path: false`;
+no named data volumes are declared in those generated deployments. The choice
+also applies to a newly deployed Caddy proxy. A reused proxy keeps its existing
+storage configuration.
+
+PostgreSQL initializes ownership and permissions on its fresh database
+directory. The direct-port setup also generates `prepare-storage.sh` to give
+the Android upload directory to the API's UID/GID 10001 before startup. This
+uses the already pulled PostgreSQL image as a short-lived root helper, changing
+only that directory's owner without recursive chmod/chown. The helper mounts
+over the image's declared data volume, avoiding an anonymous Docker volume.
+If you defer startup, run the printed permission-preparation command after
+pulling images and before starting Vigara. Android uploads remain disabled
+until their separate server setting is configured.
+
+The generated app/database containers are explicitly named `<project>-app`
+and `<project>-postgres`: `vigara-app` and `vigara-postgres` by default. The
+Caddy name remains the name selected in its prompt, defaulting to `caddy-proxy`.
+The installer rejects conflicting app/database names and a proxy name that
+collides with them. Compose service names and database storage identities are
+unchanged. These are single-instance services; explicit container names cannot
+be used with Compose service scaling.
+
+This is an initial-install storage choice. It does not migrate existing volumes
+or data. Preserve the database, certificates, `.env` and backup master key when
+moving or upgrading an existing installation. Use normal PostgreSQL backup and
+restore procedures for database recovery.
+
 ### Optional Caddy bootstrap
 
 When you approve a new proxy, the installer checks that TCP ports 80 and 443 are
