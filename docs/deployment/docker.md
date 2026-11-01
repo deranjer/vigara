@@ -25,9 +25,41 @@ HTTPS proxy will serve it, enabling secure cookies when appropriate.
 
 It generates a database password and backup master key, writes private files
 under `<compose-root>/<project>/`, and validates Compose before asking
-whether to pull images and start. No credentials are printed. The script stops
-if that deployment directory or the selected project's containers or volumes already
-exist; it is an initial installer, not an adoption or migration tool.
+whether to pull images and start. No credentials are printed. If that deployment
+directory or the selected project's containers or volumes already exist, the
+script offers a destructive fresh start. Declining preserves the deployment.
+For upgrades, continue using the existing deployment's `compose.sh`; this is
+an initial installer, not an adoption or migration tool.
+
+### Start over after a previous installation
+
+Run `bash deploy/setup.sh` and select the previous project name and Compose root.
+The installer lists the selected project's container IDs and volume names and
+warns that deleting volumes permanently destroys the database, users, enrollment
+credentials, and other stored data. It defaults to **no**. To reset, explicitly
+answer **yes**, then type **`PURGE <project>`** exactly, such as `PURGE vigara`.
+An empty answer, incorrect confirmation, or ended input never authorizes deletion.
+
+The reset force-removes the inventoried project containers, including running
+ones, then deletes its labeled volumes. There is no undo for volume deletion;
+make a backup first. Agents need enrolling again after deleting their server
+database. Unrelated projects and shared networks/proxies remain in place.
+
+An existing installer deployment directory moves to a sibling named
+`<project>.before-reset.<random-suffix>` before the new configuration is generated.
+This retains the old `.env`, Compose configuration, and bind-mounted data inside
+that directory; the new installation gets fresh credentials and storage. Archived
+data continues to consume disk space. Keep it private, and retain the matching
+old configuration if you need to recover it. External bind paths are never erased.
+Unrecognized directories, symlink deployment directories, and an unlabelled
+database volume with a conflicting name require manual resolution.
+
+If the selected proxy container is missing but its separate `<project>-caddy`
+stack still has resources, resetting that stack requires its own approval and
+`PURGE <project>-caddy` confirmation. Deleting proxy volumes loses its saved TLS
+certificates and state. A running or stopped existing proxy is reused through the
+normal prompts. Reset requires a local Unix Docker context; any deletion failure
+stops installation, potentially leaving a partially removed project to inspect.
 
 ### Choose persistent storage and container names
 

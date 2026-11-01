@@ -22,8 +22,12 @@ case "$*" in
   'compose up --help') echo '--wait-timeout';;
   'ps -aq '*) [[ ${EXISTING:-0} != 1 ]] || echo existing-container;;
   'ps -q '*) [[ ${BUSY_DOCKER_PORT:-0} != 1 ]] || echo existing-port-owner;;
-  'volume ls '*) [[ ${EXISTING_VOLUME:-0} != 1 ]] || echo existing-volume;;
-  'volume inspect '*) exit 1;;
+  'volume ls '*)
+    if [[ $* == *'=vigara-caddy' && ${ORPHAN_PROXY:-0} == 1 ]]; then echo old-proxy-volume;
+    else [[ ${EXISTING_VOLUME:-0} != 1 ]] || echo existing-volume; fi;;
+  'volume inspect --format '*) echo "${VOLUME_OWNER:-vigara}";;
+  'volume inspect '*) [[ ${NAMED_VOLUME:-0} == 1 ]];;
+  'rm -f '*|'volume rm '*) [[ ${FAIL_PURGE:-0} != 1 ]];;
   'container inspect '*) [[ ${CONFLICT_NAME:-0} == 1 ]];;
   'run '*) [[ ${FAIL_PERMISSIONS:-0} != 1 ]];;
   'network inspect --format '*) echo caddy-proxy;;
@@ -90,7 +94,7 @@ esac
         self.environment = dict(os.environ, PATH=str(binary) + os.pathsep + os.environ["PATH"],
                                 CALLS=str(self.calls), HOME=str(self.root), TEST_SOCKET=str(self.root / 'docker.sock'))
 
-    def run_setup(self, answers, root_answer='', mcp_answer='n', proxy_answers=None, storage_answer='n', public_url_answer='', **environment):
+    def run_setup(self, answers, root_answer='', mcp_answer='n', proxy_answers=None, storage_answer='n', public_url_answer='', reset_answers=None, **environment):
         # Fixtures below describe the original project/image/network prompts.
         # Add the shared-root answer and MCP opt-in before the startup answer.
         lines = answers.splitlines()
@@ -104,6 +108,8 @@ esac
             lines.insert(1, root_answer)
         if len(lines) >= 3:
             lines.insert(3, storage_answer)
+        if reset_answers is not None:
+            lines[2:2] = reset_answers.splitlines()
         answers = '\n'.join(lines) + ('\n' if lines else '')
         return subprocess.run(["bash", str(self.deploy / "setup.sh")], input=answers,
                               text=True, capture_output=True, cwd=self.root,
@@ -129,7 +135,7 @@ esac
         self.assertNotIn(' up -d ', self.calls.read_text())
         self.assertNotIn('pull', self.calls.read_text())
         self.assertNotIn(env.splitlines()[0], result.stdout)
-        self.assertIn('Setup already exists', self.run_setup('\n').stderr)
+        self.assertIn('Setup already exists', self.run_setup('\n', reset_answers='n').stderr)
         self.assertEqual((production / ".env").read_text(), env)
 
     def test_caddy_configuration(self):
@@ -144,6 +150,92 @@ esac
         self.assertNotIn('ports:', compose)
         self.assertIn('VIGARA_MCP_URL=\n', (production / '.env').read_text())
         self.assertIn('VIGARA_PUBLIC_URL=https://vigara.example.com\n', (production / '.env').read_text())
+
+    def test_reset_defaults_to_keep_and_requires_exact_confirmation(self):
+        for answer in ('', 'n', 'y\nPURGE other', 'y'):
+            with self.subTest(answer=answer):
+                result = self.run_setup('\n\nn\n\n\nn\nn\n', reset_answers=answer,
+                                        EXISTING='1', EXISTING_VOLUME='1')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn('rm -f existing-container', self.calls.read_text())
+                self.assertNotIn('volume rm existing-volume', self.calls.read_text())
+                self.assertFalse(self.production.exists())
+
+    def test_confirmed_reset_removes_only_inventoried_resources(self):
+        result = self.run_setup('\n\nn\n\n\nn\nn\n', reset_answers='y\nPURGE vigara',
+                                EXISTING='1', EXISTING_VOLUME='1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls.read_text()
+        self.assertIn('rm -f existing-container\n', calls)
+        self.assertIn('volume rm existing-volume\n', calls)
+        self.assertLess(calls.index('rm -f existing-container'), calls.index('volume rm existing-volume'))
+        self.assertNotIn('prune', calls)
+        self.assertNotIn('rm -f caddy-proxy', calls)
+        self.assertIn('NO UNDO', result.stdout)
+        self.assertTrue((self.production / '.env').exists())
+
+    def test_orphaned_volume_can_be_reset_without_containers(self):
+        result = self.run_setup('\n\nn\n\n\nn\nn\n', reset_answers='y\nPURGE vigara',
+                                EXISTING_VOLUME='1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('volume rm existing-volume', self.calls.read_text())
+        self.assertNotIn('rm -f ', self.calls.read_text())
+
+    def test_unlabelled_named_volume_is_not_purged(self):
+        result = self.run_setup('\n', reset_answers='y\nPURGE vigara',
+                                NAMED_VOLUME='1', VOLUME_OWNER='another-project')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('no matching project label', result.stderr)
+        self.assertNotIn('volume rm ', self.calls.read_text())
+
+    def test_orphaned_proxy_storage_requires_its_own_confirmation(self):
+        result = self.run_setup('\n\ny\nvigara.example.com\n\n\nn\n',
+                                proxy_answers='y\ny\nPURGE vigara-caddy\n', PROXY_STATE='missing',
+                                ORPHAN_PROXY='1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('volume rm old-proxy-volume', self.calls.read_text())
+        self.assertIn('project vigara-caddy', result.stdout)
+
+    def test_reset_archives_config_and_bind_data(self):
+        self.assertEqual(self.run_setup('\n\nn\n\n\nn\nn\n').returncode, 0)
+        original = (self.production / '.env').read_text()
+        data = self.production / 'data' / 'postgres'
+        data.mkdir(parents=True)
+        (data / 'important').write_text('old database')
+        result = self.run_setup('\n\nn\n\n\nn\nn\n', reset_answers='y\nPURGE vigara')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        backups = list(self.stacks_root.glob('vigara.before-reset.*'))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual((backups[0] / '.env').read_text(), original)
+        self.assertEqual((backups[0] / 'data/postgres/important').read_text(), 'old database')
+        self.assertNotEqual((self.production / '.env').read_text(), original)
+        self.assertFalse((self.production / 'data').exists())
+
+    def test_failed_purge_stops_before_creating_config(self):
+        result = self.run_setup('\n\nn\n\n\nn\nn\n', reset_answers='y\nPURGE vigara',
+                                EXISTING='1', EXISTING_VOLUME='1', FAIL_PURGE='1')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.production.exists())
+        self.assertNotIn('volume rm existing-volume', self.calls.read_text())
+
+    def test_remote_context_cannot_purge(self):
+        result = self.run_setup('\n\nn\n\n\nn\nn\n', reset_answers='y\nPURGE vigara',
+                                EXISTING_VOLUME='1', TEST_ENDPOINT='ssh://example.invalid')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn('volume rm existing-volume', self.calls.read_text())
+        self.assertFalse(self.production.exists())
+
+    def test_reset_refuses_unrecognized_directory_or_symlink(self):
+        self.production.mkdir(parents=True)
+        (self.production / 'unrelated').write_text('keep')
+        result = self.run_setup('\n', reset_answers='y\nPURGE vigara')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((self.production / 'unrelated').read_text(), 'keep')
+        self.production.rename(self.stacks_root / 'other')
+        self.production.symlink_to(self.stacks_root / 'other', target_is_directory=True)
+        result = self.run_setup('\n', reset_answers='y\nPURGE vigara')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(self.production.is_symlink())
 
     def test_shared_root_outside_checkout(self):
         existing = self.root / 'shared compose' / 'existing-stack' / 'compose.yml'
