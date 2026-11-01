@@ -4,7 +4,7 @@ This contract defines portable Git data for Compose stacks, logical server profi
 
 ## Portable repository layout
 
-The [Profiles and assignments editor](stack-profiles.md) implements Git-backed authoring and validation of profiles and disabled assignments. Runtime profile binding, assignment deployment and fenced transfer remain pending. Existing direct deployment does not consume profile requirements.
+The [Profiles and assignments editor](stack-profiles.md) implements authoring, Git persistence, initial device binding and exclusive epoch-1 assignment deployment. The agent checks the supported resource prerequisites before preview and apply. Fenced replacement, replicas, startup ordering and automatic resource provisioning remain pending. Direct deployments of stacks without an enabled assignment do not consume profile requirements.
 
 ```text
 compose-stacks/

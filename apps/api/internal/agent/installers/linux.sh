@@ -13,6 +13,11 @@ id -u vigara-agent >/dev/null 2>&1 || sudo useradd --system --gid vigara-agent -
 sudo install -d -o "$AGENT_USER" -g "$AGENT_USER" -m 0700 /var/lib/vigara-agent
 sudo systemctl stop vigara-agent.service 2>/dev/null || true
 sudo install -m 0755 "$BASE/vigara-agent" /usr/local/bin/vigara-agent
+if [ -f "$BASE/vigara-restic" ]; then
+  sudo install -m 0755 "$BASE/vigara-restic" /usr/local/bin/vigara-restic
+  sudo install -d -m 0755 /usr/local/share/licenses/vigara
+  sudo install -m 0644 "$BASE/restic.LICENSE" /usr/local/share/licenses/vigara/restic.LICENSE
+fi
 LEGACY_RUNNING=0
 if sudo systemctl is-active --quiet vigira-agent.service; then
   LEGACY_RUNNING=1
@@ -32,8 +37,10 @@ fi
 if sudo test ! -d /etc/systemd/system/vigara-agent.service.d && sudo test -d /etc/systemd/system/vigira-agent.service.d; then
   sudo cp -a /etc/systemd/system/vigira-agent.service.d /etc/systemd/system/vigara-agent.service.d
 fi
+MANAGED=0
 REINSTALL=0
 if [ -f "$CONFIG" ]; then
+  MANAGED=$(python3 -c 'import json,sys; print(int(bool(json.load(open(sys.argv[1])).get("managedBackups"))))' "$CONFIG")
   SERVER=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["serverUrl"])' "$CONFIG")
   NAME=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["name"])' "$CONFIG")
   TOKEN=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["token"])' "$CONFIG")
@@ -56,13 +63,21 @@ if [ "$REINSTALL" -eq 1 ] || sudo test ! -f /var/lib/vigara-agent/agent.json; th
     INSECURE_FLAG="--allow-insecure-private-http"
     echo 'WARNING: plain HTTP; use only on a trusted private network or VPN.' >&2
   fi
+  if [ "$MANAGED" -eq 1 ]; then sudo -u "$AGENT_USER" /usr/local/bin/vigara-agent --config /var/lib/vigara-agent/agent.json enable-managed-backups; fi
   printf '%s\n' "$TOKEN" | sudo -u "$AGENT_USER" /usr/local/bin/vigara-agent --config /var/lib/vigara-agent/agent.json enroll --server "$SERVER" --name "$NAME" $INSECURE_FLAG
   rm -f -- "$CONFIG"
 fi
+if [ "$MANAGED" -eq 1 ]; then sudo -u "$AGENT_USER" /usr/local/bin/vigara-agent --config /var/lib/vigara-agent/agent.json enable-managed-backups; fi
 sudo install -m 0644 "$BASE/vigara-agent.service" /etc/systemd/system/vigara-agent.service
 if [ "$AGENT_USER" = vigira-agent ]; then
   sudo mkdir -p /etc/systemd/system/vigara-agent.service.d
   printf '[Service]\nUser=vigira-agent\nGroup=vigira-agent\n' | sudo tee /etc/systemd/system/vigara-agent.service.d/00-legacy-account.conf >/dev/null
+fi
+# Managed file backups need host read access and repository write access.
+# Only explicitly opted-in backup installations use the root service.
+if [ "$MANAGED" -eq 1 ] || sudo python3 -c 'import json; exit(not json.load(open("/var/lib/vigara-agent/agent.json")).get("managedBackups", False))'; then
+  sudo mkdir -p /etc/systemd/system/vigara-agent.service.d
+  printf '[Service]\nUser=root\nGroup=root\nProtectHome=false\nProtectSystem=false\n' | sudo tee /etc/systemd/system/vigara-agent.service.d/90-managed-backups.conf >/dev/null
 fi
 sudo systemctl daemon-reload
 sudo systemctl enable --now vigara-agent.service

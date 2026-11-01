@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/deranjer/vigara/apps/api/internal/backups"
 	"github.com/deranjer/vigara/internal/protocol"
 	"github.com/deranjer/vigara/internal/serverurl"
 	"github.com/jackc/pgx/v5"
@@ -73,6 +74,11 @@ func (h *Handler) selectServerURL(requested string) (string, bool) {
 }
 
 type releaseManifest struct {
+	ResticVersion   string `json:"resticVersion"`
+	ResticArtifacts map[string]struct {
+		File   string `json:"file"`
+		SHA256 string `json:"sha256"`
+	} `json:"resticArtifacts"`
 	Version   string `json:"version"`
 	Artifacts map[string]struct {
 		File   string `json:"file"`
@@ -168,9 +174,15 @@ func (h *Handler) downloadAvailability(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	available := make([]string, 0, len(supportedDownloads))
+	backupTargets := make([]string, 0, len(supportedDownloads))
 	for target := range supportedDownloads {
 		if _, _, err := h.verifiedArtifact(target); err == nil {
 			available = append(available, target)
+			if _, e := h.verifiedRestic(target); e == nil {
+				if _, e = readBoundedFile(filepath.Join(h.releaseDir, "restic.LICENSE"), 1<<20); e == nil {
+					backupTargets = append(backupTargets, target)
+				}
+			}
 		}
 	}
 	type serverOption struct {
@@ -185,15 +197,16 @@ func (h *Handler) downloadAvailability(w http.ResponseWriter, r *http.Request) {
 		}
 		options = append(options, serverOption{URL: candidate, Secure: serverurl.IsSecure(candidate)})
 	}
-	writeJSON(w, map[string]any{"serverUrl": primary, "serverUrls": options, "allowInsecureHttp": h.allowInsecureHTTP, "targets": available})
+	writeJSON(w, map[string]any{"serverUrl": primary, "serverUrls": options, "allowInsecureHttp": h.allowInsecureHTTP, "targets": available, "managedBackupsAvailable": h.managedBackups.Available(), "backupTargets": backupTargets})
 }
 
 type agentDownloadRequest struct {
-	DeviceID  string   `json:"deviceId,omitempty"`
-	Target    string   `json:"target"`
-	ServerURL string   `json:"serverUrl"`
-	Name      string   `json:"name"`
-	Features  []string `json:"features"`
+	Backup    *backups.ManagedInput `json:"backup,omitempty"`
+	DeviceID  string                `json:"deviceId,omitempty"`
+	Target    string                `json:"target"`
+	ServerURL string                `json:"serverUrl"`
+	Name      string                `json:"name"`
+	Features  []string              `json:"features"`
 }
 
 func (h *Handler) createAgentDownload(w http.ResponseWriter, r *http.Request) {
@@ -234,6 +247,18 @@ func (h *Handler) createAgentDownload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		seen[feature] = true
+	}
+	var sealedBackup []byte
+	if req.Backup != nil {
+		if req.DeviceID != "" || !seen["restic.backup"] {
+			http.Error(w, "backup setup requires a new device with backup permission", 400)
+			return
+		}
+		sealedBackup, err = h.managedBackups.Prepare(*req.Backup)
+		if err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
 	}
 	token, tokenHash, err := newCredential()
 	if err != nil {
@@ -285,8 +310,26 @@ func (h *Handler) createAgentDownload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not prepare device bundle", 500)
 		return
 	}
+	var resticLicense []byte
+	var bundledRestic []byte
+	managedEnabled := false
+	for _, feature := range req.Features {
+		if feature == "restic.backup" {
+			managedEnabled = true
+		}
+	}
+	if managedEnabled {
+		bundledRestic, err = h.verifiedRestic(req.Target)
+		if err == nil {
+			resticLicense, err = readBoundedFile(filepath.Join(h.releaseDir, "restic.LICENSE"), 1<<20)
+		}
+		if err != nil {
+			http.Error(w, "verified restic artifact is unavailable; rebuild agent releases", 503)
+			return
+		}
+	}
 	var sessionID string
-	err = tx.QueryRow(r.Context(), `INSERT INTO agent_enrollment_tokens(token_hash,capabilities,expires_at,replacement_agent_id) VALUES($1,$2,$3,$4) RETURNING id::text`, tokenHash, req.Features, expires, replacementID).Scan(&sessionID)
+	err = tx.QueryRow(r.Context(), `INSERT INTO agent_enrollment_tokens(token_hash,capabilities,expires_at,replacement_agent_id,managed_backup) VALUES($1,$2,$3,$4,$5) RETURNING id::text`, tokenHash, req.Features, expires, replacementID, sealedBackup).Scan(&sessionID)
 	if err == nil {
 		_, err = tx.Exec(r.Context(), `INSERT INTO agent_download_sessions(id,device_name,target,version,status,expires_at) VALUES($1,$2,$3,$4,'waiting',$5)`, sessionID, req.Name, req.Target, version, expires)
 	}
@@ -310,13 +353,23 @@ func (h *Handler) createAgentDownload(w http.ResponseWriter, r *http.Request) {
 		_, e = f.Write(data)
 		return e
 	}
-	bootstrap, _ := json.Marshal(map[string]any{"serverUrl": serverURL, "insecureHttp": !serverurl.IsSecure(serverURL), "token": token, "name": req.Name, "sessionId": sessionID, "reinstall": replacementID != nil, "agentId": replacementID})
+	bootstrap, _ := json.Marshal(map[string]any{"serverUrl": serverURL, "insecureHttp": !serverurl.IsSecure(serverURL), "token": token, "name": req.Name, "sessionId": sessionID, "reinstall": replacementID != nil, "agentId": replacementID, "managedBackups": managedEnabled})
 	binaryName := "vigara-agent"
 	if strings.HasPrefix(req.Target, "windows-") {
 		binaryName = "vigara-agent.exe"
 	}
 	if err = add(binaryName, artifact); err == nil {
 		err = add("bootstrap.json", bootstrap)
+	}
+	if err == nil && managedEnabled {
+		resticName := "vigara-restic"
+		if strings.HasPrefix(req.Target, "windows-") {
+			resticName = "restic.exe"
+		}
+		err = add(resticName, bundledRestic)
+		if err == nil {
+			err = add("restic.LICENSE", resticLicense)
+		}
 	}
 	if err == nil && strings.HasPrefix(req.Target, "linux-") {
 		err = add("install.sh", []byte(linuxAgentInstaller))

@@ -97,8 +97,15 @@ func main() {
 	alerts.NewHandler(database.Pool, authService).Register(alertsMux)
 	backupMux := http.NewServeMux()
 	backups.NewHandler(database.Pool, authService).Register(backupMux)
+	managedBackups, err := backups.NewManager(database.Pool, os.Getenv("VIGARA_BACKUP_MASTER_KEY"), os.Getenv("VIGARA_RESTIC_EXECUTABLE"))
+	if err != nil {
+		logger.Error("invalid managed backup configuration", "error", err)
+		os.Exit(1)
+	}
+	managedBackups.Register(backupMux, authService)
 	agentMux := http.NewServeMux()
 	agentHandler := agent.NewHandler(database.Pool, authService)
+	agentHandler.ConfigureManagedBackups(managedBackups)
 	agentHandler.ConfigureDownloads("", os.Getenv("VIGIRA_AGENT_RELEASE_DIR"))
 	allowInsecureAgentHTTP := os.Getenv("VIGIRA_ALLOW_INSECURE_AGENT_HTTP") == "true"
 	for _, rejected := range agentHandler.ConfigureServerURLs(os.Getenv("VIGIRA_PUBLIC_URL"), splitList(os.Getenv("VIGIRA_PUBLIC_URLS")), allowInsecureAgentHTTP) {
@@ -207,6 +214,8 @@ func main() {
 	router.Handle("/api/docker/*", containersMux)
 	router.Handle("/api/stacks", stackMux)
 	router.Handle("/api/stacks/*", stackMux)
+	router.Handle("/api/stack-placements", stackMux)
+	router.Handle("/api/stack-placements/*", stackMux)
 	router.Handle("/api/users", adminMux)
 	router.Handle("/api/users/*", adminMux)
 	router.Handle("/api/audit", adminMux)

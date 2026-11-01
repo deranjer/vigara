@@ -52,16 +52,17 @@ type draft struct {
 	Version int64             `json:"version"`
 }
 type deployment struct {
-	AgentID    string     `json:"-"`
-	ID         string     `json:"id"`
-	StackID    string     `json:"stackId"`
-	Commit     string     `json:"commit"`
-	Digest     string     `json:"digest"`
-	Status     string     `json:"status"`
-	Stage      string     `json:"stage"`
-	Message    string     `json:"message"`
-	CreatedAt  time.Time  `json:"createdAt"`
-	FinishedAt *time.Time `json:"finishedAt"`
+	AgentID    string       `json:"-"`
+	ID         string       `json:"id"`
+	StackID    string       `json:"stackId"`
+	Commit     string       `json:"commit"`
+	Digest     string       `json:"digest"`
+	Status     string       `json:"status"`
+	Stage      string       `json:"stage"`
+	Message    string       `json:"message"`
+	CreatedAt  time.Time    `json:"createdAt"`
+	FinishedAt *time.Time   `json:"finishedAt"`
+	Result     stack.Result `json:"result"`
 }
 
 // Configuration is service-account controlled; repository credentials never cross the browser API.
@@ -96,6 +97,7 @@ func Register(mux *http.ServeMux, c Config) *API {
 	mux.HandleFunc("GET /api/stacks", a.list)
 	mux.HandleFunc("GET /api/stack-placements", a.getPlacements)
 	mux.HandleFunc("PUT /api/stack-placements", a.savePlacements)
+	mux.HandleFunc("POST /api/stack-placements/bindings", a.bindProfile)
 	mux.HandleFunc("POST /api/stacks", a.create)
 	mux.HandleFunc("GET /api/stacks/settings", a.getSettings)
 	mux.HandleFunc("PUT /api/stacks/settings", func(w http.ResponseWriter, r *http.Request) { a.editSettings(w, r, true) })
@@ -460,7 +462,7 @@ func (a *API) binding(ctx context.Context, id, project string) (Binding, error) 
 }
 func (a *API) validate(ctx context.Context, s stack.Snapshot) (stack.Plan, error) {
 	var plan stack.Plan
-	m, e := stack.Validate(s)
+	_, _, m, e := placement.ResolveRuntime(s)
 	if e != nil {
 		return plan, e
 	}
@@ -525,7 +527,7 @@ func (a *API) save(w http.ResponseWriter, r *http.Request) {
 	respond(w, 200, saved)
 }
 func (a *API) plan(w http.ResponseWriter, r *http.Request) {
-	_, ok := a.authorize(w, r, true)
+	u, ok := a.authorize(w, r, true)
 	if !ok {
 		return
 	}
@@ -551,16 +553,23 @@ func (a *API) plan(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Select a saved revision.", 422)
 		return
 	}
-	if e = directPlacement(ctx, repo, r.PathValue("id")); e != nil {
-		fail(w, e)
-		return
-	}
-	s, e := repo.Read(ctx, r.PathValue("id"), q.Commit)
+	s, e := a.deploymentSnapshot(ctx, repo, r.PathValue("id"), q.Commit, nil)
 	if e != nil {
 		fail(w, e)
 		return
 	}
 	plan, e := a.validate(ctx, s)
+	if e != nil {
+		fail(w, e)
+		return
+	}
+	b, ok := a.lookupTarget(ctx, s.ID)
+	if !ok || len(plan.Token) != 64 || !validReleaseImages(plan.Images, plan.Services) {
+		http.Error(w, "Update the agent to preview immutable image releases.", 409)
+		return
+	}
+	images, _ := json.Marshal(plan.Images)
+	_, e = a.Pool.Exec(ctx, `INSERT INTO stack_deployment_previews(stack_id,user_id,token,agent_id,configuration_digest,commit_id,images) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(stack_id,user_id) DO UPDATE SET token=$3,agent_id=$4,configuration_digest=$5,commit_id=$6,images=$7,expires_at=now()+interval '15 minutes'`, s.ID, u.ID, plan.Token, b.AgentID, stack.Digest(s), s.Commit, images)
 	if e != nil {
 		fail(w, e)
 		return
@@ -573,9 +582,10 @@ func (a *API) deploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var q struct {
-		Commit string `json:"commit"`
-		Token  string `json:"token"`
-		Pull   bool   `json:"pull"`
+		Commit string            `json:"commit"`
+		Token  string            `json:"token"`
+		Pull   bool              `json:"pull"`
+		Images map[string]string `json:"images,omitempty"`
 	}
 	if !decode(w, r, &q) {
 		return
@@ -596,16 +606,12 @@ func (a *API) deploy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Review a deployment preview first.", 422)
 		return
 	}
-	if e = directPlacement(ctx, repo, r.PathValue("id")); e != nil {
-		fail(w, e)
-		return
-	}
-	s, e := repo.Read(ctx, r.PathValue("id"), q.Commit)
+	s, e := a.deploymentSnapshot(ctx, repo, r.PathValue("id"), q.Commit, nil)
 	if e != nil {
 		fail(w, e)
 		return
 	}
-	m, e := stack.Validate(s)
+	_, _, m, e := placement.ResolveRuntime(s)
 	if e != nil {
 		fail(w, e)
 		return
@@ -615,14 +621,12 @@ func (a *API) deploy(w http.ResponseWriter, r *http.Request) {
 		fail(w, e)
 		return
 	}
-	// Refuse plans that became stale while the user was reviewing them.
-	plan, e := a.validate(ctx, s)
-	if e != nil {
-		fail(w, e)
-		return
-	}
-	if plan.Token != q.Token {
-		http.Error(w, "Device files changed. Review a fresh deployment preview.", 409)
+	// Only a server-recorded preview can authorize immutable image choices.
+	var imageBytes []byte
+	e = a.Pool.QueryRow(ctx, `SELECT images FROM stack_deployment_previews WHERE stack_id=$1 AND user_id=$2 AND token=$3 AND agent_id=$4 AND configuration_digest=$5 AND commit_id=$6 AND expires_at>now()`, s.ID, u.ID, q.Token, b.AgentID, stack.Digest(s), s.Commit).Scan(&imageBytes)
+	images := map[string]string{}
+	if e != nil || json.Unmarshal(imageBytes, &images) != nil || (q.Images != nil && !stack.Equal(q.Images, images)) {
+		http.Error(w, "Review a fresh deployment preview before deploying.", 409)
 		return
 	}
 	random := make([]byte, 32)
@@ -632,7 +636,7 @@ func (a *API) deploy(w http.ResponseWriter, r *http.Request) {
 	}
 	id := hex.EncodeToString(random)
 	raw, _ := json.Marshal(s)
-	_, e = a.Pool.Exec(ctx, `INSERT INTO stack_deployments(id,stack_id,agent_id,project_name,actor_id,actor_name,commit_id,configuration_digest,snapshot,plan_token,pull,status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'queued')`, id, s.ID, b.AgentID, m.ProjectName, u.ID, u.Username, s.Commit, stack.Digest(s), raw, q.Token, q.Pull)
+	_, e = a.Pool.Exec(ctx, `INSERT INTO stack_deployments(id,stack_id,agent_id,project_name,actor_id,actor_name,commit_id,configuration_digest,snapshot,plan_token,pull,status,images) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'queued',$12)`, id, s.ID, b.AgentID, m.ProjectName, u.ID, u.Username, s.Commit, stack.Digest(s), raw, q.Token, q.Pull, imageBytes)
 	if e != nil {
 		http.Error(w, "An active or uncertain deployment already exists, or the deployment could not be recorded. Refresh deployment history.", 409)
 		return
@@ -645,7 +649,7 @@ func (a *API) deployments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items := []deployment{}
-	rows, e := a.Pool.Query(r.Context(), `SELECT id,stack_id,commit_id,configuration_digest,status,stage,message,created_at,finished_at,agent_id::text FROM stack_deployments WHERE stack_id=$1 ORDER BY created_at DESC LIMIT 30`, r.PathValue("id"))
+	rows, e := a.Pool.Query(r.Context(), `SELECT id,stack_id,commit_id,configuration_digest,status,stage,message,created_at,finished_at,agent_id::text,result FROM stack_deployments WHERE stack_id=$1 ORDER BY created_at DESC LIMIT 30`, r.PathValue("id"))
 	if e != nil {
 		fail(w, e)
 		return
@@ -653,10 +657,12 @@ func (a *API) deployments(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	for rows.Next() {
 		var d deployment
-		if e = rows.Scan(&d.ID, &d.StackID, &d.Commit, &d.Digest, &d.Status, &d.Stage, &d.Message, &d.CreatedAt, &d.FinishedAt, &d.AgentID); e != nil {
+		var rawResult []byte
+		if e = rows.Scan(&d.ID, &d.StackID, &d.Commit, &d.Digest, &d.Status, &d.Stage, &d.Message, &d.CreatedAt, &d.FinishedAt, &d.AgentID, &rawResult); e != nil {
 			fail(w, e)
 			return
 		}
+		_ = json.Unmarshal(rawResult, &d.Result)
 		items = append(items, d)
 	}
 	if rows.Err() != nil {
@@ -684,7 +690,9 @@ func (a *API) reconcile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var agent string
-	e := a.Pool.QueryRow(r.Context(), "SELECT agent_id::text FROM stack_deployments WHERE id=$1 AND stack_id=$2 AND status='unknown'", r.PathValue("job"), r.PathValue("id")).Scan(&agent)
+	var snapshotBytes, imageBytes []byte
+	var token string
+	e := a.Pool.QueryRow(r.Context(), "SELECT agent_id::text,snapshot,plan_token,images FROM stack_deployments WHERE id=$1 AND stack_id=$2 AND status='unknown'", r.PathValue("job"), r.PathValue("id")).Scan(&agent, &snapshotBytes, &token, &imageBytes)
 	if e != nil {
 		http.Error(w, "No uncertain deployment found.", 404)
 		return
@@ -697,8 +705,16 @@ func (a *API) reconcile(w http.ResponseWriter, r *http.Request) {
 		fail(w, e)
 		return
 	}
+	var captured stack.Snapshot
+	images := map[string]string{}
+	if json.Unmarshal(snapshotBytes, &captured) != nil || json.Unmarshal(imageBytes, &images) != nil {
+		fail(w, stack.ErrInvalid)
+		return
+	}
+	result = correlatedResult(result, captured, r.PathValue("job"), token, images)
 	if result.Status == "succeeded" || result.Status == "failed" {
-		_, e = a.Pool.Exec(ctx, "UPDATE stack_deployments SET status=$2,stage=$3,message=$4,finished_at=now() WHERE id=$1 AND status='unknown'", r.PathValue("job"), result.Status, result.Stage, result.Message)
+		resultBytes, _ := json.Marshal(result)
+		_, e = a.Pool.Exec(ctx, "UPDATE stack_deployments SET status=$2,stage=$3,message=$4,result=$5,finished_at=now() WHERE id=$1 AND status='unknown'", r.PathValue("job"), result.Status, result.Stage, result.Message, resultBytes)
 		if e != nil {
 			fail(w, e)
 			return
@@ -744,22 +760,26 @@ func (a *API) tick(ctx context.Context) {
 		return
 	}
 	var id, agent, token, stackID string
-	var raw []byte
+	var raw, imageBytes []byte
 	var pull bool
-	e = c.QueryRow(ctx, `UPDATE stack_deployments SET status='running',stage='validate' WHERE id=(SELECT id FROM stack_deployments WHERE status='queued' ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING id,agent_id::text,snapshot,plan_token,pull,stack_id`).Scan(&id, &agent, &raw, &token, &pull, &stackID)
+	e = c.QueryRow(ctx, `UPDATE stack_deployments SET status='running',stage='validate' WHERE id=(SELECT id FROM stack_deployments WHERE status='queued' ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING id,agent_id::text,snapshot,plan_token,pull,stack_id,images`).Scan(&id, &agent, &raw, &token, &pull, &stackID, &imageBytes)
 	if e != nil {
 		return
 	}
 	var s stack.Snapshot
-	if json.Unmarshal(raw, &s) != nil {
+	images := map[string]string{}
+	if json.Unmarshal(raw, &s) != nil || json.Unmarshal(imageBytes, &images) != nil {
 		return
 	}
 	var result stack.Result
 	callCtx, cancel := context.WithTimeout(ctx, 20*time.Minute)
-	if guard := a.checkDirectDeployment(callCtx, stackID, c); guard != nil {
+	if guard := a.checkCapturedDeployment(callCtx, s, c); guard != nil {
 		result = stack.Result{Status: "failed", Stage: "validate", Message: "Deployment was not sent: current profile assignments or repository access require review."}
 	} else {
-		e = a.Hub.Call(callCtx, agent, protocol.MethodComposeDeploy, stack.DeployRequest{Job: stack.Job{ID: id, Snapshot: s, Pull: pull}, Token: token}, &result)
+		e = a.Hub.Call(callCtx, agent, protocol.MethodComposeDeploy, stack.DeployRequest{Job: stack.Job{ID: id, Snapshot: s, Pull: pull}, Token: token, Images: images}, &result)
+		if e == nil {
+			result = correlatedResult(result, s, id, token, images)
+		}
 	}
 	cancel()
 	if e != nil {
@@ -777,5 +797,6 @@ func (a *API) tick(ctx context.Context) {
 	}
 	finish, finishCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer finishCancel()
-	_, _ = c.Exec(finish, "UPDATE stack_deployments SET status=$2,stage=$3,message=$4,finished_at=CASE WHEN $2='unknown' THEN NULL ELSE now() END WHERE id=$1", id, result.Status, result.Stage, result.Message)
+	resultBytes, _ := json.Marshal(result)
+	_, _ = c.Exec(finish, "UPDATE stack_deployments SET status=$2,stage=$3,message=$4,result=$5,finished_at=CASE WHEN $2='unknown' THEN NULL ELSE now() END WHERE id=$1", id, result.Status, result.Stage, result.Message, resultBytes)
 }

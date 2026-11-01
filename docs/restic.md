@@ -2,9 +2,13 @@
 
 The agent includes a `restic.backup` module (`1.0.0`) for local and network-drive repositories. It invokes the locally installed Restic executable with argument arrays, checks the pinned `0.19.1` version before repository access and backup, validates the repository without initializing it, and parses bounded JSON-lines backup output. Output and error messages do not contain command output, repository addresses, credentials, or executable paths.
 
+For bundled Restic, server-managed source paths, automatic provisioning, and web
+browsing/downloads, see [Managed device backups](managed-backups.md). The
+operator-owned mode below remains available.
+
 ## Operator-owned profile
 
-Backup destinations, source paths, credentials, and an optional executable path come from the trusted local operator's private agent state file. A server job can select only a profile ID; it cannot supply paths, credentials, environment variables, or executable paths. The state file is protected by the agent's private-file permissions and should be edited only by the service account or an administrator. Add a profile before enrollment if the agent should advertise the backup capability at enrollment. For example, add this field to the JSON state file before running `enroll`:
+Backup destinations, source paths, credentials, and an optional executable path come from the trusted local operator's private agent state file. In this mode, a server job can select only a profile ID; it cannot supply paths, credentials, environment variables, or executable paths. The state file is protected by the agent's private-file permissions and should be edited only by the service account or an administrator. Add a profile before enrollment if the agent should advertise the backup capability at enrollment. For example, add this field to the JSON state file before running `enroll`:
 
 ```json
 "resticProfiles": {

@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { Alert, Badge, Button, Divider, Group, Loader, Select, Stack, Text, Textarea, TextInput, Title } from '@mantine/core'
 
 type Files = Record<string, string>
-type Placements = { commit: string; files: Files; branch: string; validationError: string }
+type ProfileBinding = { profileId: string; agentId: string; epoch: number }
+type Placements = { commit: string; files: Files; branch: string; validationError: string; bindings: ProfileBinding[] }
 
 async function request<T>(method = 'GET', body?: unknown): Promise<T> {
   const response = await fetch('/api/stack-placements', { method, credentials: 'same-origin', headers: body ? { 'Content-Type': 'application/json' } : undefined, body: body ? JSON.stringify(body) : undefined })
@@ -26,6 +27,8 @@ export function StackProfiles({ stacks, onClose }: { stacks: { id: string; name:
   const [targetProfile, setTargetProfile] = useState<string | null>(null)
   const [stackID, setStackID] = useState<string | null>(null)
   const [assignmentID, setAssignmentID] = useState('')
+  const [bindingAgent, setBindingAgent] = useState<string | null>(null)
+  const [devices, setDevices] = useState<{ value: string; label: string }[]>([])
   const dirty = saved !== null && !same(saved.files, files)
   const profileIDs = Object.keys(files).flatMap((path) => /^profiles\/([^/]+)\/vigara-profile.yaml$/.exec(path)?.[1] ?? []).sort()
   const assignmentPath = targetProfile && stackID ? `assignments/${targetProfile}/${stackID}.yaml` : ''
@@ -34,6 +37,7 @@ export function StackProfiles({ stacks, onClose }: { stacks: { id: string; name:
   useEffect(() => {
     let active = true
     void request<Placements>().then((value) => { if (active) { setSaved(value); setFiles(value.files); setSelected(Object.keys(value.files).sort()[0] ?? null) } }).catch((cause: Error) => { if (active) setError(cause.message) })
+    void fetch('/api/stacks/setup', { credentials: 'same-origin' }).then(async (response) => { if (!response.ok) throw new Error('Could not load deployment devices.'); return response.json() as Promise<{ devices: { agentId: string; name: string; message?: string }[] }> }).then((value) => { if (active) setDevices(value.devices.filter((device) => !device.message).map((device) => ({ value: device.agentId, label: device.name }))) }).catch((cause: Error) => { if (active) setError(cause.message) })
     return () => { active = false }
   }, [])
   useEffect(() => {
@@ -57,14 +61,14 @@ export function StackProfiles({ stacks, onClose }: { stacks: { id: string; name:
       const result = await request<{ state: string; commit: string }>('PUT', { commit: saved.commit, files })
       if (result.state === 'pendingPush') { setNotice('Pending sync: Git has not confirmed the push. Keep this editor open and retry Save to branch.'); return }
       setSaved({ ...saved, commit: result.commit, files: { ...files }, validationError: '' })
-      setNotice(`Saved ${result.commit.slice(0, 8)} to ${saved.branch}. Assignments remain disabled.`)
+      setNotice(`Saved ${result.commit.slice(0, 8)} to ${saved.branch}. Preview each stack before deploying.`)
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not save profiles.') }
     finally { setBusy(false) }
   }
 
   return <Stack>
     <Text>Profiles describe a server’s role and storage requirements. Assignments connect saved stacks to that role.</Text>
-    <Alert color="blue" title="Manifest preparation">You can prepare and save profiles now. Assignments must remain disabled until device binding and assignment deployment are available. Saving does not move stacks or restore their data.</Alert>
+    <Alert color="blue" title="Profiles and device bindings">Save a profile, bind it to the device already approved for its stacks, then enable exclusive assignments at ownership epoch 1 in YAML. Deployment checks the profile’s resources on that device. Saving does not deploy or restore data. Moving ownership and replicas are not available yet.</Alert>
     {error && <Alert color="red" title="Profiles could not complete">{error}</Alert>}
     {notice && <Alert>{notice}</Alert>}
     {saved?.validationError && <Alert color="yellow" title="Saved manifests need review">{saved.validationError}. Review the YAML and save a corrected set.</Alert>}
@@ -92,6 +96,16 @@ export function StackProfiles({ stacks, onClose }: { stacks: { id: string; name:
           setAssignmentID('')
         }}>Add assignment</Button>
       </Group>
+      <Title order={4}>Bind a saved profile to its device</Title>
+      <Group align="end">
+        <Select label="Profile to bind" searchable data={profileIDs} value={targetProfile} disabled={busy} onChange={setTargetProfile} />
+        <Select label="Approved device" searchable data={devices} value={bindingAgent} disabled={busy} onChange={setBindingAgent} />
+        <Button variant="light" disabled={busy || dirty || !targetProfile || !bindingAgent || !!saved.bindings?.some((binding) => binding.profileId === targetProfile)} onClick={() => {
+          setBusy(true); setError(''); setNotice('')
+          void fetch('/api/stack-placements/bindings', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ profileId: targetProfile, agentId: bindingAgent, commit: saved.commit }) }).then(async (response) => { if (!response.ok) throw new Error((await response.text()).trim().slice(0, 500)); return response.json() as Promise<ProfileBinding> }).then((binding) => { setSaved((current) => current ? { ...current, bindings: [...(current.bindings ?? []), binding] } : current); setNotice('Profile bound. You can now enable its exclusive assignments at epoch 1 and save. Review a new deployment preview before applying.') }).catch((cause: Error) => setError(cause.message)).finally(() => setBusy(false))
+        }}>Bind profile</Button>
+      </Group>
+      {saved.bindings?.map((binding) => <Text key={binding.profileId} size="sm">{binding.profileId} → {devices.find((device) => device.value === binding.agentId)?.label ?? binding.agentId} · ownership epoch {binding.epoch}</Text>)}
       <Divider />
       {Object.keys(files).length ? <>
         <Select label="Manifest" searchable data={Object.keys(files).sort()} value={selected} disabled={busy} onChange={setSelected} />
