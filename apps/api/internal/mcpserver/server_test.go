@@ -101,6 +101,7 @@ func TestCSRFBoundToCookieOriginTargetAndSignature(t *testing.T) {
 		{"cookie missing", target, csrf, "", nil, false},
 		{"form missing", target, "", "", cookie, false},
 		{"cross origin", target, csrf, "https://evil.example", cookie, false},
+		{"opaque origin", target, csrf, "null", cookie, false},
 		{"changed client", "/oauth/authorize?client_id=client-b", csrf, "", cookie, false},
 		{"forged cookie", target, "forged", "", &http.Cookie{Name: csrfCookie, Value: "forged"}, false},
 	} {
@@ -119,6 +120,28 @@ func TestCSRFBoundToCookieOriginTargetAndSignature(t *testing.T) {
 				t.Errorf("CSRF accepted=%v", got)
 			}
 		})
+	}
+}
+
+func TestOAuthPagesPreserveOriginForFormSubmission(t *testing.T) {
+	h, _ := testHandler(t)
+	r := httptest.NewRequest("GET", "https://vigara.example/oauth/authorize?client_id=client-a", nil)
+	w := httptest.NewRecorder()
+	h.consentPage(w, r, authorization{Client: client{Name: "MCP client"}, Redirect: "https://client.example/callback", Scopes: supportedScopes}, "")
+	if got := w.Header().Get("Referrer-Policy"); got != "same-origin" {
+		t.Fatalf("consent referrer policy %q can suppress the Origin on a form POST", got)
+	}
+	if !strings.Contains(w.Body.String(), `<form method="post">`) {
+		t.Fatal("missing same-origin consent form")
+	}
+	if !strings.Contains(w.Header().Get("Content-Security-Policy"), "form-action 'self'") {
+		t.Fatal("form target must remain same origin")
+	}
+	// Connection revocation uses the same renderer and needs the same policy.
+	w = httptest.NewRecorder()
+	renderPage(w, map[string]any{"Title": "Connected applications"})
+	if got := w.Header().Get("Referrer-Policy"); got != "same-origin" {
+		t.Fatalf("connections referrer policy = %q", got)
 	}
 }
 

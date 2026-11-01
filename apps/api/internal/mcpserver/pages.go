@@ -82,7 +82,10 @@ func renderPage(w http.ResponseWriter, data any) {
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Referrer-Policy", "no-referrer")
+	// no-referrer makes browser form POSTs send Origin: null, which our
+	// same-origin CSRF check correctly rejects. Keep the origin on local form
+	// submissions while withholding the OAuth query from cross-origin targets.
+	w.Header().Set("Referrer-Policy", "same-origin")
 	_ = page.Execute(w, data)
 }
 
