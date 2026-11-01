@@ -46,6 +46,7 @@ jobs:
           echo "VIGIRA_SOPS_BINARY=$GITHUB_WORKSPACE/.tools/sops" >> "$GITHUB_ENV"
           echo "VIGIRA_AGE_KEYGEN_BINARY=$GITHUB_WORKSPACE/.tools/age-keygen" >> "$GITHUB_ENV"
       - run: go test -p 1 ./...
+      - run: go test -race -p 1 ./apps/api/internal/agent ./apps/api/internal/scheduledtasks
       - run: go build ./apps/api/... ./apps/agent/...
   web:
     runs-on: ubuntu-latest

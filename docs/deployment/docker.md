@@ -245,7 +245,100 @@ When replacing an existing deployment, preserve its actual database volume or bi
 
 Android uploads are disabled when `VIGARA_ANDROID_BACKUP_ROOT` is empty. To enable them, set it in `deploy/.env.staging` to `/var/lib/vigira/android-backups`. The Compose setup mounts that path from the persistent `android-backups` volume, and the container user can write there. Protect and back up this volume alongside PostgreSQL; the uploaded files are stored unencrypted. See [Android storage details](../android.md#enable-server-storage).
 
-## Optional agent downloads
+## Automatic agent release downloads
+
+GitHub Actions builds agents for Windows x64, Linux x64 and Linux ARM64, plus
+the pinned Restic executable for each target and its license. It publishes these
+assets and `manifest.json` to the public GitHub prerelease
+`agents-sha-<full-source-commit>`. That prerelease is not marked as the latest
+product release. Only complete drafts are published; reruns preserve an already
+published release. Enrollment tokens and device-specific settings are never
+uploaded to GitHub.
+
+The container publishing workflow waits for those assets before publishing the
+server image. The image embeds the same source revision as a bootstrap fallback.
+With `VIGARA_AGENT_RELEASE_TAG=auto` (the image default), the scheduled bundle
+scan runs at startup and every 24 hours, selecting the newest published releases
+whose protocol major version and pinned Restic version match this server.
+Bundles are enabled only after a complete release passes source revision,
+protocol, filename, size, SHA-256 and pinned Restic checks.
+
+Assets are staged privately, then published into the cache as a complete set.
+The API retries failures every minute without blocking server startup. A verified
+selected cache is reused on offline restarts, even if the original server-commit
+fallback has aged out of retention. **Add device** shows download/verification
+progress or the last error and refreshes while waiting. The server still creates
+each one-use enrollment ZIP privately when requested.
+
+In **Admin → Scheduled tasks**, use **Run now** to scan immediately, inspect the
+last result and next run, and configure bundle retention. By default purging is
+enabled and only the newest **two compatible bundle versions** are retained.
+Each version contains the complete set of supported platforms and Restic files.
+Set the count to 1–20, or disable purging to keep downloaded history. Purging is
+confined to release-tag directories in the agent cache; it does not remove
+device backups or unrelated files. An explicit release pin is honored by scans.
+
+Current Compose examples persist the cache at `/var/lib/vigira/agent-releases`.
+The installer supports either a named cache volume or
+`<compose-root>/<project>/data/agent-releases` in bind mode, including UID 10001
+ownership preparation. It sets `VIGARA_PUBLIC_URL` from the Caddy hostname; the
+direct-port path prompts for an agent-facing HTTPS origin (or lets you configure
+it later).
+
+### Upgrade an existing deployment
+
+After this workflow has published the new image and assets, pull and recreate
+your existing app using its existing helper. Keep the database and credentials:
+
+```sh
+bash ~/dockers/compose-stacks/vigara/compose.sh pull app
+bash ~/dockers/compose-stacks/vigara/compose.sh up -d --wait app
+```
+
+Set `VIGARA_PUBLIC_URL` in your `.env` and ensure the app forwards it. Add a
+persistent cache mount to avoid downloading assets again on container recreation:
+
+```yaml
+services:
+  app:
+    environment:
+      VIGARA_PUBLIC_URL: ${VIGARA_PUBLIC_URL}
+      VIGARA_AGENT_RELEASE_TAG: auto
+      VIGARA_AGENT_RELEASE_CACHE: /var/lib/vigira/agent-releases
+    volumes:
+      - agent-releases:/var/lib/vigira/agent-releases
+volumes:
+  agent-releases:
+```
+
+For bind storage, replace that volume mount with
+`./data/agent-releases:/var/lib/vigira/agent-releases` and create the directory
+owned by the API container's UID/GID 10001. Existing installations without a
+cache mount can still fetch assets into the container filesystem; recreation
+will discard that cache.
+
+`VIGARA_AGENT_RELEASE_TAG=off` disables fetching. An explicit
+`agents-sha-<40-character-commit>` pins another compatible release. An explicit
+`VIGARA_AGENT_RELEASE_DIR` keeps the manual, operator-provisioned directory and
+takes precedence over automatic downloads; clear it to switch to fetching.
+Outbound HTTPS access to GitHub and its `githubusercontent.com` asset hosts is
+required on a cold cache. Private GitHub repositories are not supported by the
+anonymous fetcher; use the manual path below for those deployments.
+
+See [scheduled server tasks](../scheduled-tasks.md) for startup behavior, task
+status persistence, administrative controls and the built-in maintenance registry.
+
+For local Docker builds, pass `--build-arg VIGARA_REVISION="$(git rev-parse HEAD)"`
+to select an already published same-commit release. Standalone binaries can set
+the release tag and a service-writable `VIGARA_AGENT_RELEASE_CACHE` explicitly.
+
+Operators can use **Actions → Publish agent release assets → Run workflow** on
+`main` to publish missing assets for that commit. The normal container workflow
+already runs it automatically. Publishing requires the workflow's
+`contents: write` GitHub token permission. Do not overwrite published same-commit
+assets; fix the source and publish a new commit instead.
+
+## Manual agent downloads
 
 Agent bundle downloads require release files and a public HTTPS URL. Build the bundles on an operator machine and copy the output directory to the staging host. From the repository root, the bundle command is:
 

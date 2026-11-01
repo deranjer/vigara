@@ -90,7 +90,7 @@ esac
         self.environment = dict(os.environ, PATH=str(binary) + os.pathsep + os.environ["PATH"],
                                 CALLS=str(self.calls), HOME=str(self.root), TEST_SOCKET=str(self.root / 'docker.sock'))
 
-    def run_setup(self, answers, root_answer='', mcp_answer='n', proxy_answers=None, storage_answer='n', **environment):
+    def run_setup(self, answers, root_answer='', mcp_answer='n', proxy_answers=None, storage_answer='n', public_url_answer='', **environment):
         # Fixtures below describe the original project/image/network prompts.
         # Add the shared-root answer and MCP opt-in before the startup answer.
         lines = answers.splitlines()
@@ -98,6 +98,8 @@ esac
             lines.insert(6, mcp_answer)
             if proxy_answers is not None:
                 lines.insert(6, proxy_answers)
+            if lines[2].lower() not in ('y', 'yes'):
+                lines.insert(6, public_url_answer)
         if lines:
             lines.insert(1, root_answer)
         if len(lines) >= 3:
@@ -141,6 +143,7 @@ esac
         self.assertEqual(compose.count('      VIGARA_BACKUP_MASTER_KEY:'), 1)
         self.assertNotIn('ports:', compose)
         self.assertIn('VIGARA_MCP_URL=\n', (production / '.env').read_text())
+        self.assertIn('VIGARA_PUBLIC_URL=https://vigara.example.com\n', (production / '.env').read_text())
 
     def test_shared_root_outside_checkout(self):
         existing = self.root / 'shared compose' / 'existing-stack' / 'compose.yml'
@@ -362,6 +365,7 @@ esac
         production = self.root / 'shared stacks' / 'vigara'
         self.assertTrue((production / 'data' / 'postgres').is_dir())
         self.assertTrue((production / 'data' / 'android-backups').is_dir())
+        self.assertTrue((production / 'data' / 'agent-releases').is_dir())
         compose = (production / 'compose.yml').read_text()
         self.assertNotIn('\nvolumes:\n', compose)
         self.assertIn('source: ./data/postgres', compose)
@@ -453,6 +457,23 @@ esac
                                         capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 shutil.rmtree(production)
+
+    def test_agent_public_url_forwarding(self):
+        available = subprocess.run(['docker', 'compose', 'version'], capture_output=True)
+        if available.returncode:
+            self.skipTest('A real Docker Compose CLI is unavailable')
+        for caddy in (False, True):
+            with self.subTest(caddy=caddy):
+                answers = '\n\ny\nvigara.example.com\n\n\nn\n' if caddy else '\n\nn\n\n\ny\nn\n'
+                result = self.run_setup(answers, public_url_answer='https://vigara.example.com')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                parsed = subprocess.run(['bash', str(self.production / 'compose.sh'), 'config', '--format', 'json'], capture_output=True, text=True)
+                self.assertEqual(parsed.returncode, 0, parsed.stderr)
+                app = json.loads(parsed.stdout)['services']['app']
+                self.assertEqual(app['environment']['VIGARA_PUBLIC_URL'], 'https://vigara.example.com')
+                self.assertEqual(app['environment']['VIGARA_AGENT_RELEASE_TAG'], 'auto')
+                self.assertTrue(any(mount['target'] == '/var/lib/vigira/agent-releases' for mount in app['volumes']))
+                shutil.rmtree(self.production)
 
 
 if __name__ == '__main__':

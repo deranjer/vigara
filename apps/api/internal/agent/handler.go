@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/deranjer/vigara/apps/api/internal/auth"
@@ -31,6 +32,8 @@ type Handler struct {
 	pool           *pgxpool.Pool
 	auth           *auth.Service
 	releaseDir     string
+	releaseStore   *releaseStore
+	releaseFilesMu sync.RWMutex
 	managedBackups *backups.Manager
 	// serverURLs are the validated, operator-approved URLs for agent bundles; the
 	// first is the default. allowInsecureHTTP records the explicit plain-HTTP opt-in.

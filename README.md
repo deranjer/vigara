@@ -22,6 +22,11 @@ Go integration tests run when `VIGIRA_TEST_DATABASE_URL` points to a test Postgr
 
 ## Documentation and staging
 
+**Admin → Scheduled tasks** lists server maintenance jobs, manual run controls,
+last/next run times, and agent bundle retention. Enabled tasks run at startup;
+bundle scans repeat every 24 hours and keep two compatible versions by default.
+See [scheduled tasks](docs/scheduled-tasks.md).
+
 For an interactive initial Linux server deployment, run `bash deploy/setup.sh`.
 It checks prerequisites, generates private configuration, and offers Caddy proxy
 labels or direct port access. With approval it can deploy Caddy, then verify HTTPS

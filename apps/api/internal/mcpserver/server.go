@@ -217,3 +217,11 @@ func (h *Handler) RunCleanup(ctx context.Context) {
 		}
 	}
 }
+
+// Cleanup performs one bounded scheduled expiration pass.
+func (h *Handler) Cleanup(ctx context.Context) error {
+	_, err := h.pool.Exec(ctx, `DELETE FROM user_sessions WHERE id IN
+        (SELECT session_id FROM mcp_oauth_codes WHERE expires_at<=now()
+        UNION SELECT session_id FROM mcp_oauth_grants WHERE expires_at<=now())`)
+	return err
+}

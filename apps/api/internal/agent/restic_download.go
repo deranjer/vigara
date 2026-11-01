@@ -11,10 +11,13 @@ import (
 )
 
 func (h *Handler) verifiedRestic(target string) ([]byte, error) {
-	if _, ok := supportedDownloads[target]; !ok || h.releaseDir == "" {
+	h.releaseFilesMu.RLock()
+	defer h.releaseFilesMu.RUnlock()
+	directory := h.artifactDirectory()
+	if _, ok := supportedDownloads[target]; !ok || directory == "" {
 		return nil, errors.New("restic unavailable")
 	}
-	b, err := readBoundedFile(filepath.Join(h.releaseDir, "manifest.json"), 1<<20)
+	b, err := readBoundedFile(filepath.Join(directory, "manifest.json"), 1<<20)
 	if err != nil {
 		return nil, err
 	}
@@ -30,7 +33,7 @@ func (h *Handler) verifiedRestic(target string) ([]byte, error) {
 	if !ok || entry.File != "restic-"+target+ext || len(entry.SHA256) != 64 {
 		return nil, errors.New("restic unavailable")
 	}
-	data, err := readBoundedFile(filepath.Join(h.releaseDir, entry.File), 128<<20)
+	data, err := readBoundedFile(filepath.Join(directory, entry.File), 128<<20)
 	if err != nil {
 		return nil, err
 	}
@@ -39,4 +42,10 @@ func (h *Handler) verifiedRestic(target string) ([]byte, error) {
 		return nil, errors.New("restic digest mismatch")
 	}
 	return data, nil
+}
+
+func (h *Handler) releaseLicense() ([]byte, error) {
+	h.releaseFilesMu.RLock()
+	defer h.releaseFilesMu.RUnlock()
+	return readBoundedFile(filepath.Join(h.artifactDirectory(), "restic.LICENSE"), 1<<20)
 }

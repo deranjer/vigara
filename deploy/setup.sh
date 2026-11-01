@@ -61,6 +61,7 @@ use_bind_storage() {
       'volumes:') break;;
       '      - postgres-data:/var/lib/postgresql/data') source=postgres; target=/var/lib/postgresql/data;;
       '      - android-backups:/var/lib/vigira/android-backups') source=android-backups; target=/var/lib/vigira/android-backups;;
+      '      - agent-releases:/var/lib/vigira/agent-releases') source=agent-releases; target=/var/lib/vigira/agent-releases;;
       '      - caddy-data:/data') source=caddy; target=/data;;
       '      - caddy-config:/config') source=config; target=/config;;
       *) printf '%s\n' "$line"; continue;;
@@ -69,9 +70,9 @@ use_bind_storage() {
     printf '      - type: bind\n        source: ./data/%s\n        target: %s\n        bind:\n          create_host_path: false\n' "$source" "$target"
   done < "$directory/compose.yml" > "$directory/compose.bind.yml"
   mv -- "$directory/compose.bind.yml" "$directory/compose.yml"
-  if [[ -d "$directory/data/android-backups" ]]; then
+  if [[ -d "$directory/data/android-backups" || -d "$directory/data/agent-releases" ]]; then
     # The API runs as UID/GID 10001. PostgreSQL and Caddy initialize their own
-    # fresh bind directories; the API cannot chown its Android upload directory.
+    # fresh bind directories; the API cannot chown its upload/cache directories.
     cat > "$directory/prepare-storage.sh" <<'BASH'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -82,13 +83,16 @@ else
   endpoint=$DOCKER_HOST
 fi
 [[ $endpoint == unix://* && -S ${endpoint#unix://} ]] || { echo 'Bind storage preparation requires a local Docker socket.' >&2; exit 1; }
-[[ -d data/android-backups && ! -L data/android-backups ]] || { echo 'Expected a real Android data directory.' >&2; exit 1; }
-data_dir="$(pwd -P)/data/android-backups"
+for name in android-backups agent-releases; do
+  [[ -e data/$name ]] || continue
+  [[ -d data/$name && ! -L data/$name ]] || { echo 'Expected a real API data directory.' >&2; exit 1; }
+  data_dir="$(pwd -P)/data/$name"
 # Mount over the helper image's declared data volume so no anonymous volume is
 # created. Change only this directory's owner, without recursive chmod/chown.
 docker run --rm --user 0:0 --entrypoint chown \
   --mount "type=bind,source=$data_dir,target=/var/lib/postgresql/data" \
   postgres:17-alpine 10001:10001 /var/lib/postgresql/data
+done
 BASH
     chmod 700 "$directory/prepare-storage.sh"
   fi
@@ -212,6 +216,14 @@ else
   url="http://$host:$port"
 fi
 
+public_url=''
+if [[ $mode == caddy ]]; then
+  public_url="https://$domain"
+else
+  ask public_url 'HTTPS address agents can reach (leave blank to configure later)' ''
+  [[ -z $public_url || $public_url =~ ^https://[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?(:[0-9]{1,5})?$ ]] || fail 'Enter an HTTPS origin without a path, query or credentials.'
+fi
+
 mcp_origin=''
 if yesno 'Enable read-only MCP connections for ChatGPT and Claude?'; then
   command -v curl >/dev/null || fail 'Install curl to verify MCP readiness.'
@@ -235,6 +247,7 @@ backup_key=$(openssl rand -base64 32)
   printf 'POSTGRES_PASSWORD=%s\nVIGARA_IMAGE=%s\n' "$password" "$image"
   printf 'VIGARA_BACKUP_MASTER_KEY=%s\n' "$backup_key"
   printf 'VIGARA_MCP_URL=%s\n' "$mcp_origin"
+  printf 'VIGARA_PUBLIC_URL=%s\n' "$public_url"
   if [[ $mode == caddy ]]; then
     printf 'VIGARA_DOMAIN=%s\nVIGARA_PROXY_NETWORK=%s\n' "$domain" "$network"
   else

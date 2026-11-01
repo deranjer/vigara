@@ -1,0 +1,51 @@
+name: Publish agent release assets
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: agent-release-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build agents, pinned Restic executables and checksum manifest
+        env:
+          SOURCE_REVISION: ${{ github.sha }}
+        run: python3 scripts/package_agent_releases.py "sha-${SOURCE_REVISION:0:12}" agent-releases "$SOURCE_REVISION"
+      - name: Verify actual assets with the server's release verifier
+        env:
+          VIGARA_TEST_AGENT_RELEASE_DIR: ${{ github.workspace }}/agent-releases
+        run: go test ./apps/api/internal/agent -run TestBuiltReleaseDirectory -count=1
+      - name: Publish complete assets before exposing the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          tag="agents-sha-$SOURCE_REVISION"
+          if gh release view "$tag" --json isDraft --jq '.isDraft' > release-state.txt; then
+            if [ "$(cat release-state.txt)" = false ]; then
+              echo "Release already published; preserving immutable assets."
+              exit 0
+            fi
+          else
+            gh release create "$tag" --target "$SOURCE_REVISION" --draft --prerelease --latest=false \
+              --title "Agent bundles ${SOURCE_REVISION:0:12}" \
+              --notes "Agent and pinned Restic binaries for server commit $SOURCE_REVISION. Enrollment credentials are generated privately by each Vigara server."
+          fi
+          gh release upload "$tag" agent-releases/* --clobber
+          gh release edit "$tag" --draft=false --prerelease --latest=false
