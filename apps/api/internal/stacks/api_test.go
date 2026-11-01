@@ -43,12 +43,16 @@ func (f *fakeAgent) Call(ctx context.Context, agent, method string, params, out 
 		q := params.(protocol.ComposeCreateTarget)
 		*out.(*protocol.ComposeTargetInfo) = protocol.ComposeTargetInfo{ID: q.ID, ProjectName: q.ProjectName, Directory: "/srv/managed/" + q.ID}
 	case protocol.MethodComposeValidate:
-		*out.(*stack.Plan) = stack.Plan{Token: strings.Repeat("d", 64), ProjectName: "demo", Services: []string{"web"}}
+		*out.(*stack.Plan) = stack.Plan{Token: strings.Repeat("d", 64), ProjectName: "demo", Services: []string{"web"}, Images: map[string]string{"web": "nginx@sha256:" + strings.Repeat("a", 64)}}
 	case protocol.MethodComposeDeploy:
 		f.deployed = append(f.deployed, params.(stack.DeployRequest))
-		*out.(*stack.Result) = stack.Result{Status: "succeeded", Stage: "complete", Message: "Running"}
+		q := params.(stack.DeployRequest)
+		*out.(*stack.Result) = stack.Result{Status: "succeeded", Stage: "complete", Message: "Running", JobID: q.Job.ID, Commit: q.Job.Snapshot.Commit, ConfigurationRevision: stack.ConfigurationRevision(q.Job.Snapshot), PlanToken: q.Token, Images: q.Images, Readiness: "compose-wait-passed"}
 	case protocol.MethodComposeStatus:
-		*out.(*stack.Result) = stack.Result{Status: "succeeded", Stage: "complete", Message: "Recovered result"}
+		if len(f.deployed) > 0 {
+			q := f.deployed[len(f.deployed)-1]
+			*out.(*stack.Result) = stack.Result{Status: "succeeded", Stage: "complete", Message: "Recovered result", JobID: q.Job.ID, Commit: q.Job.Snapshot.Commit, ConfigurationRevision: stack.ConfigurationRevision(q.Job.Snapshot), PlanToken: q.Token, Images: q.Images, Readiness: "compose-wait-passed"}
+		}
 	default:
 		return fmt.Errorf("unexpected method %s", method)
 	}
@@ -117,6 +121,9 @@ func TestSaveDeployPinnedRevisionAndRecoverUnknown(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &saved)
 	if len(hub.deployed) != 0 {
 		t.Fatal("Save deployed a stack")
+	}
+	if w = call("POST", "/api/stacks/demo/plan", map[string]any{"commit": saved.Commit}); w.Code != 200 {
+		t.Fatalf("preview %d %s", w.Code, w.Body)
 	}
 	w = call("POST", "/api/stacks/demo/deploy", map[string]any{"commit": saved.Commit, "token": strings.Repeat("d", 64), "pull": false})
 	if w.Code != 202 {

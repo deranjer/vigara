@@ -1,6 +1,6 @@
 # Server profiles and assignment manifests
 
-Administrators can open **Compose stacks → Profiles and assignments** to prepare logical server profiles and placements in the configured stack repository. This release supports manifest authoring, validation and Git persistence. Profile-to-agent binding, assignment-aware deployment, ownership transfer and automatic storage provisioning are not implemented. The editor requires `enabled: false` on assignments. Existing direct stack-to-device bindings continue to run independently of these disabled manifests.
+Administrators can open **Compose stacks → Profiles and assignments** to author and save profiles, bind a saved profile to its existing approved device, and activate exclusive assignments at ownership epoch 1. Deployments capture the exact profile and assignment manifests with the stack. Ownership transfer, replicas and automatic resource provisioning remain unavailable. Disabled assignments are preparation only; the existing direct deployment path continues independently of them.
 
 ## Repository structure
 
@@ -37,7 +37,7 @@ requirements:
   startupDependencies: []
 ```
 
-Use the YAML editor for additional requirements supported by the [profile schema](https://github.com/deranjer/vigara/blob/main/schemas/compose-management/server-profile.schema.json), including volumes, devices, capabilities and startup dependencies. A declared mount is an expectation; creating a directory does not satisfy the exact filesystem mount requirement. The [preflight helper](compose-preflight.md) implements this distinction, but the profile editor does not collect readiness evidence or enforce these requirements on existing direct deployments. A `backupPolicyId` is a reference to an independently configured backup policy, not a command to create or run a backup.
+The schema supports future capabilities and startup dependencies as well as mounts, devices, networks and volumes. The first runtime checks pre-existing external networks/volumes, required device nodes, and absolute symlink-safe paths. An exact mount check uses the agent's mount namespace; a directory alone is insufficient. The agent must see the storage used by Docker. Managed resource creation, nonempty capability requirements, startup dependencies and nonlocal Docker endpoints are refused until implemented. A `backupPolicyId` is only a reference to an independently configured policy; it does not execute a backup or establish restore readiness.
 
 ## Prepare an assignment
 
@@ -62,12 +62,14 @@ The validator also understands the future enabled-placement contract: exclusive 
 
 ## Save and review
 
+Save the profile and disabled assignments first. Select the profile and the device already approved for all its stacks, then **Bind profile**. Binding requires an online agent with deployment access and is immutable. Enable each supported assignment with `enabled: true`, leaving `ownership.mode: exclusive` and `ownershipEpoch: 1`, and save again. Preview each stack before deploying. The agent repeats resource checks before apply. No profile collection deployment or ownership transfer is implied. Devices owning a profile cannot be deleted through ordinary device deletion.
+
 **Save to branch** validates and commits the complete profile/assignment set atomically, preserving YAML comments and unrelated repository files. Removing a manifest from the draft removes it from Git on save; remove referencing assignments as well when removing a profile. Git history retains the previous files. Manifest deletion does not erase application storage or remove runtime bindings.
 
 The editor holds unsaved changes in browser memory. Closing it with changes prompts before discarding them; there is no server-side manifest draft recovery. A concurrent change to the saved manifest set returns a conflict and preserves the editor contents. Copy any changes you need to retain before explicitly reloading the saved manifests. Unrelated stack changes are preserved, and references are revalidated against the latest stack definitions during save.
 
 A push is saved only after the remote confirms it. **Pending sync** retains the local editor contents; keep it open and retry Save. Saving neither deploys nor moves containers. Active or uncertain deployment jobs must be resolved before saving manifests. Limits are 256 manifests, 64 KiB per file and 512 KiB total, also subject to the API's 768 KiB encoded request limit. Only regular non-executable UTF-8 files are accepted. YAML aliases, merge keys, multiple documents, unknown schema fields and unsafe paths are rejected. Non-YAML files in these directories are preserved.
 
-An enabled assignment introduced outside the editor blocks legacy preview, deployment submission and queued-job dispatch for that stack. Selecting an older stack revision does not bypass this check. Malformed manifest trees also block the direct deployment path. This prevents silently deploying while ignoring profile requirements or assignment ownership. Disable the assignment explicitly while preparing it; activation will require a later implementation of agent bindings and deployment fencing.
+An enabled assignment requires a matching runtime binding and exact manifests from the selected saved commit. Selecting an older stack revision cannot bypass newer requirements. Changed or malformed current manifests block queued jobs before dispatch. Profile and assignment bytes are included in the preview token and configuration revision. Explicitly disabling an assignment returns that stack to its existing direct binding; disabled manifests do not enforce profile requirements. Deleting Git manifests does not remove the immutable runtime profile binding or transfer ownership.
 
 See the [broader Compose contract](compose-management.md) for the intended runtime binding, storage readiness, ownership epoch and recovery semantics.

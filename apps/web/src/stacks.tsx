@@ -1,19 +1,20 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
-import { Alert, Badge, Button, Card, Checkbox, Code, Group, Loader, Modal, Select, Stack, Tabs, Text, Textarea, TextInput, Title } from '@mantine/core'
+import { Alert, Badge, Button, Card, Checkbox, Code, Group, Loader, Modal, Select, Stack, Tabs, Text, TextInput, Title } from '@mantine/core'
 import { route as routeOf, type Route } from './route'
 
 import { StackList } from './stack-management'
 import { isComposeFile } from './compose-editor-utils'
+import { SecretEditor } from './secret-editor'
 
 const ComposeEditor = lazy(() => import('./compose-editor'))
 
 type Files = Record<string, string>
 type Snapshot = { id: string; commit: string; files: Files }
-type Draft = { base: string; files: Files | null; version: number }
+type Draft = { digest?: string; base: string; files: Files | null; version: number }
 type Detail = { projectName: string; snapshot: Snapshot; draft: Draft; branch: string; assigned: boolean; agentId: string; digest: string }
 type Revision = { commit: string; message: string; at: string }
 type Deployment = { id: string; commit: string; digest: string; status: string; stage: string; message: string; createdAt: string }
-type Plan = { token: string; projectName: string; services: string[] }
+type Plan = { images: Record<string, string>; token: string; projectName: string; services: string[] }
 
 async function request<T>(url: string, method = 'GET', body?: unknown): Promise<T> {
   const response = await fetch(url, { method, credentials: 'same-origin', headers: body === undefined ? undefined : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })
@@ -45,13 +46,14 @@ function StackEditor({ id, projectName, onBack }: { id: string; projectName: str
   const [tab, setTab] = useState<string | null>('files')
   const [history, setHistory] = useState<Revision[]>([])
   const [jobs, setJobs] = useState<Deployment[]>([])
-  const [busy, setBusy] = useState(false)
+  const [actionBusy, setBusy] = useState(false)
+  const [secretBusy, setSecretBusy] = useState(false)
+  const [secretEpoch, setSecretEpoch] = useState(0)
+  const busy = actionBusy || secretBusy
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [newPath, setNewPath] = useState('')
-  const [environment, setEnvironment] = useState('')
-  const [environmentPath, setEnvironmentPath] = useState('secrets/runtime.env.sops')
   const [plan, setPlan] = useState<Plan | null>(null)
   const [pull, setPull] = useState(false)
   const [compare, setCompare] = useState(false)
@@ -98,7 +100,7 @@ function StackEditor({ id, projectName, onBack }: { id: string; projectName: str
     return () => window.removeEventListener('beforeunload', warn)
   }, [dirty, unpersisted])
 
-  async function action(work: () => Promise<void>) { setBusy(true); setError(''); setNotice(''); try { await work() } catch (cause) { setError(cause instanceof Error ? cause.message : 'The operation failed.') } finally { setBusy(false) } }
+  async function action(work: () => Promise<void>) { setSecretEpoch((epoch) => epoch + 1); setBusy(true); setError(''); setNotice(''); try { await work() } catch (cause) { setError(cause instanceof Error ? cause.message : 'The operation failed.') } finally { setBusy(false) } }
   async function persistDraft() {
     const next = await request<Draft>(`${base(id)}/draft`, 'PUT', { base: draft.base || detail?.snapshot.commit || '', files: filesRef.current, version: draft.version })
     setDraft(next); return next
@@ -131,7 +133,7 @@ function StackEditor({ id, projectName, onBack }: { id: string; projectName: str
         <Group align="end"><TextInput label="New file path" placeholder="config/app.yaml" value={newPath} onChange={(event) => setNewPath(event.currentTarget.value)} /><Button variant="default" disabled={busy || !newPath || files[newPath] !== undefined || newPath.endsWith('.env') || newPath === '.env'} onClick={() => { setFiles({ ...files, [newPath]: '' }); setFile(newPath); setNewPath('') }}>Add file</Button>{file && file !== 'vigara-stack.yaml' && <Button color="red" variant="subtle" disabled={busy} onClick={() => { const next = { ...files }; delete next[file]; setFiles(next); setFile(Object.keys(next)[0] ?? null) }}>Remove from draft</Button>}</Group>
         <Text size="xs" c="dimmed">Keep passwords and tokens in encrypted environment inputs. YAML is preserved as written. File removal changes Git; this first runner leaves old device files in place.</Text>
       </Stack></Tabs.Panel>
-      <Tabs.Panel value="environment"><Card withBorder padding="lg"><Stack><Title order={3}>Replace encrypted environment</Title><Text size="sm" c="dimmed">Enter the complete dotenv contents. Vigara encrypts them before storage; existing values are never returned to this editor. The encrypted input and recipient references are added to your stack manifest automatically.</Text><TextInput label="Encrypted file path" value={environmentPath} onChange={(event) => setEnvironmentPath(event.currentTarget.value)} /><Textarea label="New dotenv contents" placeholder={'APP_SETTING=value\nAPP_PASSWORD=...'} value={environment} onChange={(event) => setEnvironment(event.currentTarget.value)} minRows={8} spellCheck={false} autoComplete="off" /><Button disabled={busy || !environment} onClick={() => void action(async () => { const value = await request<{ path: string; ciphertext: string; manifest: string }>(`${base(id)}/environment`, 'POST', { path: environmentPath, value: environment, manifest: files['vigara-stack.yaml'] ?? '' }); setFiles((current) => ({ ...current, [value.path]: value.ciphertext, 'vigara-stack.yaml': value.manifest })); setEnvironment(''); setNotice('Environment encrypted and added to your draft. Save the revision when ready.'); })}>Encrypt into draft</Button></Stack></Card></Tabs.Panel>
+      <Tabs.Panel value="environment">{tab === 'environment' && <SecretEditor key={`${detail.snapshot.commit}:${secretEpoch}`} id={id} files={files} busy={busy} persistDraft={persistDraft} onBusy={setSecretBusy} onEncrypted={(value) => { setFiles((current) => ({ ...current, [value.path]: value.ciphertext, 'vigara-stack.yaml': value.manifest })); setNotice('Environment encrypted and added to your draft. Save the revision when ready.'); }} />}</Tabs.Panel>
       <Tabs.Panel value="history"><Stack>{!history.length && <Text c="dimmed">No saved revisions yet.</Text>}{history.map((revision) => <Card key={revision.commit} withBorder><Group justify="space-between"><div><Text fw={600}>{revision.message}</Text><Text size="xs" c="dimmed">{short(revision.commit)} · {new Date(revision.at).toLocaleString()}</Text></div><Button variant="light" disabled={busy} onClick={() => void action(async () => { const value = await request<Detail>(`${base(id)}?commit=${revision.commit}`); setFiles(value.snapshot.files); setPlan(null); setTab('files'); setNotice(`Loaded revision ${short(revision.commit)} into your draft. Save creates a new commit before deployment.`) })}>Restore into draft</Button></Group></Card>)}</Stack></Tabs.Panel>
       <Tabs.Panel value="deployments"><Stack>{!jobs.length && <Text c="dimmed">No deployments yet.</Text>}{jobs.map((job) => <Card withBorder key={job.id}><Group justify="space-between"><Text fw={600}>Revision {short(job.commit)}</Text><Badge color={job.status === 'succeeded' ? 'green' : job.status === 'failed' ? 'red' : 'yellow'}>{job.status}</Badge></Group><Text size="sm" mt="xs">{job.stage} · {job.message || 'Waiting for the device.'}</Text><Text size="xs" c="dimmed" mt="xs">{new Date(job.createdAt).toLocaleString()}</Text>{job.status === 'unknown' && <Button mt="sm" variant="light" disabled={busy} onClick={() => void action(async () => { const value = await request<{ message: string }>(`${base(id)}/deployments/${job.id}/reconcile`, 'POST', {}); setNotice(value.message) })}>Check device result</Button>}</Card>)}</Stack></Tabs.Panel>
     </Tabs>
@@ -139,6 +141,6 @@ function StackEditor({ id, projectName, onBack }: { id: string; projectName: str
     {dirty && <Text size="sm" c="dimmed">Save your draft before deploying. Saving does not restart services.</Text>}
     {remote && <Alert title="Compare fetched version"><Text size="sm">Fetched {short(remote.commit)}. Review it beside your draft above. Keeping your draft against this version may overwrite changes, so resolve differences before saving.</Text><Button mt="sm" variant="light" disabled={busy} onClick={() => { setDetail({ ...detail, snapshot: remote }); setDraft({ ...draft, base: remote.commit }); setRemote(null); setNotice('Draft now uses the fetched version as its base. Review your edits before saving.') }}>Use fetched version as draft base</Button></Alert>}
     <Modal opened={discarding} onClose={() => { if (!busy) setDiscarding(false) }} title="Discard draft?" centered><Stack><Text>Discard your edits and stored draft for this stack? Saved Git revisions and running services are retained.</Text><Button color="red" loading={busy} onClick={() => void action(async () => { if (draft.files) await request(base(id) + '/draft', 'DELETE', { version: draft.version }); const next = Object.keys(detail.snapshot.files).length ? detail.snapshot.files : starter(id, detail.projectName || projectName); setFiles(next); setDraft({ base: detail.snapshot.commit, files: null, version: 0 }); setFile(next['compose.yaml'] !== undefined ? 'compose.yaml' : Object.keys(next)[0] ?? null); setPlan(null); setDiscarding(false); setNotice('Stored draft discarded.'); })}>Discard draft</Button></Stack></Modal>
-    <Modal opened={!!plan} onClose={() => { if (!busy) setPlan(null) }} title="Deploy saved revision" centered><Stack><Text>Apply revision <Code>{short(detail.snapshot.commit)}</Code> to project <Code>{plan?.projectName}</Code>?</Text><Text size="sm">Device: {detail.agentId}</Text><Text size="sm">Services: {plan?.services.join(', ')}</Text><Text size="sm" c="dimmed">Changed services may restart. Existing data volumes are retained. Deploying an older configuration does not undo application data migrations.</Text><Checkbox label="Download newer images before deployment" checked={pull} onChange={(event) => setPull(event.currentTarget.checked)} />{error && <Alert color="red">{error}</Alert>}<Button loading={busy} onClick={() => void action(async () => { await request(`${base(id)}/deploy`, 'POST', { commit: detail.snapshot.commit, token: plan?.token, pull }); setPlan(null); setTab('deployments'); setNotice('Deployment queued. You can leave this page and return to its status.'); })}>Deploy revision</Button></Stack></Modal>
+    <Modal opened={!!plan} onClose={() => { if (!busy) setPlan(null) }} title="Deploy saved revision" centered><Stack><Text>Apply revision <Code>{short(detail.snapshot.commit)}</Code> to project <Code>{plan?.projectName}</Code>?</Text><Text size="sm">Device: {detail.agentId}</Text><Text size="sm">Services: {plan?.services.join(', ')}</Text><Stack gap="xs">{Object.entries(plan?.images ?? {}).map(([service, image]) => <Text size="xs" key={service}><Code>{service}</Code>: <Code>{image}</Code></Text>)}</Stack><Text size="sm" c="dimmed">Changed services may restart. Existing data volumes are retained. Deploying an older configuration does not undo application data migrations.</Text><Checkbox label="Download the reviewed images before deployment" checked={pull} onChange={(event) => setPull(event.currentTarget.checked)} />{error && <Alert color="red">{error}</Alert>}<Button loading={busy} onClick={() => void action(async () => { await request(`${base(id)}/deploy`, 'POST', { commit: detail.snapshot.commit, token: plan?.token, images: plan?.images, pull }); setPlan(null); setTab('deployments'); setNotice('Deployment queued. You can leave this page and return to its status.'); })}>Deploy revision</Button></Stack></Modal>
   </Stack></section>
 }

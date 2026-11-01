@@ -3,7 +3,7 @@ import ReactDOM from 'react-dom/client'
 import { useEffect, useState, type FormEvent } from 'react'
 import { Alert, AppShell, Badge, Burger, Avatar, Button, Group, MantineProvider, NavLink, PasswordInput, ScrollArea, Text, TextInput, Title, ActionIcon, UnstyledButton, useMantineColorScheme } from '@mantine/core'
 import { useDisclosure, useMediaQuery } from '@mantine/hooks'
-import { IconBox, IconChartLine, IconDatabase, IconNetwork, IconPhoto, IconDeviceDesktop, IconHistory, IconLogout, IconMoon, IconSun } from '@tabler/icons-react'
+import { IconBox, IconChartLine, IconCube, IconDatabase, IconNetwork, IconStack3, IconDeviceDesktop, IconHistory, IconLogout, IconMoon, IconSun } from '@tabler/icons-react'
 import { Containers } from './containers'
 import { Stacks } from './stacks'
 import { Devices } from './devices'
@@ -169,9 +169,9 @@ function App() {
           <NavLink component="button" label="Devices" leftSection={<IconDeviceDesktop size={18}/>} active={section === 'devices'} onClick={() => navigate('devices')} />
           <NavLink component="button" label="Monitoring" leftSection={<IconChartLine size={18}/>} active={section === 'monitoring'} onClick={() => navigate('monitoring')} />
           <NavLink component="button" label="Docker Stacks" leftSection={<IconBox size={18}/>} opened={dockerMenuOpen} onChange={setDockerMenuOpen} childrenOffset={28} aria-expanded={dockerMenuOpen}>
-            <NavLink component="button" label="Compose stacks" leftSection={<IconBox size={16}/>} active={section === 'stacks'} onClick={() => navigate('stacks')} />
+            <NavLink component="button" label="Compose stacks" leftSection={<IconStack3 size={16}/>} active={section === 'stacks'} onClick={() => navigate('stacks')} />
             <NavLink component="button" label="Containers" leftSection={<IconBox size={16}/>} active={section === 'containers'} onClick={() => navigate('containers')} />
-            <NavLink component="button" label="Images" leftSection={<IconPhoto size={16}/>} active={section === 'images'} onClick={() => navigate('images')} />
+            <NavLink component="button" label="Images" leftSection={<IconCube size={16}/>} active={section === 'images'} onClick={() => navigate('images')} />
             <NavLink component="button" label="Networks" leftSection={<IconNetwork size={16}/>} active={section === 'networks'} onClick={() => navigate('networks')} />
             <NavLink component="button" label="Volumes" leftSection={<IconDatabase size={16}/>} active={section === 'volumes'} onClick={() => navigate('volumes')} />
           </NavLink>
