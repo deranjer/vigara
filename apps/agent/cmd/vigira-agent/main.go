@@ -44,6 +44,8 @@ func execute(args []string, logger *slog.Logger) error {
 		return fmt.Errorf("usage: vigara-agent [--config PATH] enroll --server URL | run | compose-discover --root PATH")
 	}
 	switch rest[0] {
+	case "enable-managed-backups":
+		return agentruntime.ConfigureManagedBackups(statePath)
 	case "enroll":
 		client, err := agentruntime.NewClient(statePath)
 		if err != nil {

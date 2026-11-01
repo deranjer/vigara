@@ -33,8 +33,8 @@ authenticated `POST /api/agents/enrollment-tokens` endpoint:
 {"capabilities":[],"expiresInHours":24}
 ```
 
-The response includes the token once and its expiry. The current agent build
-advertises no module capabilities, so use an empty list. Keep the token private
+The response includes the token once and its expiry. For monitoring-only agents, use an empty list. Backup-capable enrollment tokens
+must include `restic.backup`; managed backup bundles handle this automatically. Keep the token private
 and use it once. Enrollment creates a distinct device record and agent
 identity; the agent identity receives a unique random credential, stored by the
 server only as a hash. Revoke an identity with the authenticated
@@ -153,8 +153,10 @@ after 30 minutes. The archive contains a bootstrap file, so handle it like a
 secret. Run its installer on the target device; after successful enrollment the
 installer removes the extracted bootstrap file and the agent stores its
 per-device credential in protected state. Canceling a waiting enrollment
-revokes its token. Feature selection limits server-side capabilities; it does
-not install or enable local modules.
+revokes its token. Backup-enabled bundles install pinned Restic and enable server-managed backup
+configuration. Other feature selections set server-side capability limits;
+container modules still require local configuration. See [Managed device
+backups](managed-backups.md).
 
 ## Reinstalling and deleting devices
 

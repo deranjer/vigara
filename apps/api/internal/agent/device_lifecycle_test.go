@@ -55,7 +55,12 @@ func TestReinstallBundleKeepsIdentityAndRotatesOnlyOnUse(t *testing.T) {
 	if err = os.WriteFile(filepath.Join(dir, supportedDownloads["linux-amd64"]), data, 0600); err != nil {
 		t.Fatal(err)
 	}
-	manifest := `{"version":"test","artifacts":{"linux-amd64":{"file":"vigara-agent-linux-amd64","sha256":"` + hex.EncodeToString(digest[:]) + `"}}}`
+	for _, name := range []string{"restic-linux-amd64", "restic.LICENSE"} {
+		if err = os.WriteFile(filepath.Join(dir, name), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manifest := `{"version":"test","resticVersion":"0.19.1","resticArtifacts":{"linux-amd64":{"file":"restic-linux-amd64","sha256":"` + hex.EncodeToString(digest[:]) + `"}},"artifacts":{"linux-amd64":{"file":"vigara-agent-linux-amd64","sha256":"` + hex.EncodeToString(digest[:]) + `"}}}`
 	if err = os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(manifest), 0600); err != nil {
 		t.Fatal(err)
 	}

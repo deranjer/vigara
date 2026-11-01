@@ -384,6 +384,10 @@ func (h *Handler) save(w http.ResponseWriter, r *http.Request, create bool) {
 	if !decode(w, r, &input) {
 		return
 	}
+	if input.ProfileID == "managed" {
+		http.Error(w, "use the managed backup settings endpoint for this profile", 409)
+		return
+	}
 	p := Policy{DeviceID: input.DeviceID, AgentID: input.AgentID, ProfileID: input.ProfileID, Name: input.Name, Destination: input.Destination, IncludedPaths: input.IncludedPaths, ExcludedPaths: input.ExcludedPaths, Retention: input.Retention, Schedule: input.Schedule, MissedRunPolicy: input.MissedRunPolicy, DisconnectedDevicePolicy: input.DisconnectedDevicePolicy, Enabled: input.Enabled}
 	if !uuidLike(p.DeviceID) || !uuidLike(p.AgentID) {
 		http.Error(w, "deviceId and agentId must be UUIDs", 400)
@@ -411,7 +415,7 @@ func (h *Handler) save(w http.ResponseWriter, r *http.Request, create bool) {
 	query := `INSERT INTO backup_policies(device_id,agent_id,profile_id,name,destination,included_paths,excluded_paths,retention,schedule,missed_run_policy,disconnected_device_policy,enabled,next_run_at) SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13 WHERE EXISTS(SELECT 1 FROM agent_identities i WHERE i.id=$2 AND i.device_id=$1 AND i.revoked_at IS NULL AND i.capabilities ? 'restic.backup' AND 'restic.backup'=ANY(i.allowed_capabilities))`
 	args := []any{p.DeviceID, p.AgentID, p.ProfileID, p.Name, p.Destination, inc, exc, ret, sch, p.MissedRunPolicy, p.DisconnectedDevicePolicy, p.Enabled, next}
 	if !create {
-		query = `UPDATE backup_policies p SET device_id=$2,agent_id=$3,profile_id=$4,name=$5,destination=$6,included_paths=$7,excluded_paths=$8,retention=$9,schedule=$10,missed_run_policy=$11,disconnected_device_policy=$12,enabled=$13,next_run_at=$14,revision=revision+1,updated_at=now() WHERE p.id=$1 AND p.retired_at IS NULL AND EXISTS(SELECT 1 FROM agent_identities i WHERE i.id=$3 AND i.device_id=$2 AND i.revoked_at IS NULL AND i.capabilities ? 'restic.backup' AND 'restic.backup'=ANY(i.allowed_capabilities))`
+		query = `UPDATE backup_policies p SET device_id=$2,agent_id=$3,profile_id=$4,name=$5,destination=$6,included_paths=$7,excluded_paths=$8,retention=$9,schedule=$10,missed_run_policy=$11,disconnected_device_policy=$12,enabled=$13,next_run_at=$14,revision=revision+1,updated_at=now() WHERE p.id=$1 AND p.profile_id<>'managed' AND p.retired_at IS NULL AND EXISTS(SELECT 1 FROM agent_identities i WHERE i.id=$3 AND i.device_id=$2 AND i.revoked_at IS NULL AND i.capabilities ? 'restic.backup' AND 'restic.backup'=ANY(i.allowed_capabilities))`
 		args = append([]any{r.PathValue("id")}, args...)
 	}
 	tag, e := h.pool.Exec(r.Context(), query, args...)
@@ -451,7 +455,7 @@ func (h *Handler) retire(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "policy ID must be a UUID", 400)
 		return
 	}
-	tag, e := h.pool.Exec(r.Context(), `UPDATE backup_policies SET enabled=false,retired_at=now(),updated_at=now() WHERE id=$1 AND retired_at IS NULL`, r.PathValue("id"))
+	tag, e := h.pool.Exec(r.Context(), `UPDATE backup_policies SET enabled=false,retired_at=now(),updated_at=now() WHERE id=$1 AND profile_id<>'managed' AND retired_at IS NULL`, r.PathValue("id"))
 	if e != nil {
 		http.Error(w, "could not retire policy", 500)
 	} else if tag.RowsAffected() == 0 {
