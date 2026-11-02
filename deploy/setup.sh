@@ -159,6 +159,16 @@ BASH
   chmod 700 "$directory/purge-volumes.sh"
 }
 
+bind_directory_failure() {
+  local project_directory=$1
+  {
+    printf '\nCannot create bind data directories. Run these commands, then rerun setup:\n'
+    printf '  sudo mkdir -p -- %q\n' "$project_directory/data"
+    printf '  sudo chown -- %q %q %q\n' "$(id -u):$(id -g)" "$project_directory" "$project_directory/data"
+  } >&2
+  exit 1
+}
+
 use_bind_storage() {
   local directory=$1 name=$2 line source target data_root=./data prepare_api=false
   local -a api_directories=()
@@ -189,7 +199,7 @@ use_bind_storage() {
         (shopt -s nullglob dotglob; entries=("$data_root/$source"/*); (( ${#entries[@]} == 0 ))) ||
           fail "Bind data already exists at $data_root/$source. Preserve its original deployment configuration or choose another root."
       fi
-      mkdir -p -- "$data_root/$source" || fail 'Cannot create bind data directories. Check the selected root permissions.'
+      mkdir -p -- "$data_root/$source" || bind_directory_failure "$bind_root/$name"
     fi
     printf '      - type: bind\n        source: %s/%s\n        target: %s\n        bind:\n          create_host_path: true\n' "$data_root" "$source" "$target"
   done < "$directory/compose.yml" > "$directory/compose.bind.yml"
@@ -283,7 +293,7 @@ if yesno 'Use bind-mounted data directories instead of Docker named volumes?'; t
     for deployment_path in "$destination" "$stacks_root/$project-caddy"; do
       [[ $bind_root != "$deployment_path" && $bind_root != "$deployment_path/"* ]] || fail 'Choose a bind root outside the deployment directories.'
     done
-    mkdir -p -- "$bind_root" || fail 'Cannot create the bind root. Check its ownership and permissions.'
+    mkdir -p -- "$bind_root" || bind_directory_failure "$bind_root/$project"
     # The explicit Compose root resolves to the same layout as the default.
     [[ $bind_root != "$stacks_root" ]] || bind_root=.
   fi
