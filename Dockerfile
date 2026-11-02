@@ -19,12 +19,12 @@ RUN pnpm --filter @vigira/web build
 FROM go-deps AS assemble
 ARG TARGETOS
 ARG TARGETARCH
-ARG VIGARA_REVISION
+ARG VIGIRA_REVISION
 COPY apps/api ./apps/api
 COPY internal ./internal
 COPY schemas ./schemas
 COPY --from=web-build /src/apps/api/web ./apps/api/web
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w -X main.revision=${VIGARA_REVISION}" -o /out/vigara ./apps/api/cmd/vigira
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w -X main.revision=${VIGIRA_REVISION}" -o /out/vigara ./apps/api/cmd/vigira
 
 FROM go-deps AS restic-build
 ARG TARGETOS
@@ -44,8 +44,8 @@ COPY apps/web/src/compose-spec.LICENSE /usr/share/licenses/vigara/compose-spec.L
 COPY --from=restic-build /out/restic /usr/local/bin/restic
 COPY --from=restic-build /out/restic.LICENSE /usr/share/licenses/vigara/restic.LICENSE
 ENV HOME=/var/lib/vigira
-ENV VIGARA_AGENT_RELEASE_TAG=auto
-ENV VIGARA_AGENT_RELEASE_CACHE=/var/lib/vigira/agent-releases
+ENV VIGIRA_AGENT_RELEASE_TAG=auto
+ENV VIGIRA_AGENT_RELEASE_CACHE=/var/lib/vigira/agent-releases
 USER 10001:10001
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 CMD wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1

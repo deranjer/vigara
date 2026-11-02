@@ -190,7 +190,7 @@ func Digest(s Snapshot) string {
 	}
 	sort.Strings(keys)
 	h := sha256.New()
-	h.Write([]byte("VIGARA-STACK-FILES-V1\x00"))
+	h.Write([]byte("VIGIRA-STACK-FILES-V1\x00"))
 	if s.Placement != nil {
 		b, _ := json.Marshal(s.Placement)
 		h.Write(b)

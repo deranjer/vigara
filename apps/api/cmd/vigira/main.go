@@ -36,7 +36,6 @@ import (
 	"github.com/deranjer/vigara/apps/api/internal/stacks"
 	"github.com/deranjer/vigara/apps/api/internal/telemetry"
 	"github.com/deranjer/vigara/apps/api/migrations"
-	"github.com/deranjer/vigara/internal/envcompat"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -50,7 +49,6 @@ var version = "dev"
 var revision = ""
 
 func main() {
-	envcompat.ApplyAliases()
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	cfg, err := config.Load()
 	if err != nil {
@@ -98,7 +96,7 @@ func main() {
 	alerts.NewHandler(database.Pool, authService).Register(alertsMux)
 	backupMux := http.NewServeMux()
 	backups.NewHandler(database.Pool, authService).Register(backupMux)
-	managedBackups, err := backups.NewManager(database.Pool, os.Getenv("VIGARA_BACKUP_MASTER_KEY"), os.Getenv("VIGARA_RESTIC_EXECUTABLE"))
+	managedBackups, err := backups.NewManager(database.Pool, os.Getenv("VIGIRA_BACKUP_MASTER_KEY"), os.Getenv("VIGIRA_RESTIC_EXECUTABLE"))
 	if err != nil {
 		logger.Error("invalid managed backup configuration", "error", err)
 		os.Exit(1)
@@ -168,7 +166,7 @@ func main() {
 			}
 		}
 	}
-	if err := agentHandler.ConfigureReleaseSync(envcompat.Getenv("VIGARA_AGENT_RELEASE_CACHE"), envcompat.Getenv("VIGARA_AGENT_RELEASE_TAG"), revision); err != nil {
+	if err := agentHandler.ConfigureReleaseSync(os.Getenv("VIGIRA_AGENT_RELEASE_CACHE"), os.Getenv("VIGIRA_AGENT_RELEASE_TAG"), revision); err != nil {
 		logger.Warn("automatic agent release downloads disabled", "reason", err.Error())
 	}
 	router.Use(auth.NewAttemptLimiter().Middleware)

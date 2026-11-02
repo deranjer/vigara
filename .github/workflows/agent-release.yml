@@ -27,7 +27,7 @@ jobs:
         run: python3 scripts/package_agent_releases.py "sha-${SOURCE_REVISION:0:12}" agent-releases "$SOURCE_REVISION"
       - name: Verify actual assets with the server's release verifier
         env:
-          VIGARA_TEST_AGENT_RELEASE_DIR: ${{ github.workspace }}/agent-releases
+          VIGIRA_TEST_AGENT_RELEASE_DIR: ${{ github.workspace }}/agent-releases
         run: go test ./apps/api/internal/agent -run TestBuiltReleaseDirectory -count=1
       - name: Publish complete assets before exposing the release
         env:

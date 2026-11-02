@@ -32,7 +32,7 @@ def frame(value):
 
 def release_id(data):
     service_images = sorted(((item["service"].encode("utf-8"), item["digest"].encode("ascii")) for item in data["images"]), key=lambda pair: pair)
-    payload = b"VIGARA-RELEASE-V1\0"
+    payload = b"VIGIRA-RELEASE-V1\0"
     payload += frame(data["assignmentId"].encode("utf-8"))
     payload += frame(data["gitCommit"].encode("ascii"))
     payload += frame(data["configurationRevision"].encode("ascii"))

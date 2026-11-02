@@ -21,13 +21,11 @@ import (
 	"github.com/deranjer/vigara/apps/agent/internal/dockerchannel"
 	agentruntime "github.com/deranjer/vigara/apps/agent/internal/runtime"
 	"github.com/deranjer/vigara/internal/composeadoption"
-	"github.com/deranjer/vigara/internal/envcompat"
 	"github.com/deranjer/vigara/internal/protocol"
 	"github.com/deranjer/vigara/internal/serverurl"
 )
 
 func main() {
-	envcompat.ApplyAliases()
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	if err := execute(os.Args[1:], logger); err != nil {
 		logger.Error("agent stopped", "error", err)
@@ -186,17 +184,20 @@ func registerDocker(live *agentchannel.Client, logger *slog.Logger) {
 	}
 	if protocol.DockerTier(live.Capabilities()) == protocol.DockerModeDeploy {
 		targets := map[string]composedeploy.Target{}
+		validTargets := true
 		if file := os.Getenv("VIGIRA_COMPOSE_TARGETS_FILE"); file != "" {
 			data, readErr := os.ReadFile(file)
 			if readErr != nil || json.Unmarshal(data, &targets) != nil {
 				logger.Warn("Compose deployment targets are invalid")
-			} else {
-				managedRoot := os.Getenv("VIGIRA_COMPOSE_MANAGED_ROOT")
-				if managedRoot == "" {
-					managedRoot = "/var/lib/vigira-agent/compose-stacks"
-				}
-				composedeploy.Register(live, &composedeploy.Runner{ManagedRoot: managedRoot, Targets: targets, DockerHost: strings.TrimSpace(os.Getenv("VIGIRA_DOCKER_HOST")), SOPS: os.Getenv("VIGIRA_SOPS_BINARY"), Identity: os.Getenv("VIGIRA_COMPOSE_AGE_IDENTITY")})
+				validTargets = false
 			}
+		}
+		managedRoot := os.Getenv("VIGIRA_COMPOSE_MANAGED_ROOT")
+		if managedRoot == "" {
+			managedRoot = "/var/lib/vigira-agent/compose-stacks"
+		}
+		if validTargets {
+			composedeploy.Register(live, &composedeploy.Runner{ManagedRoot: managedRoot, Targets: targets, DockerHost: strings.TrimSpace(os.Getenv("VIGIRA_DOCKER_HOST")), SOPS: os.Getenv("VIGIRA_SOPS_BINARY"), Identity: os.Getenv("VIGIRA_COMPOSE_AGE_IDENTITY")})
 		}
 	}
 	dockerchannel.Register(live, api)

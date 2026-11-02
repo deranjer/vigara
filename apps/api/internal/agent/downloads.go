@@ -207,6 +207,7 @@ func (h *Handler) downloadAvailability(w http.ResponseWriter, r *http.Request) {
 }
 
 type agentDownloadRequest struct {
+	Docker    *dockerSetup          `json:"docker,omitempty"`
 	Backup    *backups.ManagedInput `json:"backup,omitempty"`
 	DeviceID  string                `json:"deviceId,omitempty"`
 	Target    string                `json:"target"`
@@ -224,6 +225,10 @@ func (h *Handler) createAgentDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Name = strings.TrimSpace(req.Name)
+	if err := req.Docker.validate(req.Target); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if req.DeviceID != "" && !validUUID(req.DeviceID) {
 		http.Error(w, "invalid device ID", http.StatusBadRequest)
 		return
@@ -317,6 +322,7 @@ func (h *Handler) createAgentDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var resticLicense []byte
+	req.Features = req.Docker.enrollmentFeatures(req.Features)
 	var bundledRestic []byte
 	managedEnabled := false
 	for _, feature := range req.Features {
@@ -359,7 +365,7 @@ func (h *Handler) createAgentDownload(w http.ResponseWriter, r *http.Request) {
 		_, e = f.Write(data)
 		return e
 	}
-	bootstrap, _ := json.Marshal(map[string]any{"serverUrl": serverURL, "insecureHttp": !serverurl.IsSecure(serverURL), "token": token, "name": req.Name, "sessionId": sessionID, "reinstall": replacementID != nil, "agentId": replacementID, "managedBackups": managedEnabled})
+	bootstrap, _ := json.Marshal(map[string]any{"serverUrl": serverURL, "insecureHttp": !serverurl.IsSecure(serverURL), "token": token, "name": req.Name, "sessionId": sessionID, "reinstall": replacementID != nil, "agentId": replacementID, "managedBackups": managedEnabled, "docker": req.Docker})
 	binaryName := "vigara-agent"
 	if strings.HasPrefix(req.Target, "windows-") {
 		binaryName = "vigara-agent.exe"
@@ -380,11 +386,17 @@ func (h *Handler) createAgentDownload(w http.ResponseWriter, r *http.Request) {
 	if err == nil && strings.HasPrefix(req.Target, "linux-") {
 		err = add("install.sh", []byte(linuxAgentInstaller))
 		if err == nil {
+			err = add("configure-docker.py", []byte(linuxDockerInstaller))
+		}
+		if err == nil {
 			err = add("vigara-agent.service", []byte(linuxAgentService))
 		}
 	}
 	if err == nil && strings.HasPrefix(req.Target, "windows-") {
 		err = add("install.ps1", []byte(windowsAgentInstaller))
+		if err == nil {
+			err = add("configure-docker.ps1", []byte(windowsDockerInstaller))
+		}
 		if err == nil {
 			err = add("install.cmd", []byte(windowsAgentLauncher))
 		}
@@ -429,11 +441,17 @@ func (h *Handler) cancelAgentDownload(w http.ResponseWriter, r *http.Request) {
 //go:embed installers/linux.sh
 var linuxAgentInstaller string
 
+//go:embed installers/docker_linux.py
+var linuxDockerInstaller string
+
 //go:embed installers/linux.service
 var linuxAgentService string
 
 //go:embed installers/windows.ps1
 var windowsAgentInstaller string
+
+//go:embed installers/docker_windows.ps1
+var windowsDockerInstaller string
 
 //go:embed installers/windows.cmd
 var windowsAgentLauncher string

@@ -92,7 +92,7 @@ function BundleRetention({ task, busy, save }: { task: Task; busy: boolean; save
   return <Card withBorder padding="lg"><Stack gap="md">
     <Title order={3}>Agent bundle retention</Title>
     <Text size="sm">Scan GitHub every 24 hours and on startup. Automatic mode uses the newest complete bundle compatible with this server’s protocol and Restic version; an explicit release pin stays pinned.</Text>
-    {!task.available && <Alert color="yellow">Automatic agent downloads are not configured. Enable VIGARA_AGENT_RELEASE_TAG and a writable release cache on the API server.</Alert>}
+    {!task.available && <Alert color="yellow">Automatic agent downloads are not configured. Enable VIGIRA_AGENT_RELEASE_TAG and a writable release cache on the API server.</Alert>}
     <Switch label="Purge old bundle versions" description="When disabled, downloaded versions remain cached." checked={purgeOld} onChange={(event) => { setPurgeOld(event.currentTarget.checked); setSaved(false) }} />
     <NumberInput label="Bundle versions to keep" description="Default: 2. Applies to the complete set of platform binaries for each release." min={1} max={20} allowDecimal={false} value={keepVersions} onChange={(value) => { setKeepVersions(value); setSaved(false) }} />
     <Group><Button loading={busy} disabled={!Number.isInteger(Number(keepVersions)) || Number(keepVersions) < 1 || Number(keepVersions) > 20} onClick={() => void submit()}>Save retention settings</Button>{saved && <Text size="sm" c="green" role="status">Saved. Applies on the next scan, or choose Run now.</Text>}</Group>

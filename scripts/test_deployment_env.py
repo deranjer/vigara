@@ -31,7 +31,7 @@ class DeploymentEnvironmentTests(unittest.TestCase):
                 command += ["-f", "compose.staging.downloads.example.yml"]
             command += ["config", "--format", "json"]
             environment = {key: value for key, value in os.environ.items()
-                           if not key.startswith(("VIGARA_", "VIGIRA_", "POSTGRES_", "COMPOSE_"))}
+                           if not key.startswith(("VIGIRA_", "POSTGRES_", "COMPOSE_"))}
             result = subprocess.run(command, cwd=directory, env=environment,
                                     capture_output=True, text=True)
             if not success:
@@ -44,11 +44,11 @@ class DeploymentEnvironmentTests(unittest.TestCase):
         app = self.render({})["services"]["app"]
         self.assertEqual(app["image"], "ghcr.io/deranjer/vigara:staging")
         self.assertEqual(app["ports"][0]["published"], "8080")
-        self.assertEqual(app["environment"]["VIGARA_ADDR"], ":8080")
-        self.assertIn("@db:5432/vigira", app["environment"]["VIGARA_DATABASE_URL"])
+        self.assertEqual(app["environment"]["VIGIRA_ADDR"], ":8080")
+        self.assertIn("@db:5432/vigira", app["environment"]["VIGIRA_DATABASE_URL"])
 
     def test_canonical_inputs(self):
-        for prefixes in (("VIGARA_",), ("VIGARA_", "VIGIRA_")):
+        for prefixes in (("VIGIRA_",),):
             with self.subTest(prefixes=prefixes):
                 settings = {}
                 for index, prefix in enumerate(prefixes):
@@ -61,8 +61,8 @@ class DeploymentEnvironmentTests(unittest.TestCase):
                 app = self.render(settings, downloads=True)["services"]["app"]
                 self.assertEqual(app["image"], "example/app:test0")
                 self.assertEqual(app["ports"][0]["published"], "18080")
-                self.assertEqual(app["environment"]["VIGARA_PUBLIC_URL"], "https://vigara0.example.com")
-                self.assertEqual(app["environment"]["VIGARA_AGENT_RELEASE_DIR"], "/opt/vigira/releases")
+                self.assertEqual(app["environment"]["VIGIRA_PUBLIC_URL"], "https://vigara0.example.com")
+                self.assertEqual(app["environment"]["VIGIRA_AGENT_RELEASE_DIR"], "/opt/vigira/releases")
                 self.assertTrue(app["volumes"][-1]["source"].endswith("releases0"))
                 config = self.render(settings, caddy=True)
                 app = config["services"]["app"]
@@ -70,28 +70,28 @@ class DeploymentEnvironmentTests(unittest.TestCase):
                 self.assertEqual(app["labels"]["caddy"], "vigara0.example.com")
                 self.assertEqual(app["labels"]["caddy_ingress_network"], "web0")
                 self.assertEqual(config["networks"]["proxy"]["name"], "web0")
-                self.assertEqual(app["environment"]["VIGARA_COOKIE_SECURE"], "true")
+                self.assertEqual(app["environment"]["VIGIRA_COOKIE_SECURE"], "true")
                 self.assertNotIn("ports", app)
                 self.assertNotIn("ports", config["services"]["postgres"])
 
     def test_empty_optional_inputs_use_defaults(self):
-        app = self.render({"VIGARA_PORT": "", "VIGARA_IMAGE": ""})["services"]["app"]
+        app = self.render({"VIGIRA_PORT": "", "VIGIRA_IMAGE": ""})["services"]["app"]
         self.assertEqual(app["ports"][0]["published"], "8080")
         self.assertEqual(app["image"], "ghcr.io/deranjer/vigara:staging")
 
     def test_required_settings(self):
-        for settings in ({}, {"VIGARA_DOMAIN": "", "VIGIRA_DOMAIN": ""}):
-            self.assertIn("VIGARA_DOMAIN", self.render(settings, caddy=True, success=False))
-        self.assertIn("VIGARA_PUBLIC_URL", self.render({"VIGARA_AGENT_RELEASE_HOST_DIR": "./releases"}, downloads=True, success=False))
-        self.assertIn("VIGARA_AGENT_RELEASE_HOST_DIR", self.render(
-            {"VIGARA_PUBLIC_URL": "https://vigara.example.com"}, downloads=True, success=False))
+        for settings in ({}, {"VIGIRA_DOMAIN": "", "VIGIRA_DOMAIN": ""}):
+            self.assertIn("VIGIRA_DOMAIN", self.render(settings, caddy=True, success=False))
+        self.assertIn("VIGIRA_PUBLIC_URL", self.render({"VIGIRA_AGENT_RELEASE_HOST_DIR": "./releases"}, downloads=True, success=False))
+        self.assertIn("VIGIRA_AGENT_RELEASE_HOST_DIR", self.render(
+            {"VIGIRA_PUBLIC_URL": "https://vigara.example.com"}, downloads=True, success=False))
 
     def test_caddy_mcp_environment(self):
         for origin in ('', 'https://vigara.example.com'):
             with self.subTest(origin=origin):
-                app = self.render({'VIGARA_DOMAIN': 'vigara.example.com',
-                                   'VIGARA_MCP_URL': origin}, caddy=True)['services']['app']
-                self.assertEqual(app['environment']['VIGARA_MCP_URL'], origin)
+                app = self.render({'VIGIRA_DOMAIN': 'vigara.example.com',
+                                   'VIGIRA_MCP_URL': origin}, caddy=True)['services']['app']
+                self.assertEqual(app['environment']['VIGIRA_MCP_URL'], origin)
 
 
 if __name__ == "__main__":

@@ -112,7 +112,7 @@ func describe(err error) (state, message string) {
 	case errors.As(err, &channelErr):
 		switch channelErr.Code {
 		case protocol.ErrCodeUnknownMethod:
-			return StateUnavailable, "Docker access is not enabled on this host. Set VIGIRA_DOCKER_ENABLED=true and VIGIRA_DOCKER_HOST on its agent."
+			return StateUnavailable, "Docker access is not enabled on this host. Open Device info > Reinstall agent, select Configure Docker access, then run the installer on this host. Manual setup uses VIGIRA_DOCKER_ENABLED=true and VIGIRA_DOCKER_HOST on the agent service."
 		case protocol.ErrCodeDockerDown:
 			return StateError, "Docker could not be reached on this host."
 		case protocol.ErrCodeNotFound:
