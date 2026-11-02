@@ -49,6 +49,17 @@ var version = "dev"
 var revision = ""
 
 func main() {
+	if len(os.Args) > 1 {
+		if os.Args[1] != "host-agent-bundle" {
+			os.Stderr.WriteString("Usage: vigara [host-agent-bundle OPTIONS]\n")
+			os.Exit(1)
+		}
+		if err := hostAgentBundle(os.Args[2:], os.Stdout, os.Stderr); err != nil {
+			os.Stderr.WriteString(err.Error() + "\n")
+			os.Exit(1)
+		}
+		return
+	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	cfg, err := config.Load()
 	if err != nil {

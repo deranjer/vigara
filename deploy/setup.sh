@@ -461,6 +461,12 @@ cp -- "$script_dir/check-ready.sh" "$temporary/check-ready.sh"
 } > "$temporary/check.sh"
 chmod 600 "$temporary/.env"
 chmod 700 "$temporary/check.sh" "$temporary/check-ready.sh"
+{
+  printf '#!/usr/bin/env bash\n'
+  printf 'server_url=%q\nmanaged_root=%q\n' "${public_url:-$url}" "$stacks_root"
+  cat -- "$script_dir/enroll-host.sh"
+} > "$temporary/register-host.sh"
+chmod 700 "$temporary/register-host.sh"
 bash "$temporary/compose.sh" config --quiet
 if [[ $proxy_action == create ]]; then
   mkdir "$temporary/proxy"
@@ -485,7 +491,8 @@ if [[ $storage == bind ]]; then
   printf 'Vigara data: %s/%s/data\n' "$data_base" "$project"
   [[ $proxy_action != create || $proxy_storage != bind ]] || printf 'Caddy data: %s/%s/data\n' "$data_base" "$proxy_project"
 fi
-printf 'Host agent Compose root saved in .env and agent.env. After enrolling the host agent, apply it with: bash %q/configure-agent.sh\n' "$destination"
+printf 'Host agent Compose root saved in .env and agent.env. Automatic host registration applies it during installation.\n'
+printf 'For an agent enrolled manually, apply the Compose root with: bash %q/configure-agent.sh\n' "$destination"
 if [[ -n $mcp_origin ]]; then
   printf 'MCP endpoint: %s/mcp\nConnection instructions: Account settings > Claude and ChatGPT.\n' "$mcp_origin"
 fi
@@ -502,6 +509,7 @@ if ! yesno 'Pull images and start Vigara (and the approved proxy) now?'; then
   [[ ! -f "$destination/prepare-storage.sh" ]] || printf '  bash %q/prepare-storage.sh\n' "$destination"
   printf '  bash %q/compose.sh up -d --wait --wait-timeout 120\n' "$destination"
   printf 'Verify readiness afterward: bash %q/check.sh\n' "$destination"
+  printf 'Then register this server as a Docker host: bash %q/register-host.sh\n' "$destination"
   exit 0
 fi
 if [[ $proxy_action == create ]]; then
@@ -525,12 +533,13 @@ fi
 bash "$destination/compose.sh" ps
 if command -v curl >/dev/null; then
   bash "$destination/check.sh" || fail "Containers started, but readiness was not confirmed. Fix DNS/routing or inspect logs, then rerun: bash $destination/check.sh"
+  bash "$destination/register-host.sh" || printf 'Host registration did not complete. The server is running. Retry: bash %q/register-host.sh\n' "$destination"
 else
   printf 'curl is unavailable; readiness was not verified. Install curl, then run: bash %q/check.sh\n' "$destination"
+  printf 'After readiness passes, register this Docker host: bash %q/register-host.sh\n' "$destination"
 fi
 if [[ $mode == direct && $secure == true ]]; then
   printf 'Open your external HTTPS URL to sign in; secure cookies are enabled.\n'
 else
   printf 'Open %s and complete first administrator setup.\n' "$url"
 fi
-printf 'Next: enroll the host agent before configuring Compose stack management.\n'

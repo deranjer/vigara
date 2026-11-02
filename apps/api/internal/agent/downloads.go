@@ -224,6 +224,10 @@ func (h *Handler) createAgentDownload(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	h.writeAgentDownload(w, r, req)
+}
+
+func (h *Handler) writeAgentDownload(w http.ResponseWriter, r *http.Request, req agentDownloadRequest) {
 	req.Name = strings.TrimSpace(req.Name)
 	if err := req.Docker.validate(req.Target); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
