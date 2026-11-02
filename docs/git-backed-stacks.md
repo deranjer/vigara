@@ -6,11 +6,52 @@ The web UI has a **Compose stacks** section for administrators. **Keep draft** s
 
 The Compose stacks page provides Cards and Table views, search across stack/project/device/status, a device filter, sorting, and 20 stacks per page. Container counts come from the live Docker inventory and are matched by agent plus Compose project; offline or failed inventory is shown as unavailable, and truncated results are labeled as a lower bound. Deployment status reflects the latest recorded Vigara attempt, not an assertion about outside changes.
 
-**Git settings** displays the repository URL and branch and can test or save them. Settings are stored in PostgreSQL and override the environment defaults without restarting the app. The connection test reads the selected branch; write access is checked on stack Save. Authentication continues to use service-account SSH keys or Git credential helpers. The browser does not accept embedded passwords/tokens or arbitrary local filesystem repositories; the existing environment-configured local test repository can be retained. Finish/discard stored drafts and resolve active or uncertain deployments before switching repository or branch. Switching sources does not migrate stacks or detach their device bindings.
+**Git settings** displays the repository URL, branch and authentication method and can test or save them. Settings are stored in PostgreSQL and override the environment defaults without restarting the app. Choose native **GitHub App** authentication for GitHub, or **Server credentials** for service-account SSH keys and Git credential helpers. The connection test reads the selected branch; branch write access is checked on stack Save. The browser does not accept embedded passwords/tokens or arbitrary local filesystem repositories; the existing environment-configured local test repository can be retained. Finish/discard stored drafts and resolve active or uncertain deployments before switching repository or branch. Switching sources does not migrate stacks or detach their device bindings.
 
 **New stack** creates a named draft on an enrolled device with Docker deployment access. The updated agent provisions a new folder under its locally configured managed root (VIGIRA_COMPOSE_MANAGED_ROOT, default /var/lib/vigira-agent/compose-stacks). The root must be writable by the agent and allowed by its service sandbox. Existing folders, Compose project names and bindings cannot be adopted through this flow. Target markers persist across agent restarts. Creating a stack neither commits nor starts containers; edit the generated files, Save, then Preview and Deploy. Existing approved targets remain available from the same dialog.
 
 ## Repository setup
+
+### Native GitHub App registration
+
+The Linux installer (`bash deploy/setup.sh`) generates a separate GitHub App
+encryption key automatically and saves it in the private deployment `.env`.
+It uses the HTTPS address entered during setup (or the Caddy hostname) for App
+callbacks, forwards the key into the API container, and persists the Git cache
+with the chosen named-volume or bind storage. After startup, follow the printed
+**Compose stacks → Git settings → GitHub App → Connect with GitHub** instructions.
+If setup has no HTTPS address yet, set `VIGIRA_PUBLIC_URL` in the existing `.env`
+before connecting. Preserve this file and its keys during upgrades; rerunning the
+initial installer is not an upgrade path.
+
+Configure these settings once on the API server:
+
+```text
+VIGIRA_PUBLIC_URL=https://vigara.example.com
+VIGIRA_GITHUB_APP_MASTER_KEY=<base64-encoded random 32-byte key>
+```
+
+Generate the master key with `openssl rand -base64 32`. Keep it in your server's secret configuration, use the same key on every API replica, and back it up separately from PostgreSQL. Keep it unchanged across restarts. The App's RSA private key is encrypted with AES-256-GCM before it is stored in PostgreSQL, including during unfinished registration. Losing the master key requires reconnecting an App; replacing it does not re-encrypt existing credentials. This key is separate from the managed-backup master key. GitHub App setup is disabled when it is unset; server-credential authentication continues to work.
+
+Sign in as a Vigara administrator at the configured HTTPS origin. In **Compose stacks → Git settings**:
+
+1. Enter the HTTPS GitHub repository URL, for example `https://github.com/deranjer/vigara-derajnet.git`, and an existing branch such as `main`.
+2. Select **GitHub App**. For an organization-owned App, enter its organization name; otherwise leave the owner field empty.
+3. Click **Connect with GitHub**. GitHub asks you to create the private App from Vigara's manifest. It requests repository **Contents: read and write**, with implicit Metadata read permission; it does not request workflow, administration or pull-request permissions. Webhooks and user OAuth authorization are disabled.
+4. Install the App on the owning account and choose **Only select repositories**, selecting the stack repository. A private App is installable only on its owning account, so create it under the account that owns your repository.
+5. GitHub returns you to Vigara. Test the connection, then **Save settings**. Completing App installation alone does not change the active repository, branch or authentication method.
+
+Registration callbacks are bound to the administrator and initiating login session, expire after one hour, and cannot be replayed. Use the same browser and remain signed in throughout. A same-site continuation page preserves Vigara's strict login-cookie policy when returning from GitHub; if scripts are disabled, click **Continue GitHub setup**. **Resume App installation** continues an interrupted installation during this window. Starting over may leave an unused App on GitHub; remove abandoned Apps in GitHub's developer settings. An installation callback is verified against the expected repository using the registered App's signed JWT rather than trusting the browser's installation ID.
+
+Vigara obtains repository-scoped installation tokens with Contents write permission, keeps them only in memory, and renews them before their one-hour expiry. Git uses these tokens through per-process environment configuration, with redirects disabled. Tokens and private keys are never put into repository URLs, process arguments, Git repository configuration, browser API responses, or audit records. Existing SSH/credential-helper setups remain available through **Server credentials**.
+
+Saves push directly to the selected branch. Branch rules that require pull requests or other checks before a direct push are unsupported; a successful connection test does not prove that branch rules permit a Save. Deployment remains a separate action.
+
+**Disconnect App** deletes Vigara's stored App credentials and switches authentication to server credentials while preserving the repository and branch. Uninstall or delete the App in GitHub separately to revoke its GitHub access. Use the GitHub repository-access link to change which repositories an existing App installation can access. This integration currently supports GitHub.com; other Git hosts use server credentials.
+
+References: [GitHub App manifest flow](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest), [installation authentication](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation).
+
+### Server credentials and repository storage
 
 Administrators can prepare logical server profiles and assignment manifests through **Profiles and assignments**, save them to Git, and explicitly bind a saved profile to an enrolled agent. Initial enabled exclusive assignments at ownership epoch 1 are supported. See [server profiles and assignment manifests](stack-profiles.md). Ownership transfer, replicated placements and subsequent epoch changes remain separate work.
 

@@ -28,6 +28,7 @@ import (
 	"github.com/deranjer/vigara/apps/api/internal/containers"
 	"github.com/deranjer/vigara/apps/api/internal/database"
 	"github.com/deranjer/vigara/apps/api/internal/db"
+	"github.com/deranjer/vigara/apps/api/internal/githubapp"
 	"github.com/deranjer/vigara/apps/api/internal/inventoryview"
 	"github.com/deranjer/vigara/apps/api/internal/mcpserver"
 	"github.com/deranjer/vigara/apps/api/internal/notifications"
@@ -153,7 +154,12 @@ func main() {
 		os.Exit(1)
 	}
 	stackMux := http.NewServeMux()
-	stackAPI := stacks.Register(stackMux, stacks.Config{Repository: stackRepository, Targets: stackTargets, SOPS: os.Getenv("VIGIRA_SOPS_BINARY"), CentralAgeIdentity: os.Getenv("VIGIRA_COMPOSE_EDITOR_AGE_IDENTITY"), Pool: database.Pool, Hub: channelHub, Authz: authService, Audit: auditRecorder})
+	githubClient, err := githubapp.New(os.Getenv("VIGIRA_GITHUB_APP_MASTER_KEY"))
+	if err != nil {
+		logger.Error("invalid GitHub App configuration", "error", err)
+		os.Exit(1)
+	}
+	stackAPI := stacks.Register(stackMux, stacks.Config{GitHub: githubClient, PublicURL: os.Getenv("VIGIRA_PUBLIC_URL"), Repository: stackRepository, Targets: stackTargets, SOPS: os.Getenv("VIGIRA_SOPS_BINARY"), CentralAgeIdentity: os.Getenv("VIGIRA_COMPOSE_EDITOR_AGE_IDENTITY"), Pool: database.Pool, Hub: channelHub, Authz: authService, Audit: auditRecorder})
 	adminMux := http.NewServeMux()
 	authService.RegisterAdmin(adminMux, auditRecorder)
 	androidBackupMux := http.NewServeMux()

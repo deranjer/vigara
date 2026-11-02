@@ -26,7 +26,9 @@ var ErrNotFound = errors.New("stack or revision not found")
 
 type Repository struct {
 	Directory, Remote, Branch string
-	mu                        sync.Mutex
+	// Authenticate supplies ephemeral, remote-scoped Git config for fetch/push.
+	Authenticate func(context.Context, string) ([]string, error)
+	mu           sync.Mutex
 }
 type Revision struct {
 	Commit  string `json:"commit"`
@@ -63,6 +65,13 @@ func (r *Repository) run(ctx context.Context, input string, extra []string, args
 	}
 	cmd.Env = append(env, "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_NOSYSTEM=1")
 	cmd.Env = append(cmd.Env, extra...)
+	if r.Authenticate != nil && len(args) > 0 && (args[0] == "fetch" || args[0] == "push") {
+		credentials, err := r.Authenticate(ctx, r.Remote)
+		if err != nil {
+			return "", err
+		}
+		cmd.Env = append(cmd.Env, credentials...)
+	}
 	cmd.Stdin = strings.NewReader(input)
 	out := &bounded{limit: 4 << 20}
 	cmd.Stdout = out

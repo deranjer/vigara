@@ -3,6 +3,7 @@
 No containers or host networks are changed. Run: python3 scripts/test_setup.py
 """
 import os
+import base64
 import json
 from pathlib import Path
 import shutil
@@ -136,6 +137,12 @@ esac
         self.assertIn('VIGIRA_COOKIE_SECURE=false', env)
         self.assertRegex(env, r'POSTGRES_PASSWORD=[a-f0-9]{64}\n')
         self.assertRegex(env, r'VIGIRA_BACKUP_MASTER_KEY=[A-Za-z0-9+/]{43}=\n')
+        settings = dict(line.split('=', 1) for line in env.splitlines() if '=' in line)
+        github_key = settings['VIGIRA_GITHUB_APP_MASTER_KEY']
+        self.assertEqual(len(base64.b64decode(github_key, validate=True)), 32)
+        self.assertNotEqual(github_key, settings['VIGIRA_BACKUP_MASTER_KEY'])
+        self.assertNotIn(github_key, result.stdout + result.stderr)
+        self.assertNotIn(github_key, (production / 'agent.env').read_text())
         self.assertEqual((production / ".env").stat().st_mode & 0o777, 0o600)
         compose = (production / "compose.yml").read_text()
         self.assertIn('env_file: .env', compose)
@@ -143,12 +150,24 @@ esac
         self.assertIn('container_name: vigara-app', compose)
         self.assertIn('container_name: vigara-postgres', compose)
         self.assertIn('postgres-data:/var/lib/postgresql/data', compose)
+        self.assertIn('stack-git:/var/lib/vigira/stacks.git', compose)
+        self.assertIn('Before connecting GitHub, set VIGIRA_PUBLIC_URL', result.stdout)
         self.assertFalse((production / 'data').exists())
         self.assertNotIn(' up -d ', self.calls.read_text())
         self.assertNotIn('pull', self.calls.read_text())
         self.assertNotIn(env.splitlines()[0], result.stdout)
         self.assertIn('Setup already exists', self.run_setup('\n', reset_answers='n').stderr)
         self.assertEqual((production / ".env").read_text(), env)
+
+    def test_github_app_setup_uses_public_origin_without_printing_key(self):
+        result = self.run_setup('\n\nn\n\n\ny\nn\n', public_url_answer='https://vigara.example.com')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        env = (self.production / '.env').read_text()
+        self.assertIn('VIGIRA_PUBLIC_URL=https://vigara.example.com', env)
+        self.assertIn('GitHub App setup: sign in at https://vigara.example.com', result.stdout)
+        self.assertNotIn('Before connecting GitHub', result.stdout)
+        key = next(line.split('=', 1)[1] for line in env.splitlines() if line.startswith('VIGIRA_GITHUB_APP_MASTER_KEY='))
+        self.assertNotIn(key, result.stdout + result.stderr)
 
     def test_caddy_configuration(self):
         result = self.run_setup('\n\ny\nvigara.example.com\n\n\nn\n')
@@ -158,6 +177,9 @@ esac
         compose = (production / "compose.yml").read_text()
         self.assertIn('caddy.reverse_proxy:', compose)
         self.assertIn('VIGIRA_BACKUP_MASTER_KEY:', compose)
+        self.assertIn('VIGIRA_GITHUB_APP_MASTER_KEY: ${VIGIRA_GITHUB_APP_MASTER_KEY:-}', compose)
+        self.assertIn('stack-git:/var/lib/vigira/stacks.git', compose)
+        self.assertIn('GitHub App setup: sign in at https://vigara.example.com', result.stdout)
         self.assertEqual(compose.count('      VIGIRA_BACKUP_MASTER_KEY:'), 1)
         self.assertNotIn('ports:', compose)
         self.assertIn('VIGIRA_MCP_URL=\n', (production / '.env').read_text())
@@ -673,14 +695,17 @@ if [[ $1 == test ]]; then [[ ${EXISTING_HOST_AGENT:-0} == 1 ]]; elif [[ $1 == -v
         self.assertTrue((production / 'data' / 'postgres').is_dir())
         self.assertTrue((production / 'data' / 'android-backups').is_dir())
         self.assertTrue((production / 'data' / 'agent-releases').is_dir())
+        self.assertTrue((production / 'data' / 'stack-git').is_dir())
         compose = (production / 'compose.yml').read_text()
         self.assertNotIn('\nvolumes:\n', compose)
         self.assertIn('source: ./data/postgres', compose)
         self.assertIn('source: ./data/android-backups', compose)
+        self.assertIn('source: ./data/stack-git', compose)
         self.assertIn('create_host_path: true', compose)
         self.assertIn('container_name: vigara-app', compose)
         self.assertIn('container_name: vigara-postgres', compose)
         self.assertTrue((production / 'prepare-storage.sh').exists())
+        self.assertIn('stack-git', (production / 'prepare-storage.sh').read_text())
         self.assertIn('prepare-storage.sh', result.stdout)
         self.assertNotIn('run --rm', self.calls.read_text())
 
@@ -803,7 +828,8 @@ exec "$REAL_MKDIR" "$@"
                         continue
                     self.assertTrue(mount['source'].startswith(str(data_root / name / 'data') + '/'))
                     self.assertTrue(Path(mount['source']).is_dir())
-                    self.assertTrue(mount['bind']['create_host_path'])
+                    # Compose v5 omits this default-valued option from JSON.
+                    self.assertTrue(mount['bind'].get('create_host_path', True))
 
     def test_generated_agent_helper_applies_only_agent_settings(self):
         result = self.run_setup('\n\nn\n\n\nn\nn\n')
@@ -876,7 +902,10 @@ exec "$REAL_MKDIR" "$@"
                         for mount in service.get('volumes', []):
                             self.assertEqual(mount['type'], 'bind')
                             if mount['target'] != '/var/run/docker.sock':
-                                self.assertTrue(mount.get('bind', {}).get('create_host_path', False))
+                                # Also inspect the generated input: newer Compose
+                                # versions omit default-valued options from JSON.
+                                self.assertIn('create_host_path: true', (directory / 'compose.yml').read_text())
+                                self.assertTrue(mount.get('bind', {}).get('create_host_path', True))
                                 self.assertTrue(Path(mount['source']).is_dir())
                     if directory.name == 'vigara-prod':
                         self.assertEqual(config['services']['app']['container_name'], 'vigara-prod-app')

@@ -309,7 +309,7 @@ func notificationTestPool(t *testing.T) *pgxpool.Pool {
 		t.Fatal(err)
 	}
 	t.Cleanup(p.Close)
-	for _, name := range []string{"000001_initial_schema.up.sql", "000007_alerts.up.sql", "000013_notification_delivery.up.sql"} {
+	for _, name := range []string{"000001_initial_schema.up.sql"} {
 		b, err := os.ReadFile("../../migrations/" + name)
 		if err != nil {
 			t.Fatal(err)
@@ -317,20 +317,6 @@ func notificationTestPool(t *testing.T) *pgxpool.Pool {
 		if _, err = p.Exec(ctx, string(b)); err != nil {
 			t.Fatalf("apply %s: %v", name, err)
 		}
-	}
-	down, err := os.ReadFile("../../migrations/000013_notification_delivery.down.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = p.Exec(ctx, string(down)); err != nil {
-		t.Fatalf("roll back notification delivery migration: %v", err)
-	}
-	up, err := os.ReadFile("../../migrations/000013_notification_delivery.up.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = p.Exec(ctx, string(up)); err != nil {
-		t.Fatalf("reapply notification delivery migration: %v", err)
 	}
 	return p
 }

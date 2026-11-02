@@ -93,6 +93,19 @@ class DeploymentEnvironmentTests(unittest.TestCase):
                                    'VIGIRA_MCP_URL': origin}, caddy=True)['services']['app']
                 self.assertEqual(app['environment']['VIGIRA_MCP_URL'], origin)
 
+    def test_github_app_key_is_forwarded_only_to_api(self):
+        for caddy in (False, True):
+            with self.subTest(caddy=caddy):
+                settings = {'VIGIRA_DOMAIN': 'vigara.example.com',
+                            'VIGIRA_GITHUB_APP_MASTER_KEY': 'test-only-github-app-key'}
+                config = self.render(settings, caddy=caddy)
+                self.assertEqual(config['services']['app']['environment']['VIGIRA_GITHUB_APP_MASTER_KEY'],
+                                 settings['VIGIRA_GITHUB_APP_MASTER_KEY'])
+                database = config['services']['postgres' if caddy else 'db']
+                self.assertNotIn('VIGIRA_GITHUB_APP_MASTER_KEY', database['environment'])
+                self.assertTrue(any(mount['target'] == '/var/lib/vigira/stacks.git'
+                                    for mount in config['services']['app']['volumes']))
+
 
 if __name__ == "__main__":
     unittest.main()
