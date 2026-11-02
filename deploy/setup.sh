@@ -336,8 +336,9 @@ else
 fi
 
 mcp_origin=''
-if yesno 'Enable read-only MCP connections for ChatGPT and Claude?'; then
+if yesno 'Enable MCP connections for ChatGPT and Claude?'; then
   command -v curl >/dev/null || fail 'Install curl to verify MCP readiness.'
+  printf 'Approved connection permissions and your account role control monitoring, container management and Compose stack changes. Backup access remains read-only.\n'
   printf 'Use a public HTTPS origin reachable by both services; Vigara supplies OAuth sign-in.\n'
   default_origin=''
   [[ $mode != caddy ]] || default_origin="https://$domain"

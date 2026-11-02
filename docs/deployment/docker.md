@@ -205,7 +205,9 @@ backup credentials unrecoverable. Keep the generated Compose file too.
 Installations previously created under `deploy/production/` can keep using their
 existing helper. This installer does not migrate them or change their storage.
 
-The installer also offers read-only MCP access for ChatGPT and Claude. For Caddy,
+The installer also offers MCP access for ChatGPT and Claude. Approved connection
+permissions and the current account role control monitoring, container management
+and Compose stack changes. Backup access remains read-only. For Caddy,
 it uses the selected HTTPS hostname. Direct-port deployments need an existing
 HTTPS proxy and its public origin. MCP remains disabled unless you opt in.
 After startup, open **Account settings → Claude and ChatGPT** for the connection
