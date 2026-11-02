@@ -67,7 +67,7 @@ const tierRank: Record<string, number> = { read: 0, manage: 1, exec: 2, deploy: 
 /** Why a terminal cannot be opened, or null when it can. */
 export function terminalBlocker(role: string, hostTier: string | undefined, running: boolean | null): string | null {
   if (role !== 'operator' && role !== 'admin') return 'Your account can view containers but not open terminals in them.'
-  if ((tierRank[hostTier ?? 'read'] ?? 0) < tierRank.exec) return 'Terminals are not enabled for this host. Set VIGIRA_DOCKER_MODE=exec on its agent and allow terminals when the device is enrolled.'
+  if ((tierRank[hostTier ?? 'read'] ?? 0) < tierRank.exec) return 'Terminals are not enabled for this host. Open Device info > Reinstall agent and select Docker access with terminals. Manual setup uses VIGIRA_DOCKER_MODE=exec with matching enrollment permission.'
   if (running === false) return 'This container is not running, so there is nothing to open a terminal in.'
   return null
 }

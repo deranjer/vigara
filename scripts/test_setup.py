@@ -608,6 +608,20 @@ esac
         self.assertLess(calls.index('run --rm'), calls.index(' up -d'))
         self.assertNotIn('chown -R', calls)
 
+    def test_bind_storage_applies_to_new_caddy_data_and_config(self):
+        result = self.run_setup('\n\ny\nvigara.example.com\n\n\nn\n', storage_answer='y',
+                                proxy_answers='y\n', PROXY_STATE='missing')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        proxy = self.stacks_root / 'vigara-caddy'
+        compose = (proxy / 'compose.yml').read_text()
+        self.assertIn('source: ./data/caddy\n        target: /data', compose)
+        self.assertIn('source: ./data/config\n        target: /config', compose)
+        self.assertNotIn('caddy-data:/data', compose)
+        self.assertNotIn('caddy-config:/config', compose)
+        self.assertNotIn('\nvolumes:\n', compose)
+        self.assertTrue((proxy / 'data/caddy').is_dir())
+        self.assertTrue((proxy / 'data/config').is_dir())
+
     def test_permission_failure_retains_bind_configuration(self):
         result = self.run_setup('\n\nn\n\n\nn\ny\n', storage_answer='y', FAIL_PERMISSIONS='1')
         self.assertNotEqual(result.returncode, 0)

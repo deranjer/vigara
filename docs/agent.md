@@ -199,6 +199,15 @@ To move a Windows computer from a lab server to production, download a fresh **A
 
 Reset creates a new identity on the target server. History and policies stay with the old device record; local settings, managed-backup configuration, and queued reports are not carried over. Backup files are not deleted. The installer saves the previous state as `C:\ProgramData\Vigara\agent.before-reset-<unique-id>.json` in the protected state directory, and restores it if enrollment fails before credentials are saved. If enrollment succeeds but service installation fails, it keeps the new credentials so rerunning the installer can repair the service. The old server record is not deleted automatically.
 
+Linux x64 and ARM64 use the same reset flow. With a fresh **Add device** bundle,
+run `sh install.sh --reset-enrollment` and type exactly `RESET`. Interactive
+installation also offers the choice when saved enrollment exists. Enter keeps
+the saved enrollment; `--non-interactive`, missing bootstrap settings, and
+**Reinstall agent** bundles cannot authorize a reset. The previous state is
+backed up privately as `/var/lib/vigara-agent/agent.before-reset-<unique-id>.json`.
+Failed enrollment restores it and restarts the previously running service;
+successful enrollment retains its new credentials even if service startup fails.
+
 Administrators can permanently remove a device under **Device settings → Delete device**. The server requires the exact current device name. Deletion removes the device record, agent credentials, monitoring data, backup policies and job history, and stack deployment records. An audit entry remains. Active or uncertain backup jobs and stack deployments must be resolved first. Deletion does not uninstall software, stop containers, modify Git repositories, or erase backup files in their storage. Adding the computer again creates a new record.
 
 ## Migrating the original Vigira name

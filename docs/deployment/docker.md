@@ -84,6 +84,12 @@ also applies to a newly deployed Caddy proxy. Keeping existing Caddy volumes
 overrides this choice for the proxy only, so its certificates and configuration
 remain mounted. A reused proxy keeps its existing storage configuration.
 
+The repository's proxy example uses named volumes by default. In bind mode,
+setup converts the generated `<compose-root>/<project>-caddy/compose.yml` so
+`/data` and `/config` use the proxy's data directories. Manage that generated
+stack through its `compose.sh` helper. Reusing existing named Caddy volumes is
+an explicit exception: those stay mounted to preserve saved certificates.
+
 PostgreSQL initializes ownership and permissions on its fresh database
 directory. The direct-port setup also generates `prepare-storage.sh` to give
 the Android upload directory to the API's UID/GID 10001 before startup. This

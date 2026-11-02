@@ -1,4 +1,4 @@
-param([ValidateSet('legacy','fresh','failure','wrong-agent','managed','docker','reset','reset-explicit','reset-cancel','reset-typo','reset-legacy','reset-decline','reset-failure','reset-service-failure','reset-missing','reset-reinstall','reset-noninteractive')][string]$Scenario = 'legacy')
+param([ValidateSet('legacy','fresh','failure','wrong-agent','managed','docker','reset-docker','reset','reset-explicit','reset-cancel','reset-typo','reset-legacy','reset-decline','reset-failure','reset-service-failure','reset-missing','reset-reinstall','reset-noninteractive')][string]$Scenario = 'legacy')
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 $fixture = Join-Path $repo ('.cache\installer-migration-tests\' + $Scenario + '-' + [Guid]::NewGuid())
@@ -36,9 +36,14 @@ if ($Scenario -eq 'managed') {
   [IO.File]::WriteAllText((Join-Path $bundle 'bootstrap.json'),'{"managedBackups":true,"reinstall":false}')
 }
 if ($Scenario -eq 'wrong-agent') { [IO.File]::WriteAllText((Join-Path $bundle 'bootstrap.json'),'{"reinstall":true,"agentId":"different-agent"}') }
-if ($Scenario -eq 'docker') {
+if ($Scenario -in @('docker','reset-docker')) {
   Copy-Item -LiteralPath (Join-Path $repo 'apps\api\internal\agent\installers\docker_windows.ps1') -Destination (Join-Path $bundle 'configure-docker.ps1')
-  [IO.File]::WriteAllText((Join-Path $bundle 'bootstrap.json'),'{"reinstall":false,"docker":{"mode":"manage","host":"http://127.0.0.1:2375"}}')
+  if ($Scenario -eq 'docker') { [IO.File]::WriteAllText((Join-Path $bundle 'bootstrap.json'),'{"reinstall":false,"docker":{"mode":"manage","host":"http://127.0.0.1:2375"}}') }
+  else {
+    $data=Get-Content -Raw -LiteralPath (Join-Path $bundle 'bootstrap.json') | ConvertFrom-Json
+    $data | Add-Member NoteProperty docker ([pscustomobject]@{mode='manage';host='http://127.0.0.1:2375'})
+    [IO.File]::WriteAllText((Join-Path $bundle 'bootstrap.json'),($data | ConvertTo-Json))
+  }
 }
 function FakeService($name) {
   $service = [pscustomobject]@{ Name=$name; Status='Running'; StartType='Automatic' }
@@ -102,7 +107,7 @@ if ($Scenario.StartsWith('reset')) {
   & (Join-Path $bundle 'install.ps1') @invokeArgs
   $failed = $Scenario -in @('reset-failure','reset-service-failure','reset-missing','reset-reinstall','reset-noninteractive','reset-cancel')
   if (($LASTEXITCODE -eq 1) -ne $failed) { throw 'Unexpected installer outcome' }
-  $resetCompleted = $Scenario -in @('reset','reset-explicit','reset-legacy','reset-service-failure')
+  $resetCompleted = $Scenario -in @('reset-docker','reset','reset-explicit','reset-legacy','reset-service-failure')
   $state = [IO.File]::ReadAllText((Join-Path $currentDir 'agent.json'))
   if ($resetCompleted) {
     if (($state | ConvertFrom-Json).agentId -ne 'production-agent') { throw 'New enrollment was not kept' }
@@ -114,6 +119,7 @@ if ($Scenario.StartsWith('reset')) {
   } elseif ($backups.Count -ne 0) { throw 'Declined/invalid reset changed state' }
   if ($Scenario -ne 'reset-service-failure' -and $global:NewService.Status -ne 'Running') { throw 'Service not running after reset/rollback' }
   if ($Scenario -eq 'reset-legacy' -and [IO.File]::ReadAllText((Join-Path $legacyDir 'agent.json')) -ne $saved) { throw 'Legacy enrollment changed' }
+  if ($Scenario -eq 'reset-docker' -and $global:MigratedEnvironment -notcontains 'VIGIRA_DOCKER_MODE=manage') { throw 'RESET lost the selected Docker configuration' }
   Write-Host ('PASS: ' + $Scenario + ' installer reset behavior')
   exit 0
 }
