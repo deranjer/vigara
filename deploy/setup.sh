@@ -18,6 +18,50 @@ yesno() {
   done
 }
 
+offer_fresh_start() {
+  local name=$1 directory=$2 containers volumes confirmation backup='' item owner
+  containers=$(docker ps -aq --filter "label=com.docker.compose.project=$name") || fail 'Cannot inventory existing containers.'
+  volumes=$(docker volume ls -q --filter "label=com.docker.compose.project=$name") || fail 'Cannot inventory existing volumes.'
+  # Never delete an unlabelled volume merely because its name looks familiar.
+  if docker volume inspect "${name}_postgres-data" >/dev/null 2>&1; then
+    owner=$(docker volume inspect --format '{{index .Labels "com.docker.compose.project"}}' "${name}_postgres-data")
+    [[ $owner == "$name" ]] || fail "Volume ${name}_postgres-data has no matching project label; resolve it manually."
+  fi
+  [[ -n $containers || -n $volumes || -e $directory || -L $directory ]] || return 0
+  printf '\nWARNING: Existing deployment resources found for Compose project %s.\n' "$name"
+  printf 'Containers to DELETE (including running containers):\n%s\n' "${containers:-(none)}"
+  printf 'Volumes to PERMANENTLY DELETE:\n%s\n' "${volumes:-(none)}"
+  if [[ -e $directory || -L $directory ]]; then
+    [[ -d $directory && ! -L $directory && -f $directory/compose.sh && -f $directory/compose.yml && -f $directory/.env ]] ||
+      fail "Setup already exists at $directory but is not a recognized deployment directory. Move it manually."
+    backup=$(mktemp -d -- "${directory}.before-reset.XXXXXXXX") || fail 'Cannot reserve a backup directory.'
+    # Only reserve the name here. Declining must leave the deployment untouched.
+    rmdir -- "$backup"
+    printf 'Configuration and bind-mounted data at %s will move to:\n%s\n' "$directory" "$backup"
+  fi
+  printf '\nDANGER: This destroys the selected project\047s database, users, enrollment credentials and other named-volume data.\n'
+  printf 'There is NO UNDO for volume deletion. Back up anything you need before continuing.\n'
+  printf 'Enrolled agents will need enrolling again after database deletion. A proxy reset also deletes its saved TLS certificates.\n'
+  printf 'Archived bind data is retained on disk; external bind paths and shared proxies are not erased.\n'
+  yesno "Purge project $name and create a completely fresh deployment?" || fail "Setup already exists: keeping project $name and its data unchanged."
+  read -r -p "FINAL WARNING: type PURGE $name exactly to confirm permanent deletion: " confirmation || fail 'Input ended; purge cancelled.'
+  [[ $confirmation == "PURGE $name" ]] || fail 'Confirmation did not match; nothing deleted.'
+  require_local_docker
+  # Abort if any deletion fails. Never proceed to generate replacement secrets
+  # over a partially removed deployment. Delete the exact inventoried resources.
+  while IFS= read -r item; do
+    [[ -z $item ]] || docker rm -f "$item" || fail 'Container deletion failed; reset stopped.'
+  done <<< "$containers"
+  while IFS= read -r item; do
+    [[ -z $item ]] || docker volume rm "$item" || fail 'Volume deletion failed; reset stopped.'
+  done <<< "$volumes"
+  if [[ -n $backup ]]; then
+    mv -T -- "$directory" "$backup" || fail 'Could not archive the deployment; reset stopped.'
+    printf 'Previous configuration and bind data retained at %s\n' "$backup"
+  fi
+  printf 'Project %s reset. Continuing with fresh credentials and storage.\n' "$name"
+}
+
 write_helper() {
   local directory=$1 name=$2
   {
@@ -126,12 +170,7 @@ mkdir -p -- "$stacks_root" || fail 'Cannot create the Compose root. Check its ow
 stacks_root=$(cd -- "$stacks_root" && pwd -P)
 [[ $stacks_root != "$repo_dir" && $stacks_root != "$repo_dir/"* ]] || fail 'Choose a Compose root outside the Vigara source checkout.'
 destination="$stacks_root/$project"
-[[ ! -e "$destination" && ! -L "$destination" ]] || fail "Setup already exists at $destination. Use its compose.sh helper; setup never overwrites credentials."
-[[ -z $(docker ps -aq --filter "label=com.docker.compose.project=$project") ]] || fail 'That Compose project already has containers. Use its existing deployment configuration.'
-[[ -z $(docker volume ls -q --filter "label=com.docker.compose.project=$project") ]] || fail 'That project already has persistent volumes. Preserve its existing deployment configuration.'
-if docker volume inspect "${project}_postgres-data" >/dev/null 2>&1; then
-  fail 'A database volume already exists for that project. Use its existing deployment configuration.'
-fi
+offer_fresh_start "$project" "$destination"
 for container in "${project}-app" "${project}-postgres"; do
   if docker container inspect "$container" >/dev/null 2>&1; then
     fail "Container name $container already exists. Choose another project name or use its existing configuration."
@@ -183,9 +222,7 @@ if yesno 'Use Caddy Docker Proxy labels for automatic HTTPS?'; then
       proxy_action=create
       proxy_project="${project}-caddy"
       proxy_destination="$stacks_root/$proxy_project"
-      [[ ! -e "$proxy_destination" && ! -L "$proxy_destination" ]] || fail 'The proxy deployment directory already exists. Use its existing configuration.'
-      [[ -z $(docker ps -aq --filter "label=com.docker.compose.project=$proxy_project") ]] || fail 'The proxy Compose project already has containers.'
-      [[ -z $(docker volume ls -q --filter "label=com.docker.compose.project=$proxy_project") ]] || fail 'The proxy Compose project already has volumes.'
+      offer_fresh_start "$proxy_project" "$proxy_destination"
       check_proxy_ports
       require_local_docker
       ask proxy_image 'Caddy Docker Proxy image' lucaslorentz/caddy-docker-proxy:alpine
