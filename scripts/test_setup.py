@@ -20,14 +20,21 @@ case "$*" in
   info) [[ ${FAIL_INFO:-0} != 1 ]];;
   'compose version') echo 'Docker Compose test stub';;
   'compose up --help') echo '--wait-timeout';;
+  'ps -aq --filter volume='*) [[ ${VOLUME_IN_USE:-0} != 1 ]] || echo stopped-container;;
+  'ps -aq --filter label=com.docker.compose.project=vigara-caddy') [[ ${PROXY_CONTAINERS:-0} != 1 ]] || echo orphaned-proxy-container;;
   'ps -aq '*) [[ ${EXISTING:-0} != 1 ]] || echo existing-container;;
   'ps -q '*) [[ ${BUSY_DOCKER_PORT:-0} != 1 ]] || echo existing-port-owner;;
   'volume ls '*)
-    if [[ $* == *'=vigara-caddy' && ${ORPHAN_PROXY:-0} == 1 ]]; then echo old-proxy-volume;
-    else [[ ${EXISTING_VOLUME:-0} != 1 ]] || echo existing-volume; fi;;
-  'volume inspect --format '*) echo "${VOLUME_OWNER:-vigara}";;
+    [[ ${EXISTING_VOLUME:-0} != 1 ]] || echo existing-volume
+    if [[ $* == *project=vigara-caddy && ${PROXY_VOLUMES:-0} == 1 ]]; then
+      printf '%s\n' vigara-caddy_caddy-data vigara-caddy_caddy-config vigara-caddy_unrelated
+    fi;;
+  'volume inspect --format '*)
+    if [[ $* == *vigara-caddy_caddy-* ]]; then echo "${VOLUME_OWNER:-vigara-caddy}";
+    else echo "${VOLUME_OWNER:-vigara}"; fi;;
+  'volume inspect vigara-caddy_caddy-'*) [[ ${PROXY_VOLUMES:-0} == 1 ]];;
   'volume inspect '*) [[ ${NAMED_VOLUME:-0} == 1 ]];;
-  'rm -f '*|'volume rm '*) [[ ${FAIL_PURGE:-0} != 1 ]];;
+  'rm -f '*|'volume rm '*) [[ ${FAIL_PURGE:-0} != 1 && ${FAIL_REMOVE:-0} != 1 ]];;
   'container inspect '*) [[ ${CONFLICT_NAME:-0} == 1 ]];;
   'run '*) [[ ${FAIL_PERMISSIONS:-0} != 1 ]];;
   'network inspect --format '*) echo caddy-proxy;;
@@ -189,12 +196,42 @@ esac
         self.assertNotIn('volume rm ', self.calls.read_text())
 
     def test_orphaned_proxy_storage_requires_its_own_confirmation(self):
-        result = self.run_setup('\n\ny\nvigara.example.com\n\n\nn\n',
-                                proxy_answers='y\ny\nPURGE vigara-caddy\n', PROXY_STATE='missing',
-                                ORPHAN_PROXY='1')
+        result = self.run_setup('\n\ny\nvigara.example.com\n\n\ny\n',
+                                proxy_answers='y\npurge\nPURGE vigara-caddy\n', PROXY_STATE='missing',
+                                PROXY_VOLUMES='1')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('volume rm old-proxy-volume', self.calls.read_text())
+        self.assertIn('volume rm vigara-caddy_caddy-data', self.calls.read_text())
         self.assertIn('project vigara-caddy', result.stdout)
+
+    def test_proxy_directory_reset_archives_config_and_skips_volume_choice(self):
+        proxy = self.stacks_root / 'vigara-caddy'
+        proxy.mkdir(parents=True)
+        for name in ('compose.sh', 'compose.yml', '.env'):
+            (proxy / name).write_text('previous proxy configuration')
+        result = self.run_setup('\n\ny\nvigara.example.com\n\n\nn\n',
+                                proxy_answers='y\ny\nPURGE vigara-caddy\n',
+                                PROXY_STATE='missing', PROXY_VOLUMES='1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        backups = list(self.stacks_root.glob('vigara-caddy.before-reset.*'))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual((backups[0] / '.env').read_text(), 'previous proxy configuration')
+        self.assertIn('VIGARA_CADDY_CONTAINER=caddy-proxy', (proxy / '.env').read_text())
+        self.assertNotIn('Warning: existing volumes', result.stdout)
+        self.assertNotIn('purge-volumes.sh', result.stdout)
+
+    def test_proxy_container_reset_requires_separate_confirmation(self):
+        for confirmation in ('n', 'y\nPURGE vigara', 'y\nPURGE vigara-caddy'):
+            with self.subTest(confirmation=confirmation):
+                result = self.run_setup('\n\ny\nvigara.example.com\n\n\nn\n',
+                                        proxy_answers='y\n' + confirmation + '\n',
+                                        PROXY_STATE='missing', PROXY_CONTAINERS='1')
+                if confirmation.endswith('PURGE vigara-caddy'):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn('rm -f orphaned-proxy-container', self.calls.read_text())
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertNotIn('rm -f orphaned-proxy-container', self.calls.read_text())
+                    self.assertFalse(self.production.exists())
 
     def test_reset_archives_config_and_bind_data(self):
         self.assertEqual(self.run_setup('\n\nn\n\n\nn\nn\n').returncode, 0)
@@ -295,6 +332,99 @@ esac
         self.assertIn('oauth-authorization-server', calls)
         self.assertIn('OAuth authentication boundary verified', result.stdout)
         self.assertNotIn(' -k ', calls)
+
+    def test_existing_proxy_volumes_default_to_keep(self):
+        result = self.run_setup('\n\ny\nvigara.example.com\n\n\nn\n',
+                                proxy_answers='y\n\n', PROXY_STATE='missing', PROXY_VOLUMES='1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Warning: existing volumes', result.stdout)
+        self.assertIn('caddy-data:/data', (self.stacks_root / 'vigara-caddy' / 'compose.yml').read_text())
+        self.assertNotIn('volume rm', self.calls.read_text())
+
+    def test_keep_proxy_volumes_overrides_bind_storage(self):
+        result = self.run_setup('\n\ny\nvigara.example.com\n\n\nn\n', storage_answer='y',
+                                proxy_answers='y\nkeep\n', PROXY_STATE='missing', PROXY_VOLUMES='1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('source: ./data/postgres', (self.production / 'compose.yml').read_text())
+        proxy = self.stacks_root / 'vigara-caddy'
+        self.assertIn('caddy-data:/data', (proxy / 'compose.yml').read_text())
+        self.assertFalse((proxy / 'data').exists())
+
+    def test_proxy_purge_is_scoped_and_ordered(self):
+        result = self.run_setup('\n\ny\nvigara.example.com\n\n\ny\n',
+                                proxy_answers='y\npurge\nPURGE vigara-caddy\n',
+                                PROXY_STATE='missing', PROXY_VOLUMES='1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls.read_text()
+        removals = [line for line in calls.splitlines() if line.startswith('volume rm')]
+        self.assertEqual(removals, ['volume rm vigara-caddy_caddy-data', 'volume rm vigara-caddy_caddy-config'])
+        self.assertLess(calls.index(' pull'), calls.index('volume rm'))
+        self.assertLess(calls.index('volume rm'), calls.index(' up -d'))
+        self.assertNotIn('prune', calls)
+        self.assertNotIn(' down', calls)
+
+    def test_proxy_purge_deferred_and_rechecks_ownership(self):
+        result = self.run_setup('\n\ny\nvigara.example.com\n\n\nn\n',
+                                proxy_answers='y\npurge\nPURGE vigara-caddy\n',
+                                PROXY_STATE='missing', PROXY_VOLUMES='1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('purge-volumes.sh', result.stdout)
+        self.assertNotIn('volume rm', self.calls.read_text())
+        helper = self.stacks_root / 'vigara-caddy' / 'purge-volumes.sh'
+        result = subprocess.run(['bash', str(helper)], capture_output=True, text=True,
+                                env=dict(self.environment, PROXY_VOLUMES='1', VOLUME_OWNER='another-project'))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('ownership changed', result.stderr)
+        self.assertNotIn('volume rm', self.calls.read_text())
+
+    def test_proxy_purge_requires_confirmation(self):
+        for answer in ('purge\nwrong\n', 'cancel\n', 'purge\n'):
+            with self.subTest(answer=answer):
+                result = self.run_setup('\n\ny\nvigara.example.com\n\n\nn\n',
+                                        proxy_answers='y\n' + answer, PROXY_STATE='missing', PROXY_VOLUMES='1')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn('volume rm', self.calls.read_text())
+                self.assertFalse(self.production.exists())
+
+    def test_proxy_purge_refuses_container_references(self):
+        result = self.run_setup('\n\ny\nvigara.example.com\n\n\ny\n',
+                                proxy_answers='y\npurge\nPURGE vigara-caddy\n',
+                                PROXY_STATE='missing', PROXY_VOLUMES='1', VOLUME_IN_USE='1')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('container still references', result.stderr)
+        calls = self.calls.read_text()
+        self.assertNotIn('volume rm', calls)
+        self.assertNotIn(' up -d', calls)
+        self.assertTrue((self.production / '.env').exists())
+
+    def test_foreign_proxy_volume_rejected(self):
+        result = self.run_setup('\n\ny\nvigara.example.com\n\n\nn\n',
+                                proxy_answers='y\n', PROXY_STATE='missing', PROXY_VOLUMES='1', VOLUME_OWNER='other')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('not owned by vigara-caddy', result.stderr)
+        self.assertNotIn('volume rm', self.calls.read_text())
+        self.assertFalse(self.production.exists())
+
+    def test_proxy_purge_removal_failure_stops_startup(self):
+        result = self.run_setup('\n\ny\nvigara.example.com\n\n\ny\n',
+                                proxy_answers='y\npurge\nPURGE vigara-caddy\n',
+                                PROXY_STATE='missing', PROXY_VOLUMES='1', FAIL_REMOVE='1')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Proxy volume purge failed', result.stderr)
+        self.assertNotIn(' up -d', self.calls.read_text())
+        self.assertTrue((self.production / '.env').exists())
+
+    def test_proxy_purge_does_not_run_before_validation_or_pull(self):
+        for failure in ('FAIL_CONFIG', 'FAIL_PULL'):
+            with self.subTest(failure=failure):
+                result = self.run_setup('\n\ny\nvigara.example.com\n\n\ny\n',
+                                        proxy_answers='y\npurge\nPURGE vigara-caddy\n',
+                                        PROXY_STATE='missing', PROXY_VOLUMES='1', **{failure: '1'})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn('volume rm', self.calls.read_text())
+                if self.production.exists():
+                    shutil.rmtree(self.production)
+                    shutil.rmtree(self.stacks_root / 'vigara-caddy')
 
     def test_proxy_conflicts_and_remote_daemons(self):
         for environment in ({'BUSY_PORT': '1'}, {'BUSY_DOCKER_PORT': '1'},

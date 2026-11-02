@@ -96,6 +96,69 @@ require_local_docker() {
   [[ $socket =~ ^/[a-zA-Z0-9_./-]+$ && -S $socket ]] || fail 'Cannot access the local Docker socket.'
 }
 
+choose_proxy_volumes() {
+  local volume owner choice confirmation existing=''
+  # Inspect the exact names used by the bundled proxy template. Never adopt or
+  # delete a volume belonging to another project, even if its name collides.
+  for volume in "${proxy_project}_caddy-data" "${proxy_project}_caddy-config"; do
+    if docker volume inspect "$volume" >/dev/null 2>&1; then
+      owner=$(docker volume inspect --format '{{index .Labels "com.docker.compose.project"}}' "$volume")
+      [[ $owner == "$proxy_project" ]] || fail "Volume $volume is not owned by $proxy_project. Use its existing configuration or choose another project."
+      proxy_volumes+=("$volume")
+    fi
+  done
+  existing=$(docker volume ls -q --filter "label=com.docker.compose.project=$proxy_project")
+  [[ -n $existing || ${#proxy_volumes[@]} != 0 ]] || return 0
+  printf '\nWarning: existing volumes found for proxy project %s:\n%s\n' "$proxy_project" "$existing"
+  printf 'Other volumes are preserved. Only these Caddy volumes can be purged:\n'
+  printf '  %s\n' "${proxy_volumes[@]}"
+  printf 'Reusing Caddy volumes preserves certificates and configuration. Purging permanently deletes them.\n'
+  while true; do
+    ask choice 'Existing proxy volumes: keep, purge, or cancel' keep
+    case "$choice" in
+      keep)
+        if (( ${#proxy_volumes[@]} > 0 )); then
+          proxy_storage=volumes
+          printf 'Keeping existing Caddy named volumes, including when Vigara uses bind storage.\n'
+        fi
+        return 0;;
+      purge)
+        (( ${#proxy_volumes[@]} > 0 )) || fail 'No expected Caddy volumes are available to purge.'
+        ask confirmation "Type PURGE $proxy_project to permanently delete the listed Caddy volumes at startup" ''
+        [[ $confirmation == "PURGE $proxy_project" ]] || fail 'Purge confirmation did not match; no volumes were deleted.'
+        proxy_purge=true
+        return 0;;
+      cancel) fail 'Setup cancelled; no volumes were deleted.';;
+      *) printf 'Please enter keep, purge, or cancel.\n';;
+    esac
+  done
+}
+
+write_proxy_purge_helper() {
+  local directory=$1
+  {
+    printf '#!/usr/bin/env bash\nset -Eeuo pipefail\n'
+    printf 'project=%q\nvolumes=(' "$proxy_project"
+    printf ' %q' "${proxy_volumes[@]}"
+    printf ' )\n'
+    cat <<'BASH'
+# Recheck every target before deleting anything, including when started later.
+for volume in "${volumes[@]}"; do
+  docker volume inspect "$volume" >/dev/null 2>&1 || continue
+  owner=$(docker volume inspect --format '{{index .Labels "com.docker.compose.project"}}' "$volume")
+  [[ $owner == "$project" ]] || { echo "Refusing to purge $volume: project ownership changed." >&2; exit 1; }
+  consumers=$(docker ps -aq --filter "volume=$volume")
+  [[ -z $consumers ]] || { echo "Refusing to purge $volume: a container still references it." >&2; exit 1; }
+done
+for volume in "${volumes[@]}"; do
+  docker volume inspect "$volume" >/dev/null 2>&1 || continue
+  docker volume rm "$volume"
+done
+BASH
+  } > "$directory/purge-volumes.sh"
+  chmod 700 "$directory/purge-volumes.sh"
+}
+
 use_bind_storage() {
   local directory=$1 line source target
   # Convert only the known persistent mounts in our bundled templates. The
@@ -191,6 +254,9 @@ fi
 mode=direct
 proxy_action=none
 proxy_destination=''
+proxy_storage=$storage
+proxy_purge=false
+proxy_volumes=()
 if yesno 'Use Caddy Docker Proxy labels for automatic HTTPS?'; then
   mode=caddy
   command -v curl >/dev/null || fail 'Install curl to verify HTTPS readiness.'
@@ -222,9 +288,17 @@ if yesno 'Use Caddy Docker Proxy labels for automatic HTTPS?'; then
       proxy_action=create
       proxy_project="${project}-caddy"
       proxy_destination="$stacks_root/$proxy_project"
-      offer_fresh_start "$proxy_project" "$proxy_destination"
+      proxy_containers=$(docker ps -aq --filter "label=com.docker.compose.project=$proxy_project") || fail 'Cannot inventory existing proxy containers.'
+      proxy_reset=false
+      if [[ -n $proxy_containers || -e $proxy_destination || -L $proxy_destination ]]; then
+        offer_fresh_start "$proxy_project" "$proxy_destination"
+        proxy_reset=true
+      fi
       check_proxy_ports
       require_local_docker
+      # A complete reset already handled the proxy's storage. Volumes alone
+      # can instead be kept without resetting the project or its certificates.
+      if [[ $proxy_reset == false ]]; then choose_proxy_volumes; fi
       ask proxy_image 'Caddy Docker Proxy image' lucaslorentz/caddy-docker-proxy:alpine
       [[ $proxy_image =~ ^[a-zA-Z0-9][a-zA-Z0-9._/:@-]*$ ]] || fail 'Invalid proxy image reference.'
       ;;
@@ -322,7 +396,8 @@ if [[ $proxy_action == create ]]; then
   printf 'VIGARA_CADDY_IMAGE=%s\nVIGARA_CADDY_CONTAINER=%s\nVIGARA_PROXY_NETWORK=%s\nVIGARA_DOCKER_SOCKET=%s\n' \
     "$proxy_image" "$proxy" "$network" "$socket" > "$temporary/proxy/.env"
   write_helper "$temporary/proxy" "$proxy_project"
-  if [[ $storage == bind ]]; then use_bind_storage "$temporary/proxy"; fi
+  if [[ $proxy_storage == bind ]]; then use_bind_storage "$temporary/proxy"; fi
+  if [[ $proxy_purge == true ]]; then write_proxy_purge_helper "$temporary/proxy"; fi
   bash "$temporary/proxy/compose.sh" config --quiet
   mv -T -- "$temporary/proxy" "$proxy_destination"
 fi
@@ -335,7 +410,7 @@ printf 'Shared Compose root: %s\n' "$stacks_root"
 printf 'Persistent storage: %s\nContainer names: %s-app, %s-postgres\n' "$storage" "$project" "$project"
 if [[ $storage == bind ]]; then
   printf 'Vigara data: %s/data\n' "$destination"
-  [[ $proxy_action != create ]] || printf 'Caddy data: %s/data\n' "$proxy_destination"
+  [[ $proxy_action != create || $proxy_storage != bind ]] || printf 'Caddy data: %s/data\n' "$proxy_destination"
 fi
 printf 'When enrolling the host agent, set VIGARA_COMPOSE_MANAGED_ROOT=%q for new managed stacks.\n' "$stacks_root"
 if [[ -n $mcp_origin ]]; then
@@ -344,7 +419,9 @@ fi
 printf 'Manage this deployment with: bash %q/compose.sh ps\n' "$destination"
 if ! yesno 'Pull images and start Vigara (and the approved proxy) now?'; then
   if [[ $proxy_action == create ]]; then
-    printf 'Start Caddy first:\n  docker network inspect %q >/dev/null 2>&1 || docker network create %q\n  bash %q/compose.sh pull\n  bash %q/compose.sh up -d --wait --wait-timeout 120\n' "$network" "$network" "$proxy_destination" "$proxy_destination"
+    printf 'Start Caddy first:\n  docker network inspect %q >/dev/null 2>&1 || docker network create %q\n  bash %q/compose.sh pull\n' "$network" "$network" "$proxy_destination"
+    [[ $proxy_purge != true ]] || printf '  bash %q/purge-volumes.sh # Permanently delete the approved Caddy volumes\n' "$proxy_destination"
+    printf '  bash %q/compose.sh up -d --wait --wait-timeout 120\n' "$proxy_destination"
   elif [[ $proxy_action == start ]]; then
     printf 'Start Caddy first: docker start %q\n' "$proxy"
   fi
@@ -356,6 +433,9 @@ if ! yesno 'Pull images and start Vigara (and the approved proxy) now?'; then
 fi
 if [[ $proxy_action == create ]]; then
   bash "$proxy_destination/compose.sh" pull || fail "Proxy image pull failed. Retry with $proxy_destination/compose.sh pull. Configuration is retained."
+  if [[ $proxy_purge == true ]]; then
+    bash "$proxy_destination/purge-volumes.sh" || fail 'Proxy volume purge failed. Configuration is retained; inspect the volumes before retrying.'
+  fi
   docker network inspect "$network" >/dev/null 2>&1 || docker network create "$network" >/dev/null
   bash "$proxy_destination/compose.sh" up -d --wait --wait-timeout 120 || fail "Proxy startup failed. Inspect with: bash $proxy_destination/compose.sh logs --tail 100"
 elif [[ $proxy_action == start ]]; then

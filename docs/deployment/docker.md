@@ -55,11 +55,13 @@ Unrecognized directories, symlink deployment directories, and an unlabelled
 database volume with a conflicting name require manual resolution.
 
 If the selected proxy container is missing but its separate `<project>-caddy`
-stack still has resources, resetting that stack requires its own approval and
+stack still has containers or a deployment directory, resetting that stack requires its own approval and
 `PURGE <project>-caddy` confirmation. Deleting proxy volumes loses its saved TLS
 certificates and state. A running or stopped existing proxy is reused through the
 normal prompts. Reset requires a local Unix Docker context; any deletion failure
 stops installation, potentially leaving a partially removed project to inspect.
+If only proxy volumes remain, use the keep/purge/cancel choice described below;
+keeping them does not require a destructive project reset.
 
 ### Choose persistent storage and container names
 
@@ -78,8 +80,9 @@ Bind storage requires a local Unix Docker context and a Compose root without
 commas. Paths with spaces are supported. The installer creates fresh private
 directories and generates explicit bind mounts with `create_host_path: false`;
 no named data volumes are declared in those generated deployments. The choice
-also applies to a newly deployed Caddy proxy. A reused proxy keeps its existing
-storage configuration.
+also applies to a newly deployed Caddy proxy. Keeping existing Caddy volumes
+overrides this choice for the proxy only, so its certificates and configuration
+remain mounted. A reused proxy keeps its existing storage configuration.
 
 PostgreSQL initializes ownership and permissions on its fresh database
 directory. The direct-port setup also generates `prepare-storage.sh` to give
@@ -107,10 +110,25 @@ restore procedures for database recovery.
 ### Optional Caddy bootstrap
 
 When you approve a new proxy, the installer checks that TCP ports 80 and 443 are
-free, including Docker-published ports, and that the selected proxy project has
-no existing containers, volumes or deployment directory. It requires `ss`
+free, including Docker-published ports. Existing proxy containers or a deployment
+directory require the separately confirmed fresh-start reset described above. It requires `ss`
 (normally supplied by `iproute2`), `curl`, and a local Unix Docker socket. Remote
 Docker contexts are rejected for automatic proxy deployment.
+
+If proxy volumes remain from a previous deployment, setup lists them and offers
+**keep** (the default), **purge**, or **cancel**. Keeping reuses the expected
+`<project>-caddy_caddy-data` and `<project>-caddy_caddy-config` named volumes.
+Purging requires typing `PURGE <project>-caddy` and permanently deletes only
+those two volumes that already exist; Caddy starts with fresh storage and must
+obtain certificates again. Other volumes, projects, bind directories and the
+Vigara database are preserved. A conflicting volume owned by another project
+is rejected.
+
+No volume is deleted while generating configuration. An approved purge runs
+after the proxy image is pulled and before proxy startup. If startup is deferred,
+run the printed `purge-volumes.sh` command before the proxy's `up` command.
+The helper rechecks ownership and refuses to delete any target referenced by a
+running or stopped container. It never forces removal or prunes Docker volumes.
 
 With the default project name, the proxy files are written under
 `<compose-root>/vigara-caddy/` and Vigara under `<compose-root>/vigara/`. The proxy
