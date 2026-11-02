@@ -226,3 +226,24 @@ func has(v []string, want string) bool {
 	}
 	return false
 }
+
+func TestCredentialScanAllowsOnlySecretFreeSubstitutions(t *testing.T) {
+	for _, value := range []string{"postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db/vigara", "postgres://${USER}:${PASSWORD:?Set PASSWORD}@db/vigara", "https://example.com"} {
+		if containsCredentialURL(value) {
+			t.Errorf("safe substitution rejected: %s", value)
+		}
+	}
+	for _, value := range []string{"postgres://user:literal-secret@db/vigara", "postgres://${USER}:${PASSWORD:-fallback-secret}@db/vigara", "postgres://${USER}:literal-secret@db/vigara"} {
+		if !containsCredentialURL(value) {
+			t.Errorf("literal credential accepted: %s", value)
+		}
+	}
+	for _, value := range []string{"${KEY}", "${KEY:-}", "${KEY:?Set KEY}"} {
+		if containsSensitiveField(map[string]any{"API_KEY": value}) {
+			t.Errorf("substitution rejected: %s", value)
+		}
+	}
+	if !containsSensitiveField(map[string]any{"API_KEY": "${KEY:-literal-secret}"}) {
+		t.Fatal("secret fallback accepted")
+	}
+}

@@ -1,6 +1,6 @@
 export type StackSummary = {
   id: string; name: string; projectName: string; commit: string; valid: boolean; assigned: boolean
-  agentId: string; deviceName?: string; directory?: string; serviceCount: number; draft?: boolean
+  agentId: string; deviceName?: string; directory?: string; serviceCount: number; draft?: boolean; imported?: boolean
   digest?: string; deploymentDigest?: string; deploymentStatus?: string; deploymentCommit?: string; deploymentAt?: string
 }
 export type StackHost = { agentId: string; name: string; state: string; truncated?: boolean; containers: { project?: string; state: string }[] }
@@ -18,7 +18,7 @@ export function stackStatus(stack: StackSummary) {
   if (stack.deploymentStatus === 'failed') return 'Deployment failed'
   if (stack.deploymentStatus === 'unknown') return 'Check deployment'
   if (stack.deploymentStatus === 'succeeded') return (stack.digest && stack.deploymentDigest ? stack.digest === stack.deploymentDigest : stack.deploymentCommit === stack.commit) ? 'Deployed' : 'Saved changes'
-  return 'Not deployed'
+  return stack.imported ? 'Imported' : 'Not deployed'
 }
 export function filterStacks(stacks: StackSummary[], query: string, device: string, sort: string) {
   const words = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean)

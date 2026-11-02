@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 )
 
 // New targets are confined to a local operator's managed root. An existing project
@@ -44,6 +45,26 @@ func (r *Runner) lookup(id string) (Target, bool) {
 	if e != nil {
 		return Target{}, false
 	}
+	registry := filepath.Join(root, ".vigara-import", "targets", id+".json")
+	if info, err := os.Lstat(registry); err == nil && info.Mode().IsRegular() && info.Size() <= 4096 {
+		actual, err := filepath.EvalSymlinks(registry)
+		if err != nil || actual != registry {
+			return Target{}, false
+		}
+		data, err := os.ReadFile(registry)
+		var t Target
+		if err != nil || json.Unmarshal(data, &t) != nil || !t.Imported || !stack.ValidProject(t.ProjectName) {
+			return Target{}, false
+		}
+		rel, err := filepath.Rel(root, t.Directory)
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+			return Target{}, false
+		}
+		if real, err := filepath.EvalSymlinks(t.Directory); err != nil || real != t.Directory {
+			return Target{}, false
+		}
+		return t, true
+	}
 	dir := filepath.Join(root, id)
 	if actual, e := filepath.EvalSymlinks(dir); e != nil || actual != dir {
 		return Target{}, false
@@ -70,6 +91,15 @@ func (r *Runner) TargetInfo() protocol.ComposeTargets {
 	for id, t := range r.Targets {
 		out.Targets = append(out.Targets, protocol.ComposeTargetInfo{ID: id, ProjectName: t.ProjectName, Directory: t.Directory})
 	}
+	if root, e := r.managedRoot(); e == nil {
+		entries, _ := os.ReadDir(filepath.Join(root, ".vigara-import", "targets"))
+		for _, entry := range entries {
+			id := strings.TrimSuffix(entry.Name(), ".json")
+			if t, ok := r.lookup(id); ok {
+				out.Targets = append(out.Targets, protocol.ComposeTargetInfo{ID: id, ProjectName: t.ProjectName, Directory: t.Directory})
+			}
+		}
+	}
 	sort.Slice(out.Targets, func(i, j int) bool { return out.Targets[i].ID < out.Targets[j].ID })
 	return out
 }
@@ -89,6 +119,9 @@ func (r *Runner) CreateTarget(ctx context.Context, q protocol.ComposeCreateTarge
 	}
 	out.Directory = filepath.Join(root, q.ID)
 	if existing, ok := r.lookup(q.ID); ok {
+		if existing.Imported {
+			return out, errTarget
+		}
 		if existing.ProjectName == q.ProjectName {
 			return out, nil
 		}
@@ -99,6 +132,12 @@ func (r *Runner) CreateTarget(ctx context.Context, q protocol.ComposeCreateTarge
 		return out, errTarget
 	}
 	// A second managed stack cannot claim this Compose project name.
+	imports, _ := os.ReadDir(filepath.Join(root, ".vigara-import", "targets"))
+	for _, entry := range imports {
+		if t, ok := r.lookup(strings.TrimSuffix(entry.Name(), ".json")); ok && t.ProjectName == q.ProjectName {
+			return out, errTarget
+		}
+	}
 	entries, _ := os.ReadDir(root)
 	for _, entry := range entries {
 		if t, ok := r.lookup(entry.Name()); ok && t.ProjectName == q.ProjectName {

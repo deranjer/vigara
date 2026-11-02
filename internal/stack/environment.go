@@ -9,7 +9,7 @@ import (
 
 // WithEncryptedInput edits the metadata document while preserving YAML comments.
 func WithEncryptedInput(source, file string, refs []RecipientRef) (string, error) {
-	if !ValidPath(file) || !strings.HasSuffix(file, ".sops") {
+	if !ValidPath(file) || (!strings.HasSuffix(file, ".sops") && !strings.HasSuffix(file, ".age")) {
 		return "", ErrInvalid
 	}
 	var doc yaml.Node
@@ -47,6 +47,17 @@ func WithEncryptedInput(source, file string, refs []RecipientRef) (string, error
 		return "", ErrInvalid
 	}
 	found := false
+	format := "sops-binary"
+	if strings.HasSuffix(file, ".age") {
+		format = "age-dotenv"
+	}
+	if serviceInputs := lookup(compose, "environmentFiles"); serviceInputs != nil {
+		for _, input := range serviceInputs.Content {
+			if p := lookup(input, "path"); p != nil && p.Value == file {
+				found = true
+			}
+		}
+	}
 	for _, input := range inputs.Content {
 		if input.Kind != yaml.MappingNode {
 			return "", ErrInvalid
@@ -54,13 +65,13 @@ func WithEncryptedInput(source, file string, refs []RecipientRef) (string, error
 		p := lookup(input, "path")
 		if p != nil && p.Value == file {
 			set(input, "sensitivity", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "encrypted"})
-			set(input, "format", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "sops-binary"})
+			set(input, "format", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: format})
 			found = true
 		}
 	}
 	if !found {
 		var n yaml.Node
-		if n.Encode(Input{Path: file, Purpose: "stack", Sensitivity: "encrypted", Format: "sops-binary"}) != nil {
+		if n.Encode(Input{Path: file, Purpose: "stack", Sensitivity: "encrypted", Format: format}) != nil {
 			return "", ErrInvalid
 		}
 		inputs.Content = append(inputs.Content, &n)

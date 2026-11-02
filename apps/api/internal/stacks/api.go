@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -33,6 +34,7 @@ type Binding struct {
 	Directory   string                           `json:"directory,omitempty"`
 	DisplayName string                           `json:"displayName,omitempty"`
 	Recipients  []composesecrets.RecipientRecord `json:"recipients,omitempty"`
+	Imported    bool                             `json:"imported,omitempty"`
 }
 type Config struct {
 	GitHub             *githubapp.Client
@@ -96,7 +98,14 @@ func FromEnv() (*stackgit.Repository, map[string]Binding, error) {
 	return &stackgit.Repository{Directory: dir, Remote: os.Getenv("VIGIRA_STACK_GIT_URL"), Branch: branch}, targets, nil
 }
 func Register(mux *http.ServeMux, c Config) *API {
+	if c.CentralAgeIdentity == "" {
+		c.CentralAgeIdentity = filepath.Join(importKeyDirectory(c), "editor.age")
+	}
 	a := &API{c}
+	mux.HandleFunc("POST /api/stacks/imports/discover", a.discoverImports)
+	mux.HandleFunc("POST /api/stacks/imports/preview", a.previewImport)
+	mux.HandleFunc("POST /api/stacks/imports", a.importExisting)
+	mux.HandleFunc("GET /api/stacks/imports/recovery", a.importRecovery)
 	mux.HandleFunc("GET /api/stacks", a.list)
 	mux.HandleFunc("GET /api/stack-placements", a.getPlacements)
 	mux.HandleFunc("PUT /api/stack-placements", a.savePlacements)
@@ -286,7 +295,7 @@ func (a *API) list(w http.ResponseWriter, r *http.Request) {
 			fail(w, e)
 			return
 		}
-		summaries = append(summaries, map[string]any{"id": s.ID, "name": name, "projectName": project, "commit": s.Commit, "digest": stack.Digest(s), "valid": validation == nil, "assigned": assigned, "agentId": b.AgentID, "deviceName": names[b.AgentID], "directory": b.Directory, "serviceCount": serviceCount(s, m), "draft": draftPresent, "deploymentStatus": latest.Status, "deploymentCommit": latest.Commit, "deploymentDigest": latest.Digest, "deploymentAt": latest.CreatedAt})
+		summaries = append(summaries, map[string]any{"id": s.ID, "name": name, "projectName": project, "commit": s.Commit, "digest": stack.Digest(s), "valid": validation == nil, "assigned": assigned, "agentId": b.AgentID, "deviceName": names[b.AgentID], "directory": b.Directory, "serviceCount": serviceCount(s, m), "draft": draftPresent, "imported": b.Imported, "deploymentStatus": latest.Status, "deploymentCommit": latest.Commit, "deploymentDigest": latest.Digest, "deploymentAt": latest.CreatedAt})
 	}
 	sort.Slice(summaries, func(i, j int) bool { return summaries[i]["name"].(string) < summaries[j]["name"].(string) })
 	targets := []map[string]string{}
@@ -769,6 +778,7 @@ func (a *API) tick(ctx context.Context) {
 	if e != nil {
 		return
 	}
+	a.reconcileImported(ctx, c)
 	var id, agent, token, stackID string
 	var raw, imageBytes []byte
 	var pull bool

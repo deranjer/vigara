@@ -70,3 +70,15 @@ func TestEnvironmentMetadataPreservesCommentsAndInputOrder(t *testing.T) {
 		t.Fatalf("input order or metadata changed: %+v %v", m.Compose.InterpolationFiles, e)
 	}
 }
+
+func TestEncryptedEnvironmentMappingsRejectUnsafeDestinations(t *testing.T) {
+	base := "apiVersion: vigara.io/v1\nkind: Stack\nstackId: demo\ndisplayName: Demo\nprojectName: demo\ncompose:\n  files: [compose.yaml]\n  projectDirectory: .\n  interpolationFiles: []\n  environmentFiles:\n    - {path: secrets/runtime.age, target: TARGET, purpose: deployment, sensitivity: encrypted, format: age-dotenv}\nsecretRecipientRefs:\n  - {class: central-editor, keyRef: editor-main}\n  - {class: target-agent, keyRef: agent-main}\n  - {class: operator-recovery, keyRef: recovery-main}\nconfigurationRevisionPolicy: sha256-git-tree-and-placement-inputs-v1\n"
+	for _, target := range []string{".env", "runtime/app.env", "../outside.env", "/absolute.env", "compose.yaml", "compose.yaml/nested", "vigara-stack.yaml", "secrets", "secrets/runtime.age", ".vigara-import/identity.age"} {
+		s := Snapshot{ID: "demo", Files: map[string]string{"vigara-stack.yaml": strings.ReplaceAll(base, "TARGET", target), "compose.yaml": "services:\n  app:\n    image: nginx\n", "secrets/runtime.age": "encrypted fixture"}}
+		_, err := Validate(s)
+		valid := target == ".env" || target == "runtime/app.env"
+		if (err == nil) != valid {
+			t.Errorf("destination %q: %v", target, err)
+		}
+	}
+}

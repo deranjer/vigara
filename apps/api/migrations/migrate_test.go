@@ -73,7 +73,7 @@ func TestApplyFreshDatabaseAndRestart(t *testing.T) {
 	if err := Apply(u); err != nil {
 		t.Fatal(err)
 	}
-	assertVersion(t, conn, 1, false)
+	assertVersion(t, conn, 2, false)
 	if _, err := conn.Exec(context.Background(), "INSERT INTO devices (display_name) VALUES ('keep across restart')"); err != nil {
 		t.Fatal(err)
 	}
@@ -84,15 +84,15 @@ func TestApplyFreshDatabaseAndRestart(t *testing.T) {
 	if err := conn.QueryRow(context.Background(), "SELECT count(*) FROM devices WHERE display_name = 'keep across restart'").Scan(&count); err != nil || count != 1 {
 		t.Fatalf("restart lost data: count=%d err=%v", count, err)
 	}
-	assertVersion(t, conn, 1, false)
+	assertVersion(t, conn, 2, false)
 }
 
-func TestInitialSchemaIsTheOnlyMigration(t *testing.T) {
+func TestInitialSchemaIsConsolidated(t *testing.T) {
 	entries, err := files.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 2 || entries[0].Name() != "000001_initial_schema.down.sql" || entries[1].Name() != "000001_initial_schema.up.sql" {
+	if len(entries) != 4 || entries[0].Name() != "000001_initial_schema.down.sql" || entries[1].Name() != "000001_initial_schema.up.sql" {
 		t.Fatalf("unexpected migration files: %v", entries)
 	}
 }
@@ -139,7 +139,7 @@ func TestInitialSchemaIncludesCurrentFeaturesAndSupportsReset(t *testing.T) {
 	if err = Apply(u); err != nil {
 		t.Fatalf("reinitialize: %v", err)
 	}
-	assertVersion(t, conn, 1, false)
+	assertVersion(t, conn, 2, false)
 }
 
 func TestApplyConcurrentStarts(t *testing.T) {
@@ -158,7 +158,7 @@ func TestApplyConcurrentStarts(t *testing.T) {
 			t.Errorf("concurrent startup: %v", err)
 		}
 	}
-	assertVersion(t, conn, 1, false)
+	assertVersion(t, conn, 2, false)
 }
 
 func TestApplyRejectsFailedMigration(t *testing.T) {
@@ -189,4 +189,33 @@ func TestApplyRejectsNewerSchema(t *testing.T) {
 		t.Fatal("accepted a database newer than the bundled migrations")
 	}
 	assertVersion(t, conn, 999999, false)
+}
+
+func TestImportMigrationPreservesExistingGitSettings(t *testing.T) {
+	u, conn := testDatabase(t)
+	initial, err := files.ReadFile("000001_initial_schema.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	onlyInitial := fstest.MapFS{"000001_initial_schema.up.sql": &fstest.MapFile{Data: initial}}
+	if err = apply(onlyInitial, u); err != nil {
+		t.Fatal(err)
+	}
+	assertVersion(t, conn, 1, false)
+	ctx := context.Background()
+	if _, err = conn.Exec(ctx, "INSERT INTO stack_git_settings(singleton,remote,branch) VALUES(true,'https://github.com/owner/existing.git','main')"); err != nil {
+		t.Fatal(err)
+	}
+	if err = Apply(u); err != nil {
+		t.Fatal(err)
+	}
+	assertVersion(t, conn, 2, false)
+	var remote string
+	if err = conn.QueryRow(ctx, "SELECT remote FROM stack_git_settings WHERE singleton").Scan(&remote); err != nil || remote != "https://github.com/owner/existing.git" {
+		t.Fatal("upgrade lost Git setup", remote, err)
+	}
+	var columns int
+	if err = conn.QueryRow(ctx, "SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='stack_bindings' AND column_name IN ('recipients','imported')").Scan(&columns); err != nil || columns != 2 {
+		t.Fatal("missing import metadata", columns, err)
+	}
 }

@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/deranjer/vigara/apps/agent/internal/channel"
 	"github.com/deranjer/vigara/internal/composesecrets"
@@ -30,6 +31,7 @@ import (
 type Target struct {
 	ProjectName string `json:"projectName"`
 	Directory   string `json:"directory"`
+	Imported    bool   `json:"imported,omitempty"`
 }
 type Plan = stack.Plan
 type Request = stack.DeployRequest
@@ -98,6 +100,26 @@ func imageOverride(file string, images map[string]string) error {
 }
 
 func Register(c *channel.Client, r *Runner) {
+	c.Calls[protocol.MethodComposeDiscover] = func(ctx context.Context, p json.RawMessage) (any, error) { return r.DiscoverImports(ctx) }
+	for method, handler := range map[string]func(context.Context, protocol.ComposeImportRequest) (any, error){
+		protocol.MethodComposeImportPreview: func(ctx context.Context, q protocol.ComposeImportRequest) (any, error) {
+			return r.PreviewImport(ctx, q)
+		},
+		protocol.MethodComposeImportPrepare: func(ctx context.Context, q protocol.ComposeImportRequest) (any, error) {
+			return r.PrepareImport(ctx, q)
+		},
+		protocol.MethodComposeImportConfirm: func(ctx context.Context, q protocol.ComposeImportRequest) (any, error) {
+			return r.ConfirmImport(ctx, q)
+		},
+	} {
+		c.Calls[method] = func(ctx context.Context, p json.RawMessage) (any, error) {
+			var q protocol.ComposeImportRequest
+			if json.Unmarshal(p, &q) != nil {
+				return nil, stack.ErrInvalid
+			}
+			return handler(ctx, q)
+		}
+	}
 	c.Calls[protocol.MethodComposeTargets] = func(ctx context.Context, p json.RawMessage) (any, error) { return r.TargetInfo(), nil }
 	c.Calls[protocol.MethodComposeCreate] = func(ctx context.Context, p json.RawMessage) (any, error) {
 		var q protocol.ComposeCreateTarget
@@ -119,7 +141,11 @@ func Register(c *channel.Client, r *Runner) {
 		if json.Unmarshal(p, &q) != nil {
 			return nil, stack.ErrInvalid
 		}
-		result, err := r.Deploy(ctx, q)
+		// The host owns execution once accepted. A Vigara self-update must not
+		// kill Compose when replacing the server closes its channel connection.
+		deployCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Minute)
+		defer cancel()
+		result, err := r.Deploy(deployCtx, q)
 		if err != nil {
 			status := "failed"
 			if errors.Is(err, errJournal) {
@@ -137,8 +163,6 @@ func Register(c *channel.Client, r *Runner) {
 		if json.Unmarshal(p, &q) != nil || !stack.ValidID(q.StackID) || !stack.CommitPattern.MatchString(q.JobID) {
 			return nil, stack.ErrInvalid
 		}
-		r.mu.Lock()
-		defer r.mu.Unlock()
 		t, ok := r.lookup(q.StackID)
 		if !ok {
 			return nil, errTarget
@@ -195,6 +219,11 @@ func fingerprint(t Target, s stack.Snapshot) (string, error) {
 	for p := range s.Files {
 		keys = append(keys, p)
 	}
+	if m, err := stack.Validate(s); err == nil {
+		for _, input := range m.Compose.EnvironmentFiles {
+			keys = append(keys, input.Target)
+		}
+	}
 	sort.Strings(keys)
 	for _, p := range keys {
 		if e := safeFile(t.Directory, p); e != nil {
@@ -247,7 +276,7 @@ func (w *limitWriter) Write(p []byte) (int, error) {
 	return w.Buffer.Write(p)
 }
 
-func (r *Runner) workspace(ctx context.Context, s stack.Snapshot, m stack.Manifest) (string, []string, error) {
+func (r *Runner) workspace(ctx context.Context, s stack.Snapshot, m stack.Manifest, original ...string) (string, []string, error) {
 	dir, e := os.MkdirTemp("", "vigara-compose-")
 	if e != nil {
 		return "", nil, errTarget
@@ -259,12 +288,16 @@ func (r *Runner) workspace(ctx context.Context, s stack.Snapshot, m stack.Manife
 			return fail(errTarget)
 		}
 	}
-	args := []string{"compose", "-p", m.ProjectName, "--project-directory", dir}
+	projectDir := dir
+	if len(original) > 0 && original[0] != "" {
+		projectDir = original[0]
+	}
+	args := []string{"compose", "-p", m.ProjectName, "--project-directory", projectDir}
 	for _, p := range m.Compose.Files {
 		args = append(args, "-f", filepath.Join(dir, filepath.FromSlash(p)))
 	}
 	for i, input := range m.Compose.InterpolationFiles {
-		plain, e := composesecrets.DecryptDotenv(ctx, r.SOPS, r.Identity, []byte(s.Files[input.Path]))
+		plain, e := composesecrets.DecryptDotenv(ctx, r.SOPS, r.identityPath(), []byte(s.Files[input.Path]))
 		if e != nil {
 			return fail(errors.New("encrypted environment could not be decrypted on this device"))
 		}
@@ -274,7 +307,97 @@ func (r *Runner) workspace(ctx context.Context, s stack.Snapshot, m stack.Manife
 		}
 		args = append(args, "--env-file", env)
 	}
+	for _, input := range m.Compose.EnvironmentFiles {
+		plain, err := composesecrets.DecryptDotenv(ctx, r.SOPS, r.identityPath(), []byte(s.Files[input.Path]))
+		if err != nil {
+			return fail(errors.New("encrypted service environment could not be decrypted on this device"))
+		}
+		file := filepath.Join(dir, filepath.FromSlash(input.Target))
+		if os.MkdirAll(filepath.Dir(file), 0700) != nil || os.WriteFile(file, plain, 0600) != nil {
+			return fail(errTarget)
+		}
+	}
+	for _, path := range m.Compose.Files {
+		var doc map[string]any
+		if yaml.Unmarshal([]byte(s.Files[path]), &doc) != nil {
+			return fail(stack.ErrInvalid)
+		}
+		services, _ := doc["services"].(map[string]any)
+		for _, value := range services {
+			service, _ := value.(map[string]any)
+			if service == nil {
+				continue
+			}
+			if raw, exists := service["env_file"]; exists {
+				refs, err := environmentReferences(raw)
+				if err != nil {
+					return fail(err)
+				}
+				mapped := []any{}
+				for _, ref := range refs {
+					found := false
+					for _, input := range m.Compose.EnvironmentFiles {
+						if input.Target == ref {
+							mapped = append(mapped, filepath.Join(dir, filepath.FromSlash(input.Target)))
+							found = true
+							break
+						}
+					}
+					if !found {
+						return fail(errors.New("service env_file must reference a declared encrypted environment file"))
+					}
+				}
+				service["env_file"] = mapped
+			}
+		}
+		raw, err := yaml.Marshal(doc)
+		if err != nil || os.WriteFile(filepath.Join(dir, filepath.FromSlash(path)), raw, 0600) != nil {
+			return fail(errTarget)
+		}
+	}
 	return dir, args, nil
+}
+
+func environmentReferences(raw any) ([]string, error) {
+	var items []any
+	switch v := raw.(type) {
+	case string:
+		items = []any{v}
+	case []any:
+		items = v
+	default:
+		return nil, stack.ErrInvalid
+	}
+	refs := []string{}
+	for _, item := range items {
+		var path string
+		switch v := item.(type) {
+		case string:
+			path = v
+		case map[string]any:
+			var ok bool
+			path, ok = v["path"].(string)
+			if !ok || len(v) > 2 || v["format"] != nil {
+				return nil, stack.ErrInvalid
+			}
+			for key := range v {
+				if key != "path" && key != "required" {
+					return nil, stack.ErrInvalid
+				}
+			}
+			if required, exists := v["required"]; exists && required != true {
+				return nil, stack.ErrInvalid
+			}
+		default:
+			return nil, stack.ErrInvalid
+		}
+		path = strings.TrimPrefix(path, "./")
+		if !stack.ValidPath(path) {
+			return nil, stack.ErrInvalid
+		}
+		refs = append(refs, path)
+	}
+	return refs, nil
 }
 
 // model checks storage before applying. Relative binds are resolved against the original approved directory.
@@ -314,7 +437,7 @@ func (r *Runner) modelWithImages(ctx context.Context, s stack.Snapshot, t Target
 			if !ok {
 				return plan, stack.ErrInvalid
 			}
-			for _, key := range []string{"build", "develop", "extends", "env_file", "configs", "secrets", "post_start", "pre_start", "pre_stop", "label_file", "credential_spec", "use_api_socket", "provider", "profiles"} {
+			for _, key := range []string{"build", "develop", "extends", "configs", "secrets", "post_start", "pre_start", "pre_stop", "label_file", "credential_spec", "use_api_socket", "provider", "profiles"} {
 				if _, ok := service[key]; ok {
 					return plan, errors.New("this runner supports image-based stacks with encrypted interpolation; builds, includes, hooks and service file inputs need migration first")
 				}
@@ -329,14 +452,18 @@ func (r *Runner) modelWithImages(ctx context.Context, s stack.Snapshot, t Target
 						source, _ = mount["source"].(string)
 					}
 					// Parent-relative or interpolated storage paths cannot be proven equivalent in the private validation workspace.
-					if strings.Contains(source, "$") || source == ".." || strings.HasPrefix(source, "../") || strings.Contains(source, "/../") {
+					if !t.Imported && (strings.Contains(source, "$") || source == ".." || strings.HasPrefix(source, "../") || strings.Contains(source, "/../")) {
 						return plan, errors.New("bind sources must use explicit absolute paths or paths inside the approved project directory")
 					}
 				}
 			}
 		}
 	}
-	dir, args, e := r.workspace(ctx, s, m)
+	projectDir := ""
+	if t.Imported {
+		projectDir = t.Directory
+	}
+	dir, args, e := r.workspace(ctx, s, m, projectDir)
 	if e != nil {
 		return plan, e
 	}
@@ -398,7 +525,7 @@ func (r *Runner) modelWithImages(ctx context.Context, s stack.Snapshot, t Target
 		}
 	}
 	for name, svc := range model.Services {
-		if !immutableImage.MatchString(svc.Image) || svc.Build != nil || svc.Develop != nil || svc.Extends != nil || svc.EnvFile != nil || svc.Configs != nil || svc.Secrets != nil || svc.PostStart != nil || svc.PreStop != nil || svc.PreStart != nil {
+		if !immutableImage.MatchString(svc.Image) || svc.Build != nil || svc.Develop != nil || svc.Extends != nil || (svc.EnvFile != nil && len(m.Compose.EnvironmentFiles) == 0) || svc.Configs != nil || svc.Secrets != nil || svc.PostStart != nil || svc.PreStop != nil || svc.PreStart != nil {
 			return plan, errors.New("this runner supports image-based stacks with interpolation inputs; builds, hooks and service file inputs need migration first")
 		}
 		for _, v := range svc.Volumes {
@@ -556,6 +683,31 @@ func (r *Runner) Deploy(ctx context.Context, q Request) (stack.Result, error) {
 		if e != nil || closeErr != nil || os.Rename(tmp, full) != nil {
 			os.Remove(tmp)
 			return fail("write", "Could not replace a stack file.")
+		}
+	}
+	for _, input := range m.Compose.EnvironmentFiles {
+		if safeFile(t.Directory, input.Target) != nil {
+			return fail("write", "Environment target path changed.")
+		}
+		plain, e := os.ReadFile(filepath.Join(dir, filepath.FromSlash(input.Target)))
+		if e != nil {
+			return fail("write", "Could not prepare environment input.")
+		}
+		full := filepath.Join(t.Directory, filepath.FromSlash(input.Target))
+		if os.MkdirAll(filepath.Dir(full), 0700) != nil {
+			return fail("write", "Could not prepare environment target.")
+		}
+		f, e := os.CreateTemp(filepath.Dir(full), ".vigara-env-")
+		if e != nil {
+			return fail("write", "Could not save environment input.")
+		}
+		temporary := f.Name()
+		_ = f.Chmod(0600)
+		_, e = f.Write(plain)
+		closeErr := f.Close()
+		if e != nil || closeErr != nil || os.Rename(temporary, full) != nil {
+			os.Remove(temporary)
+			return fail("write", "Could not save environment input.")
 		}
 	}
 	// Use the approved original project directory, not the validation workspace, for relative storage.
