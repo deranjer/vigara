@@ -15,7 +15,7 @@ type Props = {
 // Plaintext lives only in this short-lived form. It never enters the stack
 // draft, query cache, Monaco model, local/session storage or URL.
 export function SecretEditor({ id, files, busy, persistDraft, onBusy, onEncrypted }: Props) {
-  const [path, setPath] = useState('secrets/runtime.env.sops')
+  const [path, setPath] = useState(() => Object.keys(files).find((file) => file.endsWith('.age')) || 'secrets/runtime.env.sops')
   const [value, setValue] = useState('')
   const [editing, setEditing] = useState(false)
   const [source, setSource] = useState<Source | null>(null)
@@ -113,6 +113,7 @@ export function SecretEditor({ id, files, busy, persistDraft, onBusy, onEncrypte
     <Title order={3}>Encrypted environment</Title>
     <Text size="sm" c="dimmed">Values are hidden. Reveal and edit explicitly decrypts the exact saved draft on the server and records an audit event. This works while the device is offline. Encrypting adds ciphertext to your draft; save the revision when ready.</Text>
     <TextInput label="Encrypted file path" value={path} disabled={busy} onChange={(event) => { hide(); setPath(event.currentTarget.value) }} autoComplete="off" />
+    <Group gap="xs">{Object.keys(files).filter((file) => file.endsWith('.age') || file.endsWith('.sops')).map((file) => <Button key={file} size="compact-xs" variant={file === path ? 'light' : 'subtle'} disabled={busy} onClick={() => { hide(); setPath(file) }}>{file}</Button>)}</Group>
     {error && <Alert color="red">{error}</Alert>}
     {editing ? <>
       <Textarea label={source ? 'Revealed dotenv contents' : 'Replacement dotenv contents'} value={value} onChange={(event) => setValue(event.currentTarget.value)} minRows={8} spellCheck={false} autoComplete="off" autoCorrect="off" autoCapitalize="off" data-1p-ignore data-lpignore="true" />

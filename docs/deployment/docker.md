@@ -497,3 +497,18 @@ curl http://localhost:8080/healthz
 ```
 
 The host should put the app behind its HTTPS reverse proxy and set `VIGIRA_COOKIE_SECURE=true` in `deploy/.env.staging` when serving HTTPS. Use a URL-safe password in `POSTGRES_PASSWORD` because the database URL is assembled in Compose. Back up the `postgres-data` volume before testing upgrades or removing the stack. `docker compose down -v` deletes that database volume.
+
+## Import the installer-created stacks
+
+Once Git is connected, open **Compose stacks → Import existing** and select this
+server's enrolled Docker device. Review and import Vigara and Caddy separately.
+They must reside in their original subfolders under the agent's configured shared
+Compose root. Update an existing agent to the release containing import support;
+updating the API alone does not add the host-side import methods.
+
+Download the offered recovery key and store it securely outside this server.
+Import encrypts environment files, records the existing deployment and saves to
+Git without restarting containers. Deploying a saved revision remains an explicit
+later action. Back up bind-mounted configuration/data separately, including the
+Caddyfile. See [Compose import](../compose-adoption.md) for boundaries and key
+backup locations.

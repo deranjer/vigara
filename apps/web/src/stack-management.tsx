@@ -3,6 +3,7 @@ import { Alert, Badge, Button, Card, Group, Loader, Modal, Pagination, Segmented
 import { filterStacks, stackContainers, stackStatus, type StackHost, type StackSummary } from './stack-list-utils'
 import { StackProfiles } from './stack-profiles'
 import { GitSettings } from './git-settings'
+import { StackImport } from './stack-import'
 
 async function request<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
   const response = await fetch(path, { method, credentials: 'same-origin', headers: body === undefined ? undefined : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })
@@ -28,6 +29,7 @@ export function StackList({ onOpen }: { onOpen: (id: string) => void }) {
   const [page, setPage] = useState(1)
   const [view, setView] = useState(() => { try { return localStorage.getItem('vigara.stack-view') === 'table' ? 'table' : 'cards' } catch { return 'cards' } })
   const [creating, setCreating] = useState(false)
+  const [importing, setImporting] = useState(false)
   const [settings, setSettings] = useState(() => new URLSearchParams(window.location.search).get('github_app') === 'connected')
   const [profiles, setProfiles] = useState(false)
   useEffect(() => {
@@ -48,13 +50,14 @@ export function StackList({ onOpen }: { onOpen: (id: string) => void }) {
   }
   const empty = listing?.stacks.length ? 'No stacks match your search and device filter.' : 'Create your first stack to start editing and deploying from Vigara.'
   return <section className="devices-page"><Stack gap="lg">
-    <Group justify="space-between" align="start"><div><Text size="sm" c="dimmed" tt="uppercase">Docker Stacks</Text><Title order={1}>Compose stacks</Title><Text c="dimmed" mt="xs">Your applications, devices and deployment status in one place.</Text></div><Group><Button variant="default" onClick={() => setSettings(true)}>Git settings</Button><Button variant="default" loading={loading} onClick={() => setRefresh((value) => value + 1)}>Refresh</Button><Button disabled={!listing?.configured || loading} onClick={() => setCreating(true)}>New stack</Button></Group></Group>
+    <Group justify="space-between" align="start"><div><Text size="sm" c="dimmed" tt="uppercase">Docker Stacks</Text><Title order={1}>Compose stacks</Title><Text c="dimmed" mt="xs">Your applications, devices and deployment status in one place.</Text></div><Group><Button variant="default" onClick={() => setSettings(true)}>Git settings</Button><Button variant="default" loading={loading} onClick={() => setRefresh((value) => value + 1)}>Refresh</Button><Button variant="default" disabled={!listing?.configured || loading} onClick={() => setImporting(true)}>Import existing stack</Button><Button disabled={!listing?.configured || loading} onClick={() => setCreating(true)}>New stack</Button></Group></Group>
     <Group><Button variant="default" disabled={!listing?.configured || loading} onClick={() => setProfiles(true)}>Profiles and assignments</Button></Group>
     {error && <Alert color="red" title="Could not load stacks">{error}</Alert>}
     {inventoryError && <Alert color="yellow">{inventoryError}</Alert>}
     {!listing && loading && <Loader />}
     {listing && !listing.configured && <Card withBorder padding="lg"><Stack><Title order={3}>Connect your stack repository</Title><Text>Choose a Git repository and branch to keep a history of your Compose files.</Text><Group><Button onClick={() => setSettings(true)}>Open Git settings</Button></Group></Stack></Card>}
     {listing?.configured && <>
+      {!listing.stacks.length && <Alert color="blue" title="Already running Vigara, Caddy, or other Compose projects?"><Text size="sm">Import them from your enrolled host to add their configuration to Git without restarting containers.</Text><Button mt="sm" variant="light" onClick={() => setImporting(true)}>Find existing stacks</Button></Alert>}
       <Group justify="space-between"><Group><Badge variant="light">Branch: {listing.branch}</Badge><Text size="sm" c="dimmed">Save commits to Git. Deploy applies a saved revision.</Text></Group><Text size="sm" c="dimmed">{listing.stacks.length} stacks</Text></Group>
       <Group align="end"><TextInput className="stack-search" label="Search stacks" placeholder="Name, project, device or status" value={query} onChange={(event) => { setQuery(event.currentTarget.value); setPage(1) }} /><Select label="Device" placeholder="All devices" clearable searchable data={devices} value={device} onChange={(value) => { setDevice(value); setPage(1) }} /><Select label="Sort by" data={[{ value: 'name', label: 'Stack name' }, { value: 'device', label: 'Device' }, { value: 'status', label: 'Deployment status' }]} value={sort} onChange={setSort} /><SegmentedControl aria-label="Stack layout" value={view} data={[{ value: 'cards', label: 'Cards' }, { value: 'table', label: 'Table' }]} onChange={(value) => { setView(value); try { localStorage.setItem('vigara.stack-view', value) } catch { /* View preference is optional. */ } }} />{(query || device) && <Button variant="subtle" onClick={() => { setQuery(''); setDevice(null); setPage(1) }}>Clear filters</Button>}</Group>
       {!filtered.length ? <Card withBorder padding="lg"><Text c="dimmed">{empty}</Text></Card> : view === 'cards' ? <SimpleGrid cols={{ base: 1, sm: 2, xl: 3 }}>{visible.map((stack) => {
@@ -64,7 +67,8 @@ export function StackList({ onOpen }: { onOpen: (id: string) => void }) {
       <Group justify="space-between"><Text size="sm" c="dimmed">{filtered.length ? (currentPage - 1) * 20 + 1 : 0}–{Math.min(currentPage * 20, filtered.length)} of {filtered.length}{filtered.length !== listing.stacks.length ? ' matching stacks' : ' stacks'}</Text>{pages > 1 && <Pagination total={pages} value={currentPage} onChange={setPage} />}</Group><Text size="xs" c="dimmed">Container counts are live observations from Refresh. Offline devices show Unavailable. Deployment status reflects Vigara’s last recorded attempt.</Text>
     </>}
     <Modal opened={creating} onClose={() => setCreating(false)} title="New Compose stack" size="lg" centered>{creating && <NewStack approved={listing?.targets?.filter((target) => !listing.stacks.some((stack) => stack.id === target.id)) ?? []} onOpen={onOpen} />}</Modal>
-    <Modal opened={settings} onClose={() => setSettings(false)} title="Git settings" size="lg" centered>{settings && <GitSettings onSaved={() => { setSettings(false); setRefresh((value) => value + 1) }} />}</Modal>
+    <Modal opened={settings} onClose={() => setSettings(false)} title="Git settings" size="lg" centered>{settings && <GitSettings onSaved={() => { setSettings(false); setRefresh((value) => value + 1); if (!listing?.configured) setImporting(true) }} />}</Modal>
+    <Modal opened={importing} onClose={() => {}} withCloseButton={false} closeOnEscape={false} closeOnClickOutside={false} title="Import existing stack" size="xl" centered>{importing && <StackImport onClose={() => { setImporting(false); setRefresh((value) => value + 1) }} onImported={(id) => { setImporting(false); setRefresh((value) => value + 1); onOpen(id) }} />}</Modal>
     <Modal opened={profiles} onClose={() => {}} withCloseButton={false} closeOnEscape={false} closeOnClickOutside={false} title="Server profiles and assignments" size="xl" centered>{profiles && <StackProfiles stacks={listing?.stacks ?? []} onClose={() => setProfiles(false)} />}</Modal>
   </Stack></section>
 }

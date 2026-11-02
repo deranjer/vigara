@@ -487,6 +487,7 @@ trap - EXIT
 
 printf '\nConfiguration validated and saved to %s\nProject: %s\nImage: %s\nAccess: %s\n' "$destination" "$project" "$image" "$url"
 printf 'Back up .env securely: it contains the database password and the backup and GitHub App encryption keys. Keep these keys across restarts and upgrades.\n'
+printf 'After connecting Git, open Compose stacks > Import existing to review and register Vigara and Caddy without restarting them. Save the offered recovery key outside this server.\n'
 if [[ -n $public_url ]]; then
   printf 'GitHub App setup: sign in at %s, then open Compose stacks > Git settings > GitHub App > Connect with GitHub.\n' "$public_url"
 else

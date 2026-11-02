@@ -19,6 +19,8 @@ describe('stack list', () => {
  })
  it('distinguishes drafts, failed attempts and revisions waiting to deploy', () => {
   expect(stackStatus(sample({ commit: '' }))).toBe('Draft')
+  expect(stackStatus(sample({ imported: true }))).toBe('Imported')
+  expect(stackStatus(sample({ imported: true, deploymentStatus: 'failed' }))).toBe('Deployment failed')
   expect(stackStatus(sample({ deploymentStatus: 'failed' }))).toBe('Deployment failed')
   expect(stackStatus(sample({ deploymentStatus: 'succeeded', deploymentCommit: 'b' }))).toBe('Saved changes')
   expect(stackStatus(sample({ deploymentStatus: 'succeeded', deploymentCommit: 'a' }))).toBe('Deployed')
