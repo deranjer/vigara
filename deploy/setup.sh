@@ -160,7 +160,13 @@ BASH
 }
 
 use_bind_storage() {
-  local directory=$1 line source target
+  local directory=$1 name=$2 line source target data_root=./data prepare_api=false
+  local -a api_directories=()
+  if [[ $bind_root != . ]]; then
+    data_root="$bind_root/$name/data"
+    [[ ! -L $bind_root/$name && ! -L $data_root ]] || fail 'External bind data must not use a symlink project or data directory.'
+    [[ ! -e $data_root || -d $data_root ]] || fail "Expected a directory at $data_root."
+  fi
   # Convert only the known persistent mounts in our bundled templates. The
   # top-level volume declarations are the final section in these templates.
   while IFS= read -r line; do
@@ -173,16 +179,31 @@ use_bind_storage() {
       '      - caddy-config:/config') source=config; target=/config;;
       *) printf '%s\n' "$line"; continue;;
     esac
-    mkdir -p -- "$directory/data/$source"
-    printf '      - type: bind\n        source: ./data/%s\n        target: %s\n        bind:\n          create_host_path: false\n' "$source" "$target"
+    case "$source" in android-backups|agent-releases) prepare_api=true; api_directories+=("$source");; esac
+    if [[ $bind_root == . ]]; then
+      mkdir -p -- "$directory/data/$source"
+    else
+      [[ ! -L $data_root/$source ]] || fail 'External bind data must not use symlink directories.'
+      if [[ -e $data_root/$source ]]; then
+        [[ -d $data_root/$source ]] || fail "Expected a directory at $data_root/$source."
+        (shopt -s nullglob dotglob; entries=("$data_root/$source"/*); (( ${#entries[@]} == 0 ))) ||
+          fail "Bind data already exists at $data_root/$source. Preserve its original deployment configuration or choose another root."
+      fi
+      mkdir -p -- "$data_root/$source" || fail 'Cannot create bind data directories. Check the selected root permissions.'
+    fi
+    printf '      - type: bind\n        source: %s/%s\n        target: %s\n        bind:\n          create_host_path: true\n' "$data_root" "$source" "$target"
   done < "$directory/compose.yml" > "$directory/compose.bind.yml"
   mv -- "$directory/compose.bind.yml" "$directory/compose.yml"
-  if [[ -d "$directory/data/android-backups" || -d "$directory/data/agent-releases" ]]; then
+  if [[ $prepare_api == true ]]; then
     # The API runs as UID/GID 10001. PostgreSQL and Caddy initialize their own
     # fresh bind directories; the API cannot chown its upload/cache directories.
-    cat > "$directory/prepare-storage.sh" <<'BASH'
-#!/usr/bin/env bash
-set -Eeuo pipefail
+    {
+      printf '#!/usr/bin/env bash\nset -Eeuo pipefail\n'
+      printf 'data_root=%q\n' "$data_root"
+      printf 'api_directories=('
+      printf ' %q' "${api_directories[@]}"
+      printf ' )\n'
+      cat <<'BASH'
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 if [[ -n ${DOCKER_CONTEXT:-} || -z ${DOCKER_HOST:-} ]]; then
   endpoint=$(docker context inspect --format '{{.Endpoints.docker.Host}}')
@@ -190,10 +211,11 @@ else
   endpoint=$DOCKER_HOST
 fi
 [[ $endpoint == unix://* && -S ${endpoint#unix://} ]] || { echo 'Bind storage preparation requires a local Docker socket.' >&2; exit 1; }
-for name in android-backups agent-releases; do
-  [[ -e data/$name ]] || continue
-  [[ -d data/$name && ! -L data/$name ]] || { echo 'Expected a real API data directory.' >&2; exit 1; }
-  data_dir="$(pwd -P)/data/$name"
+for name in "${api_directories[@]}"; do
+  [[ ! -L $data_root/$name ]] || { echo 'Expected a real API data directory.' >&2; exit 1; }
+  mkdir -p -- "$data_root/$name"
+  [[ -d $data_root/$name ]] || { echo 'Expected a real API data directory.' >&2; exit 1; }
+  data_dir=$(cd -- "$data_root/$name" && pwd -P)
 # Mount over the helper image's declared data volume so no anonymous volume is
 # created. Change only this directory's owner, without recursive chmod/chown.
 docker run --rm --user 0:0 --entrypoint chown \
@@ -201,13 +223,14 @@ docker run --rm --user 0:0 --entrypoint chown \
   postgres:17-alpine 10001:10001 /var/lib/postgresql/data
 done
 BASH
+    } > "$directory/prepare-storage.sh"
     chmod 700 "$directory/prepare-storage.sh"
   fi
 }
 
 [[ $# == 0 ]] || fail 'Usage: bash deploy/setup.sh (interactive initial setup only)'
 [[ $(uname -s) == Linux ]] || fail 'This setup script supports Linux servers.'
-for tool in docker openssl sed grep mktemp; do
+for tool in docker openssl sed grep mktemp realpath; do
   command -v "$tool" >/dev/null || fail "Install $tool before continuing."
 done
 docker info >/dev/null 2>&1 || fail 'Docker is unavailable. Check the daemon and your Docker permissions.'
@@ -245,10 +268,25 @@ ask image 'Container image' ghcr.io/deranjer/vigara:staging
 [[ $image =~ ^[a-zA-Z0-9][a-zA-Z0-9._/:@-]*$ ]] || fail 'Invalid image reference.'
 
 storage=volumes
+bind_root=.
 if yesno 'Use bind-mounted data directories instead of Docker named volumes?'; then
   storage=bind
   require_local_docker
   [[ $stacks_root != *,* ]] || fail 'Choose a Compose root without commas for bind storage.'
+  ask bind_root 'Bind data root (. keeps data beside each Compose file; or an absolute path such as /mnt/data)' .
+  case "$bind_root" in '~') bind_root=$HOME;; '~/'*) bind_root="$HOME/${bind_root:2}";; esac
+  if [[ $bind_root != . ]]; then
+    [[ $bind_root == /* && $bind_root =~ ^[a-zA-Z0-9_./\ -]+$ ]] || fail 'Choose an absolute bind root using letters, numbers, spaces, dots, underscores or hyphens, or use . for the default.'
+    bind_root=$(realpath -m -- "$bind_root") || fail 'Cannot resolve the bind root.'
+    [[ $bind_root =~ ^[a-zA-Z0-9_./\ -]+$ ]] || fail 'The resolved bind root contains unsupported characters.'
+    [[ $bind_root != "$repo_dir" && $bind_root != "$repo_dir/"* ]] || fail 'Choose a bind root outside the Vigara source checkout.'
+    for deployment_path in "$destination" "$stacks_root/$project-caddy"; do
+      [[ $bind_root != "$deployment_path" && $bind_root != "$deployment_path/"* ]] || fail 'Choose a bind root outside the deployment directories.'
+    done
+    mkdir -p -- "$bind_root" || fail 'Cannot create the bind root. Check its ownership and permissions.'
+    # The explicit Compose root resolves to the same layout as the default.
+    [[ $bind_root != "$stacks_root" ]] || bind_root=.
+  fi
 fi
 
 mode=direct
@@ -360,6 +398,12 @@ backup_key=$(openssl rand -base64 32)
   printf 'VIGIRA_BACKUP_MASTER_KEY=%s\n' "$backup_key"
   printf 'VIGIRA_MCP_URL=%s\n' "$mcp_origin"
   printf 'VIGIRA_PUBLIC_URL=%s\n' "$public_url"
+  # Quote path values, escaping Compose interpolation separately from systemd.
+  agent_root=${stacks_root//\\/\\\\}
+  agent_root=${agent_root//\"/\\\"}
+  compose_root=${agent_root//\$/\$\$}
+  printf 'VIGIRA_COMPOSE_MANAGED_ROOT="%s"\n' "$compose_root"
+  printf 'VIGIRA_BIND_ROOT="%s"\n' "$bind_root"
   if [[ $mode == caddy ]]; then
     printf 'VIGIRA_DOMAIN=%s\nVIGIRA_PROXY_NETWORK=%s\n' "$domain" "$network"
   else
@@ -367,6 +411,23 @@ backup_key=$(openssl rand -base64 32)
     printf 'VIGIRA_BIND_ADDRESS=%s\nVIGIRA_PORT=%s\nVIGIRA_COOKIE_SECURE=%s\n' "$bind" "$port" "$secure"
   fi
 } > "$temporary/.env"
+printf 'VIGIRA_COMPOSE_MANAGED_ROOT="%s"\n' "$agent_root" > "$temporary/agent.env"
+cat > "$temporary/configure-agent.sh" <<'BASH'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
+systemctl cat vigara-agent.service >/dev/null 2>&1 || { echo 'Enroll and install the host agent first, then rerun this helper.' >&2; exit 1; }
+# Copy only agent settings, never the server's database credentials or backup key.
+sudo install -D -m 0600 -- agent.env /etc/vigara-agent/compose.env
+sudo install -d -m 0755 /etc/systemd/system/vigara-agent.service.d
+printf '[Service]\nEnvironmentFile=/etc/vigara-agent/compose.env\n' |
+  sudo tee /etc/systemd/system/vigara-agent.service.d/50-compose-root.conf >/dev/null
+sudo systemctl daemon-reload
+sudo systemctl try-restart vigara-agent.service
+echo 'Host agent Compose root configured from agent.env.'
+BASH
+chmod 600 "$temporary/agent.env"
+chmod 700 "$temporary/configure-agent.sh"
 unset password backup_key
 if [[ $mode == caddy ]]; then
   # Forward generated application settings without changing the shared template.
@@ -380,7 +441,7 @@ fi
 sed -i -e "/^  app:$/a\    container_name: ${project}-app" \
   -e "/^  db:$/a\    container_name: ${project}-postgres" \
   -e "/^  postgres:$/a\    container_name: ${project}-postgres" "$temporary/compose.yml"
-if [[ $storage == bind ]]; then use_bind_storage "$temporary"; fi
+if [[ $storage == bind ]]; then use_bind_storage "$temporary" "$project"; fi
 write_helper "$temporary" "$project"
 readiness_url=${mcp_origin:-$url}
 cp -- "$script_dir/check-ready.sh" "$temporary/check-ready.sh"
@@ -397,7 +458,7 @@ if [[ $proxy_action == create ]]; then
   printf 'VIGIRA_CADDY_IMAGE=%s\nVIGIRA_CADDY_CONTAINER=%s\nVIGIRA_PROXY_NETWORK=%s\nVIGIRA_DOCKER_SOCKET=%s\n' \
     "$proxy_image" "$proxy" "$network" "$socket" > "$temporary/proxy/.env"
   write_helper "$temporary/proxy" "$proxy_project"
-  if [[ $proxy_storage == bind ]]; then use_bind_storage "$temporary/proxy"; fi
+  if [[ $proxy_storage == bind ]]; then use_bind_storage "$temporary/proxy" "$proxy_project"; fi
   if [[ $proxy_purge == true ]]; then write_proxy_purge_helper "$temporary/proxy"; fi
   bash "$temporary/proxy/compose.sh" config --quiet
   mv -T -- "$temporary/proxy" "$proxy_destination"
@@ -410,10 +471,11 @@ printf 'Back up .env securely: it contains the database password and backup mast
 printf 'Shared Compose root: %s\n' "$stacks_root"
 printf 'Persistent storage: %s\nContainer names: %s-app, %s-postgres\n' "$storage" "$project" "$project"
 if [[ $storage == bind ]]; then
-  printf 'Vigara data: %s/data\n' "$destination"
-  [[ $proxy_action != create || $proxy_storage != bind ]] || printf 'Caddy data: %s/data\n' "$proxy_destination"
+  if [[ $bind_root == . ]]; then data_base=$stacks_root; else data_base=$bind_root; fi
+  printf 'Vigara data: %s/%s/data\n' "$data_base" "$project"
+  [[ $proxy_action != create || $proxy_storage != bind ]] || printf 'Caddy data: %s/%s/data\n' "$data_base" "$proxy_project"
 fi
-printf 'When enrolling the host agent, set VIGIRA_COMPOSE_MANAGED_ROOT=%q for new managed stacks.\n' "$stacks_root"
+printf 'Host agent Compose root saved in .env and agent.env. After enrolling the host agent, apply it with: bash %q/configure-agent.sh\n' "$destination"
 if [[ -n $mcp_origin ]]; then
   printf 'MCP endpoint: %s/mcp\nConnection instructions: Account settings > Claude and ChatGPT.\n' "$mcp_origin"
 fi

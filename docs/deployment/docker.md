@@ -67,18 +67,35 @@ keeping them does not require a destructive project reset.
 
 The installer asks whether to use bind-mounted data directories instead of
 Docker named volumes. Answer **no** (the default) to keep named volumes, or
-**yes** to keep data beside the generated Compose files:
+**yes** to use bind mounts. The next prompt asks for a bind data root:
+leave it blank or enter `.` to keep data beside the generated Compose files,
+or enter an absolute path such as `/mnt/data` to store data separately.
+With `/mnt/data`, the default Vigara project uses
+`/mnt/data/vigara/data/postgres`, `/mnt/data/vigara/data/android-backups`,
+and `/mnt/data/vigara/data/agent-releases`. A new Caddy proxy uses
+`/mnt/data/vigara-caddy/data/caddy` and `/mnt/data/vigara-caddy/data/config`.
+Compose files and credentials stay in the selected Compose root.
+
+The default `.` layout is:
 
 | Stack | Bind-mounted host directory | Container path |
 | --- | --- | --- |
 | Vigara | `<root>/<project>/data/postgres` | `/var/lib/postgresql/data` |
 | Vigara, direct-port setup | `<root>/<project>/data/android-backups` | `/var/lib/vigira/android-backups` |
+| Vigara | `<root>/<project>/data/agent-releases` | `/var/lib/vigira/agent-releases` |
 | New Caddy proxy | `<root>/<project>-caddy/data/caddy` | `/data` |
 | New Caddy proxy | `<root>/<project>-caddy/data/config` | `/config` |
 
 Bind storage requires a local Unix Docker context and a Compose root without
-commas. Paths with spaces are supported. The installer creates fresh private
-directories and generates explicit bind mounts with `create_host_path: false`;
+commas. Absolute bind roots support letters, numbers, spaces, dots, underscores
+and hyphens. The installer creates the root and required subdirectories with
+private permissions and generates explicit bind mounts with `create_host_path: true`;
+Compose can also create a missing source directory during later startup.
+Existing nonempty external data directories are refused to avoid attaching old
+database data to newly generated credentials. Symlink project/data directories
+are refused. External bind data remains in place during a project reset;
+choose a fresh data root for a fresh database or recover using its original configuration.
+Only empty existing mount directories are reused. No existing data is deleted and
 no named data volumes are declared in those generated deployments. The choice
 also applies to a newly deployed Caddy proxy. Keeping existing Caddy volumes
 overrides this choice for the proxy only, so its certificates and configuration
@@ -92,13 +109,34 @@ an explicit exception: those stay mounted to preserve saved certificates.
 
 PostgreSQL initializes ownership and permissions on its fresh database
 directory. The direct-port setup also generates `prepare-storage.sh` to give
-the Android upload directory to the API's UID/GID 10001 before startup. This
+the API upload/cache directories to the API's UID/GID 10001 before startup. This
 uses the already pulled PostgreSQL image as a short-lived root helper, changing
 only that directory's owner without recursive chmod/chown. The helper mounts
 over the image's declared data volume, avoiding an anonymous Docker volume.
 If you defer startup, run the printed permission-preparation command after
 pulling images and before starting Vigara. Android uploads remain disabled
 until their separate server setting is configured.
+
+If the `agent-bundles` scheduled task reports that it cannot write its release
+cache, check that the mounted cache is writable by UID/GID `10001:10001`.
+For installer-generated bind storage, run `bash ./prepare-storage.sh` from the
+deployment directory, then retry the task in **Admin → Scheduled tasks**.
+This prepares the selected cache directory without changing ownership recursively.
+Read-only mounts and network storage permissions can also prevent writes.
+
+### Host agent Compose root
+
+Setup saves the selected Compose root as `VIGIRA_COMPOSE_MANAGED_ROOT` in the
+generated `.env` and in a separate private `agent.env`. This root controls where
+the host agent deploys managed stacks; it is distinct from the bind data root.
+The agent is a separate service, so the server's `.env` alone cannot configure it.
+After enrolling and installing the agent on the same host, run the generated
+`configure-agent.sh` helper. It installs only `agent.env` at
+`/etc/vigara-agent/compose.env`, adds an `EnvironmentFile` service override,
+reloads systemd, and restarts the agent if it is running. It uses sudo and does
+not change Docker capability permissions or copy database credentials or the
+backup master key into the agent. The printed command includes the correct
+deployment path; there is no need to retype the root setting.
 
 The generated app/database containers are explicitly named `<project>-app`
 and `<project>-postgres`: `vigara-app` and `vigara-postgres` by default. The
