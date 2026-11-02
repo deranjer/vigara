@@ -10,6 +10,7 @@ import socket
 import subprocess
 import tempfile
 import unittest
+import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -51,6 +52,7 @@ case "$*" in
   'start '*) :;;
   compose*)
     case " $* " in
+      *' host-agent-bundle '*) [[ ${FAIL_HOST_BUNDLE:-0} != 1 ]] && cat "$HOST_BUNDLE";;
       *' config --quiet '*) [[ ${FAIL_CONFIG:-0} != 1 ]];;
       *' pull '*) [[ ${FAIL_PULL:-0} != 1 ]];;
       *' up '*) [[ ${FAIL_UP:-0} != 1 ]];;
@@ -69,7 +71,7 @@ class SetupTests(unittest.TestCase):
         self.deploy.mkdir(parents=True)
         self.stacks_root = self.root / 'dockers' / 'compose-stacks'
         self.production = self.stacks_root / 'vigara'
-        for name in ("setup.sh", "check-ready.sh", "compose.staging.yml", "compose.caddy.example.yml", "compose.caddy-proxy.example.yml"):
+        for name in ("setup.sh", "enroll-host.sh", "check-ready.sh", "compose.staging.yml", "compose.caddy.example.yml", "compose.caddy-proxy.example.yml"):
             shutil.copy(ROOT / "deploy" / name, self.deploy / name)
         # Exercise timeout failures immediately rather than waiting two minutes.
         check = self.deploy / 'check-ready.sh'
@@ -101,7 +103,7 @@ esac
         self.environment = dict(os.environ, PATH=str(binary) + os.pathsep + os.environ["PATH"],
                                 CALLS=str(self.calls), HOME=str(self.root), TEST_SOCKET=str(self.root / 'docker.sock'))
 
-    def run_setup(self, answers, root_answer='', mcp_answer='n', proxy_answers=None, storage_answer='n', public_url_answer='', reset_answers=None, bind_root_answer='', **environment):
+    def run_setup(self, answers, root_answer='', mcp_answer='n', proxy_answers=None, storage_answer='n', public_url_answer='', reset_answers=None, bind_root_answer='', host_answer='n', **environment):
         # Fixtures below describe the original project/image/network prompts.
         # Add the shared-root answer and MCP opt-in before the startup answer.
         lines = answers.splitlines()
@@ -120,6 +122,7 @@ esac
         if reset_answers is not None:
             lines[2:2] = reset_answers.splitlines()
         answers = '\n'.join(lines) + ('\n' if lines else '')
+        answers += host_answer + '\n'
         return subprocess.run(["bash", str(self.deploy / "setup.sh")], input=answers,
                               text=True, capture_output=True, cwd=self.root,
                               env=dict(self.environment, **environment))
@@ -588,6 +591,80 @@ esac
         result = self.run_setup('\n\ny\nvigara.example.com\n\nvigara-app\nn\n')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('proxy name conflicts', result.stderr)
+
+    def prepare_host_registration(self):
+        binary = self.root / 'bin'
+        (binary / 'sudo').write_text('''#!/usr/bin/env bash
+printf 'sudo %s\\n' "$*" >> "$CALLS"
+if [[ $1 == test ]]; then [[ ${EXISTING_HOST_AGENT:-0} == 1 ]]; elif [[ $1 == -v ]]; then exit 0; else exit 1; fi
+''')
+        (binary / 'systemctl').write_text('#!/usr/bin/env bash\nprintf "systemctl %s\\n" "$*" >> "$CALLS"\n')
+        (binary / 'hostname').write_text('#!/usr/bin/env bash\necho server-host\n')
+        (binary / 'uname').write_text('#!/usr/bin/env bash\nif [[ $1 == -m ]]; then echo "${HOST_ARCH:-x86_64}"; else echo Linux; fi\n')
+        for name in ('sudo', 'systemctl', 'hostname', 'uname'):
+            (binary / name).chmod(0o700)
+        bundle = self.root / 'host.zip'
+        with zipfile.ZipFile(bundle, 'w') as archive:
+            for name in ('vigara-agent', 'bootstrap.json', 'configure-docker.py', 'vigara-agent.service'):
+                archive.writestr(name, '{}')
+            archive.writestr('install.sh', '#!/bin/sh\nprintf "host-install %s\\n" "$*" >> "$CALLS"\nexit "${FAIL_HOST_INSTALL:-0}"\n')
+        self.environment['HOST_BUNDLE'] = str(bundle)
+
+    def test_host_registration_runs_after_readiness_with_deploy_settings(self):
+        self.prepare_host_registration()
+        result = self.run_setup('\n\nn\n\n\nn\ny\n', host_answer='y\nmy-host', root_answer='~/shared stacks')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('now registered as a Docker host', result.stdout)
+        calls = self.calls.read_text()
+        self.assertLess(calls.index('/healthz'), calls.index('host-agent-bundle'))
+        self.assertIn('--name my-host --target linux-amd64 --server http://127.0.0.1:8080', calls)
+        self.assertIn('--docker-host unix://' + str(self.root / 'docker.sock'), calls)
+        self.assertIn('--compose-root ' + str(self.root / 'shared stacks'), calls)
+        self.assertIn('host-install --non-interactive', calls)
+        self.assertEqual(list((self.root / 'shared stacks/vigara').glob('.host-agent.*')), [])
+
+    def test_host_registration_arm64_and_https(self):
+        self.prepare_host_registration()
+        result = self.run_setup('\n\ny\nvigara.example.com\n\n\ny\n', host_answer='y\n', HOST_ARCH='aarch64')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('--name server-host --target linux-arm64 --server https://vigara.example.com', self.calls.read_text())
+
+    def test_host_registration_declined_and_deferred(self):
+        for startup in ('n', 'y'):
+            with self.subTest(startup=startup):
+                result = self.run_setup('\n\nn\n\n\nn\n' + startup + '\n')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('register-host.sh', result.stdout)
+                self.assertTrue((self.production / 'register-host.sh').is_file())
+                self.assertNotIn('host-agent-bundle', self.calls.read_text())
+                shutil.rmtree(self.production)
+
+    def test_host_registration_does_not_replace_existing_agent(self):
+        self.prepare_host_registration()
+        result = self.run_setup('\n\nn\n\n\nn\ny\n', host_answer='y', EXISTING_HOST_AGENT='1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('already has an enrolled agent', result.stderr)
+        self.assertNotIn('host-agent-bundle', self.calls.read_text())
+        self.assertTrue((self.production / '.env').is_file())
+
+    def test_host_registration_failure_retains_running_server(self):
+        self.prepare_host_registration()
+        for failure in ('FAIL_HOST_BUNDLE', 'FAIL_HOST_INSTALL', 'FAIL_TLS'):
+            with self.subTest(failure=failure):
+                result = self.run_setup('\n\nn\n\n\nn\ny\n', host_answer='y\n', **{failure: '1'})
+                self.assertTrue((self.production / '.env').is_file())
+                bundles = list(self.production.glob('.host-agent.*'))
+                self.assertEqual(len(bundles), 1 if failure == 'FAIL_HOST_INSTALL' else 0)
+                if failure == 'FAIL_HOST_INSTALL':
+                    self.assertIn('private bundle is retained', result.stderr)
+                if failure == 'FAIL_TLS':
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertNotIn('host-agent-bundle', self.calls.read_text())
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn('Host registration did not complete', result.stdout)
+                shutil.rmtree(self.production)
+                self.calls.write_text('')
 
     def test_bind_storage_direct(self):
         result = self.run_setup('\n\nn\n\n\nn\nn\n', storage_answer='y', root_answer='~/shared stacks')

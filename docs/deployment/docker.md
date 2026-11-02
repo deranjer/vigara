@@ -126,11 +126,33 @@ Read-only mounts and network storage permissions can also prevent writes.
 
 ### Host agent Compose root
 
+After startup and a successful readiness check, setup offers to register this
+server as a Docker host for Compose stack deployments. Accepting installs the
+Linux host agent through the existing agent installer, grants Docker manage,
+exec and deploy capabilities, and configures the selected shared Compose root.
+The deployment service runs as root and can control the local Docker host;
+setup asks before installing it. Linux amd64/arm64, systemd, Python 3, sudo and
+a local Docker Unix socket are required.
+
+Enrollment uses a verified agent release and a single-use token valid for
+30 minutes, prepared through a local command inside the running server container.
+It does not require creating the first administrator account beforehand. The
+agent connects through the configured HTTPS address, or the direct server
+address for a private-network deployment. Public plain-HTTP addresses are refused.
+The token stays in a private temporary bundle and is removed after installation.
+
+Declining or deferring startup leaves `register-host.sh` in the deployment
+directory. Run `bash ./register-host.sh` to verify readiness and enroll later.
+Enrollment failure leaves the server running; failed agent installation retains
+its private bundle and prints the installation command to retry. Existing agent
+enrollments are preserved: use **Device info → Reinstall agent** to enable Docker
+deployment for an already registered host.
+
 Setup saves the selected Compose root as `VIGIRA_COMPOSE_MANAGED_ROOT` in the
 generated `.env` and in a separate private `agent.env`. This root controls where
 the host agent deploys managed stacks; it is distinct from the bind data root.
 The agent is a separate service, so the server's `.env` alone cannot configure it.
-After enrolling and installing the agent on the same host, run the generated
+For an agent enrolled manually on the same host, run the generated
 `configure-agent.sh` helper. It installs only `agent.env` at
 `/etc/vigara-agent/compose.env`, adds an `EnvironmentFile` service override,
 reloads systemd, and restarts the agent if it is running. It uses sudo and does
