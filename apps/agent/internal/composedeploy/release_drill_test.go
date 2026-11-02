@@ -19,13 +19,13 @@ import (
 // TestComposeReleaseDrill is explicitly opt-in because it starts a disposable
 // workload on the local Docker engine. Run only on an authorized test host.
 func TestComposeReleaseDrill(t *testing.T) {
-	if os.Getenv("VIGARA_COMPOSE_RELEASE_DRILL") != "1" {
-		t.Skip("set VIGARA_COMPOSE_RELEASE_DRILL=1 on an authorized disposable test host")
+	if os.Getenv("VIGIRA_COMPOSE_RELEASE_DRILL") != "1" {
+		t.Skip("set VIGIRA_COMPOSE_RELEASE_DRILL=1 on an authorized disposable test host")
 	}
 	if runtime.GOOS != "linux" {
 		t.Skip("Linux Compose runner")
 	}
-	image := os.Getenv("VIGARA_COMPOSE_RELEASE_DRILL_IMAGE")
+	image := os.Getenv("VIGIRA_COMPOSE_RELEASE_DRILL_IMAGE")
 	if image == "" {
 		image = "nginx:alpine"
 	}

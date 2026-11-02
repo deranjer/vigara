@@ -357,7 +357,7 @@ func (h *Handler) enroll(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "device identifiers conflict with the selected device", http.StatusConflict)
 			return
 		}
-		_, err = tx.Exec(r.Context(), "UPDATE agent_identities SET credential_hash=$2,protocol_version=$3,agent_version=$4,capabilities=$5 WHERE id=$1", agentID, credentialHash, capability.ProtocolVersion, capability.AgentVersion, capabilitiesJSON)
+		_, err = tx.Exec(r.Context(), "UPDATE agent_identities SET credential_hash=$2,protocol_version=$3,agent_version=$4,capabilities=$5,allowed_capabilities=$6 WHERE id=$1", agentID, credentialHash, capability.ProtocolVersion, capability.AgentVersion, capabilitiesJSON, allowed)
 	} else {
 		_, err = tx.Exec(r.Context(), "SELECT pg_advisory_xact_lock(hashtextextended(lower($1),0))", req.DisplayName)
 		var exists bool

@@ -129,14 +129,14 @@ esac
         self.assertEqual(result.returncode, 0, result.stderr)
         production = self.production
         env = (production / ".env").read_text()
-        self.assertIn('VIGARA_PORT=8080', env)
-        self.assertIn('VIGARA_COOKIE_SECURE=false', env)
+        self.assertIn('VIGIRA_PORT=8080', env)
+        self.assertIn('VIGIRA_COOKIE_SECURE=false', env)
         self.assertRegex(env, r'POSTGRES_PASSWORD=[a-f0-9]{64}\n')
-        self.assertRegex(env, r'VIGARA_BACKUP_MASTER_KEY=[A-Za-z0-9+/]{43}=\n')
+        self.assertRegex(env, r'VIGIRA_BACKUP_MASTER_KEY=[A-Za-z0-9+/]{43}=\n')
         self.assertEqual((production / ".env").stat().st_mode & 0o777, 0o600)
         compose = (production / "compose.yml").read_text()
         self.assertIn('env_file: .env', compose)
-        self.assertIn('${VIGARA_BIND_ADDRESS:-127.0.0.1}', compose)
+        self.assertIn('${VIGIRA_BIND_ADDRESS:-127.0.0.1}', compose)
         self.assertIn('container_name: vigara-app', compose)
         self.assertIn('container_name: vigara-postgres', compose)
         self.assertIn('postgres-data:/var/lib/postgresql/data', compose)
@@ -151,14 +151,14 @@ esac
         result = self.run_setup('\n\ny\nvigara.example.com\n\n\nn\n')
         self.assertEqual(result.returncode, 0, result.stderr)
         production = self.production
-        self.assertIn('VIGARA_DOMAIN=vigara.example.com', (production / ".env").read_text())
+        self.assertIn('VIGIRA_DOMAIN=vigara.example.com', (production / ".env").read_text())
         compose = (production / "compose.yml").read_text()
         self.assertIn('caddy.reverse_proxy:', compose)
-        self.assertIn('VIGARA_BACKUP_MASTER_KEY:', compose)
-        self.assertEqual(compose.count('      VIGARA_BACKUP_MASTER_KEY:'), 1)
+        self.assertIn('VIGIRA_BACKUP_MASTER_KEY:', compose)
+        self.assertEqual(compose.count('      VIGIRA_BACKUP_MASTER_KEY:'), 1)
         self.assertNotIn('ports:', compose)
-        self.assertIn('VIGARA_MCP_URL=\n', (production / '.env').read_text())
-        self.assertIn('VIGARA_PUBLIC_URL=https://vigara.example.com\n', (production / '.env').read_text())
+        self.assertIn('VIGIRA_MCP_URL=\n', (production / '.env').read_text())
+        self.assertIn('VIGIRA_PUBLIC_URL=https://vigara.example.com\n', (production / '.env').read_text())
 
     def test_reset_defaults_to_keep_and_requires_exact_confirmation(self):
         for answer in ('', 'n', 'y\nPURGE other', 'y'):
@@ -217,7 +217,7 @@ esac
         backups = list(self.stacks_root.glob('vigara-caddy.before-reset.*'))
         self.assertEqual(len(backups), 1)
         self.assertEqual((backups[0] / '.env').read_text(), 'previous proxy configuration')
-        self.assertIn('VIGARA_CADDY_CONTAINER=caddy-proxy', (proxy / '.env').read_text())
+        self.assertIn('VIGIRA_CADDY_CONTAINER=caddy-proxy', (proxy / '.env').read_text())
         self.assertNotIn('Warning: existing volumes', result.stdout)
         self.assertNotIn('purge-volumes.sh', result.stdout)
 
@@ -288,7 +288,7 @@ esac
         self.assertFalse((self.deploy / 'production').exists())
         self.assertEqual(existing.read_text(), 'existing stack stays unchanged\n')
         deployment = self.root / 'shared compose' / 'vigara'
-        setting = 'VIGARA_COMPOSE_MANAGED_ROOT="' + str(self.root / 'shared compose') + '"\n'
+        setting = 'VIGIRA_COMPOSE_MANAGED_ROOT="' + str(self.root / 'shared compose') + '"\n'
         self.assertIn(setting, (deployment / '.env').read_text())
         self.assertEqual((deployment / 'agent.env').read_text(), setting)
         self.assertIn('configure-agent.sh', result.stdout)
@@ -301,7 +301,7 @@ esac
     def test_caddy_mcp_opt_in(self):
         result = self.run_setup('\n\ny\nvigara.example.com\n\n\nn\n', mcp_answer='y\n')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('VIGARA_MCP_URL=https://vigara.example.com\n', (self.production / '.env').read_text())
+        self.assertIn('VIGIRA_MCP_URL=https://vigara.example.com\n', (self.production / '.env').read_text())
         self.assertIn('https://vigara.example.com/mcp', result.stdout)
 
     def test_new_proxy_requires_approval(self):
@@ -320,7 +320,7 @@ esac
         proxy = self.stacks_root / 'vigara-caddy'
         self.assertTrue((proxy / 'compose.sh').exists())
         self.assertIn('caddy-data:/data', (proxy / 'compose.yml').read_text())
-        self.assertIn('VIGARA_CADDY_IMAGE=lucaslorentz/caddy-docker-proxy:alpine', (proxy / '.env').read_text())
+        self.assertIn('VIGIRA_CADDY_IMAGE=lucaslorentz/caddy-docker-proxy:alpine', (proxy / '.env').read_text())
         self.assertNotIn('network create web\n', self.calls.read_text())
         self.assertNotIn(' up -d ', self.calls.read_text())
         self.assertIn('check.sh', result.stdout)
@@ -566,12 +566,12 @@ esac
 
     def test_custom_configuration_and_start(self):
         result = self.run_setup('vigara-prod\nexample/app:fixed\nn\n0.0.0.0\n18080\ny\ny\n',
-                                VIGARA_PORT='9999', VIGARA_IMAGE='ignored/app:wrong')
+                                VIGIRA_PORT='9999', VIGIRA_IMAGE='ignored/app:wrong')
         self.assertEqual(result.returncode, 0, result.stderr)
         env = (self.stacks_root / 'vigara-prod' / '.env').read_text()
-        self.assertIn('VIGARA_COOKIE_SECURE=true', env)
-        self.assertIn('VIGARA_PORT=18080', env)
-        self.assertIn('VIGARA_IMAGE=example/app:fixed', env)
+        self.assertIn('VIGIRA_COOKIE_SECURE=true', env)
+        self.assertIn('VIGIRA_PORT=18080', env)
+        self.assertIn('VIGIRA_IMAGE=example/app:fixed', env)
         calls = self.calls.read_text()
         self.assertIn('-p vigara-prod', calls)
         self.assertLess(calls.index(' pull'), calls.index(' up -d'))
@@ -675,7 +675,7 @@ esac
         parsed = subprocess.run(['bash', str(root / 'vigara/compose.sh'), 'config', '--environment'],
                                 capture_output=True, text=True)
         self.assertEqual(parsed.returncode, 0, parsed.stderr)
-        self.assertIn('VIGARA_COMPOSE_MANAGED_ROOT=' + str(root), parsed.stdout.splitlines())
+        self.assertIn('VIGIRA_COMPOSE_MANAGED_ROOT=' + str(root), parsed.stdout.splitlines())
 
     def test_custom_bind_root_with_real_compose_and_proxy(self):
         available = subprocess.run(['docker', 'compose', 'version'], capture_output=True)
@@ -703,7 +703,7 @@ esac
         result = self.run_setup('\n\nn\n\n\nn\nn\n')
         self.assertEqual(result.returncode, 0, result.stderr)
         agent_env = self.production / 'agent.env'
-        self.assertEqual(agent_env.read_text(), f'VIGARA_COMPOSE_MANAGED_ROOT="{self.stacks_root}"\n')
+        self.assertEqual(agent_env.read_text(), f'VIGIRA_COMPOSE_MANAGED_ROOT="{self.stacks_root}"\n')
         self.assertEqual(agent_env.stat().st_mode & 0o777, 0o600)
         binary = self.root / 'bin'
         for name in ('sudo', 'systemctl'):
@@ -718,6 +718,20 @@ esac
         self.assertIn('sudo install -D -m 0600 -- agent.env /etc/vigara-agent/compose.env', calls)
         self.assertIn('sudo systemctl try-restart vigara-agent.service', calls)
         self.assertNotIn('install -D -m 0600 -- .env ', calls)
+
+    def test_bind_storage_applies_to_new_caddy_data_and_config(self):
+        result = self.run_setup('\n\ny\nvigara.example.com\n\n\nn\n', storage_answer='y',
+                                proxy_answers='y\n', PROXY_STATE='missing')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        proxy = self.stacks_root / 'vigara-caddy'
+        compose = (proxy / 'compose.yml').read_text()
+        self.assertIn('source: ./data/caddy\n        target: /data', compose)
+        self.assertIn('source: ./data/config\n        target: /config', compose)
+        self.assertNotIn('caddy-data:/data', compose)
+        self.assertNotIn('caddy-config:/config', compose)
+        self.assertNotIn('\nvolumes:\n', compose)
+        self.assertTrue((proxy / 'data/caddy').is_dir())
+        self.assertTrue((proxy / 'data/config').is_dir())
 
     def test_permission_failure_retains_bind_configuration(self):
         result = self.run_setup('\n\nn\n\n\nn\ny\n', storage_answer='y', FAIL_PERMISSIONS='1')
@@ -803,8 +817,8 @@ esac
                 parsed = subprocess.run(['bash', str(self.production / 'compose.sh'), 'config', '--format', 'json'], capture_output=True, text=True)
                 self.assertEqual(parsed.returncode, 0, parsed.stderr)
                 app = json.loads(parsed.stdout)['services']['app']
-                self.assertEqual(app['environment']['VIGARA_PUBLIC_URL'], 'https://vigara.example.com')
-                self.assertEqual(app['environment']['VIGARA_AGENT_RELEASE_TAG'], 'auto')
+                self.assertEqual(app['environment']['VIGIRA_PUBLIC_URL'], 'https://vigara.example.com')
+                self.assertEqual(app['environment']['VIGIRA_AGENT_RELEASE_TAG'], 'auto')
                 self.assertTrue(any(mount['target'] == '/var/lib/vigira/agent-releases' for mount in app['volumes']))
                 shutil.rmtree(self.production)
 

@@ -99,7 +99,7 @@ Installation writes only the exact two-check configuration to
 `/etc/vigira-agent/tplink-network-checks.json` and the systemd drop-in
 `/etc/systemd/system/vigira-agent.service.d/90-vigara-tplink-network-checks.conf`,
 both root-owned with mode `0644`. The drop-in sets
-`VIGIRA_NETWORK_CHECKS_CONFIG` and its `VIGARA_NETWORK_CHECKS_CONFIG` alias to
+`VIGIRA_NETWORK_CHECKS_CONFIG` and its `VIGIRA_NETWORK_CHECKS_CONFIG` alias to
 that file. It preserves other service configuration and checks, reloads
 systemd, and restarts only `vigira-agent.service`. Exact matching files are
 accepted on subsequent runs. The script embeds the reviewed configuration;

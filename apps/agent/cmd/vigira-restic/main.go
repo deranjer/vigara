@@ -17,7 +17,6 @@ import (
 
 	"github.com/deranjer/vigara/apps/agent/internal/backupprep"
 	agentruntime "github.com/deranjer/vigara/apps/agent/internal/runtime"
-	"github.com/deranjer/vigara/internal/envcompat"
 	"github.com/deranjer/vigara/internal/restic"
 )
 
@@ -26,7 +25,6 @@ const maxCLIOutput = 16 << 20
 var repositoryScheme = regexp.MustCompile(`^[a-z][a-z0-9+.-]*:`)
 
 func main() {
-	envcompat.ApplyAliases()
 	if err := run(os.Args[1:], os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "vigara-restic: operation failed; details are withheld to protect local paths and credentials")
 		os.Exit(1)

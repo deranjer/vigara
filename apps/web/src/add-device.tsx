@@ -3,20 +3,12 @@ import { Alert, Button, Checkbox, Group, Modal, Select, Stack, Text, TextInput }
 
 import { BackupFields, newBackupConfig } from './backup-config'
 import { isAbsoluteBackupPath } from './backup-path-utils'
+import { dockerEnrollment } from './docker-enrollment'
 
 type ServerOption = { url: string; secure: boolean }
 type Availability = { serverUrl: string; serverUrls: ServerOption[]; allowInsecureHttp: boolean; targets: string[]; managedBackupsAvailable?: boolean; backupTargets?: string[]; releaseSync?: { enabled: boolean; state: string; tag?: string; error?: string } }
 type ReinstallDevice = { id: string; name: string; platform: string; architecture: string }
 type Props = { opened: boolean; onClose: () => void; device?: ReinstallDevice }
-
-// The ceiling the server will accept for this device's Docker access. The host's own operator must
-// still opt in locally (VIGARA_DOCKER_MODE); the server never grants more than the enrollment allows.
-const dockerCeilings: Record<string, string[]> = {
-  read: [],
-  manage: ['docker.manage'],
-  exec: ['docker.manage', 'docker.exec'],
-  deploy: ['docker.manage', 'docker.exec', 'docker.deploy'],
-}
 
 export function AddDevice({ opened, onClose, device }: Props) {
   const [availability, setAvailability] = useState<Availability>({ serverUrl: '', serverUrls: [], allowInsecureHttp: false, targets: [] })
@@ -31,6 +23,10 @@ export function AddDevice({ opened, onClose, device }: Props) {
   const [backup, setBackup] = useState(newBackupConfig)
   const [pathsPending, setPathsPending] = useState(false)
   const [dockerCeiling, setDockerCeiling] = useState<string | null>('read')
+  const [dockerEnabled, setDockerEnabled] = useState(false)
+  const [dockerHost, setDockerHost] = useState('')
+  const [composeRoot, setComposeRoot] = useState('/var/lib/vigara-agent/compose-stacks')
+  const effectiveDockerHost = dockerHost || (target?.startsWith('linux-') ? 'unix:///var/run/docker.sock' : 'http://127.0.0.1:2375')
 
   const selectedOption = availability.serverUrls.find((option) => option.url === serverUrl)
 
@@ -73,7 +69,8 @@ export function AddDevice({ opened, onClose, device }: Props) {
   async function createBundle() {
     setBusy(true); setError('')
     try {
-      const response = await fetch('/api/agent-downloads', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ deviceId: device?.id, target, serverUrl, name, backup: backupFeature ? { ...backup, sourcePaths: backup.sourcePaths.map((p) => p.trim()).filter(Boolean) } : undefined, features: [...(backupFeature ? ['restic.backup'] : []), ...(dockerCeilings[dockerCeiling ?? 'read'] ?? [])] }) })
+      const dockerChoice = dockerEnrollment(dockerEnabled, dockerCeiling ?? 'read', target, dockerHost, composeRoot)
+      const response = await fetch('/api/agent-downloads', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ deviceId: device?.id, target, serverUrl, name, backup: backupFeature ? { ...backup, sourcePaths: backup.sourcePaths.map((p) => p.trim()).filter(Boolean) } : undefined, docker: dockerChoice.docker, features: [...(backupFeature ? ['restic.backup'] : []), ...dockerChoice.features] }) })
       if (!response.ok) throw new Error((await response.text()).slice(0, 300) || 'Could not prepare the bundle.')
       const sessionId = response.headers.get('X-Vigara-Session-ID') ?? response.headers.get('X-Vigira-Session-ID') ?? ''
       const blob = await response.blob()
@@ -93,15 +90,15 @@ export function AddDevice({ opened, onClose, device }: Props) {
   }
 
   function close() {
-    if (['enrolled', 'canceled', 'expired'].includes(status)) { setSession(''); setStatus(''); setName(device?.name ?? ''); setBackupFeature(false); setDockerCeiling('read') }
+    if (['enrolled', 'canceled', 'expired'].includes(status)) { setSession(''); setStatus(''); setName(device?.name ?? ''); setBackupFeature(false); setDockerCeiling('read'); setDockerEnabled(false); setDockerHost(''); setComposeRoot('/var/lib/vigara-agent/compose-stacks') }
     onClose()
   }
 
   return <Modal opened={opened} onClose={close} title={device ? `Reinstall agent · ${device.name}` : 'Add device'} size="md">
     <Stack>
-      {device && <Alert color="blue" title="Reinstall on this device">This creates a fresh one-use installer for {device.name}, keeping its device record, history, and allowed capabilities. Running it replaces the previous agent credential. Use it only on this device.</Alert>}
+      {device && <Alert color="blue" title="Reinstall on this device">This creates a fresh one-use installer for {device.name}, keeping its device record and history. Existing permissions are preserved unless you explicitly select Docker settings below. Running it replaces the previous agent credential. Use it only on this device.</Alert>}
       {error && <Alert color="red" title="Could not prepare device">{error}</Alert>}
-      {availability.serverUrls.length === 0 && <Alert color="yellow" title="No server URL configured">Set <code>VIGARA_PUBLIC_URL</code> to the HTTPS address agents can reach. On a trusted private network or Tailscale, you can instead set <code>VIGARA_ALLOW_INSECURE_AGENT_HTTP=true</code> and use an <code>http://</code> address on a private (LAN or Tailscale) IP or name. Add more addresses with <code>VIGARA_PUBLIC_URLS</code>.</Alert>}
+      {availability.serverUrls.length === 0 && <Alert color="yellow" title="No server URL configured">Set <code>VIGIRA_PUBLIC_URL</code> to the HTTPS address agents can reach. On a trusted private network or Tailscale, you can instead set <code>VIGIRA_ALLOW_INSECURE_AGENT_HTTP=true</code> and use an <code>http://</code> address on a private (LAN or Tailscale) IP or name. Add more addresses with <code>VIGIRA_PUBLIC_URLS</code>.</Alert>}
       {availability.serverUrls.length === 1 && <Text size="sm">Agents will connect to <b>{availability.serverUrls[0].url}</b>.</Text>}
       {availability.serverUrls.length > 1 && <Select label="Server address the agent will connect to" description="Pick an address the new device can reach, such as the LAN or Tailscale address." value={serverUrl} onChange={setServerUrl} allowDeselect={false} data={availability.serverUrls.map((option) => ({ value: option.url, label: option.secure ? option.url : `${option.url} (unencrypted HTTP)` }))} />}
       {selectedOption && !selectedOption.secure && <Alert color="yellow" title="This connection is not encrypted">The agent will use plain HTTP, so its credential, telemetry, and inventory can be read or altered by anyone who can see traffic on the network between the device and this server. Use this only on a trusted private network or over a VPN such as Tailscale, never across the internet. Prefer an HTTPS address when you have one.</Alert>}
@@ -123,15 +120,20 @@ export function AddDevice({ opened, onClose, device }: Props) {
       {availability.managedBackupsAvailable && !availability.backupTargets?.includes(target ?? '') && <Text size="xs" c="dimmed">A backup-enabled bundle is unavailable for this platform. Rebuild server release artifacts to include restic.</Text>}
       {backupFeature && <BackupFields value={backup} onChange={setBackup} disabled={!!session} onPathsPendingChange={setPathsPending} />}
       {!availability.managedBackupsAvailable && <Text size="xs" c="dimmed">Managed backups require a backup master key on the server.</Text>}
-      <Select disabled={!!session} label="Container management allowed for this device" value={dockerCeiling} onChange={setDockerCeiling} allowDeselect={false}
-        description="The most access this server will accept from the device. The device's own operator must also enable it locally; read-only viewing needs no setting."
+      </>}
+      <Checkbox disabled={!!session} label={device ? 'Configure Docker access during reinstall' : 'Enable Docker access'} checked={dockerEnabled} onChange={(event) => setDockerEnabled(event.currentTarget.checked)} description={device ? 'Unchecked preserves existing settings. Selecting Docker updates its enrollment permissions when this bundle is installed.' : 'The installer configures the agent and checks its access to Docker on this device.'} />
+      {dockerEnabled && <><Select disabled={!!session} label="Docker access level" value={dockerCeiling} onChange={setDockerCeiling} allowDeselect={false}
+        description="Sets the local agent mode and, for new devices, matching enrollment permissions."
         data={[
           { value: 'read', label: 'View only' },
           { value: 'manage', label: 'Manage containers, images, networks and volumes' },
           { value: 'exec', label: 'Manage and open terminals in containers' },
-          { value: 'deploy', label: 'Manage, terminals and deploy stacks' },
+          { value: 'deploy', label: 'Manage, terminals and deploy stacks', disabled: !target?.startsWith('linux-') },
         ]} /></>}
-      <Text size="sm" c="dimmed">Telemetry and inventory are included by the standard agent. Backup-enabled bundles include restic and provision the selected backup settings. Container management still requires local configuration.</Text>
+      {dockerEnabled && <><TextInput disabled={!!session} label="Docker endpoint on this device" value={dockerHost} placeholder={effectiveDockerHost} onChange={(event) => setDockerHost(event.currentTarget.value)} description={target?.startsWith('linux-') ? 'Default: local Docker socket. A loopback HTTP IP and port is also supported.' : 'Requires an existing loopback HTTP Docker endpoint. Windows named pipes are not supported; the installer does not expose the Docker daemon.'} />
+        {dockerCeiling === 'deploy' && <TextInput disabled={!!session} label="Managed Compose directory on this device" value={composeRoot} onChange={(event) => setComposeRoot(event.currentTarget.value)} description="The installer creates this directory. Existing stacks are preserved." />}
+        <Alert color="yellow" title="Docker host access">Docker socket or unrestricted API access can control the host, including when Vigara is set to view-only. Only install this bundle on a host where you approve that access. Linux stack deployment runs the agent as root with write access to the selected Compose directory.</Alert></>}
+      <Text size="sm" c="dimmed">Telemetry and inventory are included. Selected Docker and backup settings are applied when you run the installer on the device.</Text>
       {status && <Alert color={status === 'enrolled' ? 'green' : status === 'waiting' ? 'blue' : 'gray'} title={`Enrollment ${status}`}>{status === 'waiting' ? <>Extract the bundle on the device and run <code>{target?.startsWith('linux-') ? 'sh install.sh' : 'install.cmd'}</code> as an administrator. This one-use enrollment expires after 30 minutes.</> : status === 'enrolled' ? 'Enrollment was accepted. Installation is complete only when the installer confirms the service is running and the device reports a successful check-in.' : status === 'canceled' ? 'The enrollment was canceled.' : 'The enrollment expired.'}</Alert>}
       <Group justify="space-between">
         {session && status === 'waiting' ? <Button variant="default" onClick={() => void cancel()}>Cancel enrollment</Button> : <Button variant="default" onClick={close}>Close</Button>}

@@ -13,7 +13,7 @@ import (
 // OAuth grants. The POST exercises the real signed CSRF check and then simulates
 // its successful redirect. Separate loopback ports model an external client.
 func TestBrowserConsentCallbackFixture(t *testing.T) {
-	if os.Getenv("VIGARA_BROWSER_CONSENT_FIXTURE") != "1" {
+	if os.Getenv("VIGIRA_BROWSER_CONSENT_FIXTURE") != "1" {
 		t.Skip("opt-in local browser fixture")
 	}
 	callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

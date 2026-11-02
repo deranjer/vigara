@@ -208,9 +208,9 @@ func TestReleaseConfigurationAndRedirectPolicy(t *testing.T) {
 // The publishing workflow runs this against the actual cross-compiled assets,
 // not fixture bytes, before uploading them to a draft GitHub release.
 func TestBuiltReleaseDirectory(t *testing.T) {
-	directory := os.Getenv("VIGARA_TEST_AGENT_RELEASE_DIR")
+	directory := os.Getenv("VIGIRA_TEST_AGENT_RELEASE_DIR")
 	if directory == "" {
-		t.Skip("set VIGARA_TEST_AGENT_RELEASE_DIR to validate built release assets")
+		t.Skip("set VIGIRA_TEST_AGENT_RELEASE_DIR to validate built release assets")
 	}
 	data, err := os.ReadFile(filepath.Join(directory, "manifest.json"))
 	if err != nil {

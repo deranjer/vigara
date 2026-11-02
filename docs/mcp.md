@@ -25,11 +25,11 @@ confirms configuration, not reachability from either provider.
 Set these variables on the **API server**, then restart it:
 
 ```dotenv
-VIGARA_MCP_URL=https://vigara.example.com
-VIGARA_COOKIE_SECURE=true
+VIGIRA_MCP_URL=https://vigara.example.com
+VIGIRA_COOKIE_SECURE=true
 ```
 
-`VIGARA_MCP_URL` is the externally reachable **origin**, without `/mcp` or another
+`VIGIRA_MCP_URL` is the externally reachable **origin**, without `/mcp` or another
 path. Leaving it unset disables the MCP and OAuth routes. The original
 `VIGIRA_MCP_URL` spelling remains an alias. Database migrations run automatically
 at startup. Building the API now requires Go 1.25 or newer.
@@ -41,7 +41,7 @@ the `app` service passes it into the container. The current Caddy example includ
 services:
   app:
     environment:
-      VIGARA_MCP_URL: ${VIGARA_MCP_URL:-}
+      VIGIRA_MCP_URL: ${VIGIRA_MCP_URL:-}
 ```
 
 Keep your existing database and credentials. Edit the existing deployment files,
@@ -53,7 +53,7 @@ bash ~/dockers/compose-stacks/vigara/compose.sh up -d --wait app
 
 Substitute your actual deployment directory. The staging template already passes
 application settings through its `env_file`. Reload Account settings after the
-server restarts. To disable MCP, clear `VIGARA_MCP_URL` and recreate the API service.
+server restarts. To disable MCP, clear `VIGIRA_MCP_URL` and recreate the API service.
 
 Use a trusted HTTPS reverse proxy and preserve the original `Host` header.
 Forward `/mcp`, `/oauth/*`, and `/.well-known/oauth-*` to the API without an
