@@ -101,7 +101,7 @@ esac
         self.environment = dict(os.environ, PATH=str(binary) + os.pathsep + os.environ["PATH"],
                                 CALLS=str(self.calls), HOME=str(self.root), TEST_SOCKET=str(self.root / 'docker.sock'))
 
-    def run_setup(self, answers, root_answer='', mcp_answer='n', proxy_answers=None, storage_answer='n', public_url_answer='', reset_answers=None, **environment):
+    def run_setup(self, answers, root_answer='', mcp_answer='n', proxy_answers=None, storage_answer='n', public_url_answer='', reset_answers=None, bind_root_answer='', **environment):
         # Fixtures below describe the original project/image/network prompts.
         # Add the shared-root answer and MCP opt-in before the startup answer.
         lines = answers.splitlines()
@@ -115,6 +115,8 @@ esac
             lines.insert(1, root_answer)
         if len(lines) >= 3:
             lines.insert(3, storage_answer)
+            if storage_answer.lower() in ('y', 'yes'):
+                lines.insert(4, bind_root_answer)
         if reset_answers is not None:
             lines[2:2] = reset_answers.splitlines()
         answers = '\n'.join(lines) + ('\n' if lines else '')
@@ -285,7 +287,11 @@ esac
         self.assertTrue((destination / 'compose.sh').exists())
         self.assertFalse((self.deploy / 'production').exists())
         self.assertEqual(existing.read_text(), 'existing stack stays unchanged\n')
-        self.assertIn('VIGARA_COMPOSE_MANAGED_ROOT=' + str(self.root / 'shared compose').replace(' ', r'\ '), result.stdout)
+        deployment = self.root / 'shared compose' / 'vigara'
+        setting = 'VIGARA_COMPOSE_MANAGED_ROOT="' + str(self.root / 'shared compose') + '"\n'
+        self.assertIn(setting, (deployment / '.env').read_text())
+        self.assertEqual((deployment / 'agent.env').read_text(), setting)
+        self.assertIn('configure-agent.sh', result.stdout)
 
     def test_reject_checkout_and_relative_roots(self):
         for root in ('relative-path', str(self.deploy / 'runtime')):
@@ -342,13 +348,15 @@ esac
         self.assertNotIn('volume rm', self.calls.read_text())
 
     def test_keep_proxy_volumes_overrides_bind_storage(self):
+        data_root = self.root / 'mounted data'
         result = self.run_setup('\n\ny\nvigara.example.com\n\n\nn\n', storage_answer='y',
-                                proxy_answers='y\nkeep\n', PROXY_STATE='missing', PROXY_VOLUMES='1')
+                                bind_root_answer=str(data_root), proxy_answers='y\nkeep\n', PROXY_STATE='missing', PROXY_VOLUMES='1')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('source: ./data/postgres', (self.production / 'compose.yml').read_text())
+        self.assertIn('source: ' + str(data_root / 'vigara/data/postgres'), (self.production / 'compose.yml').read_text())
         proxy = self.stacks_root / 'vigara-caddy'
         self.assertIn('caddy-data:/data', (proxy / 'compose.yml').read_text())
         self.assertFalse((proxy / 'data').exists())
+        self.assertFalse((data_root / 'vigara-caddy').exists())
 
     def test_proxy_purge_is_scoped_and_ordered(self):
         result = self.run_setup('\n\ny\nvigara.example.com\n\n\ny\n',
@@ -592,7 +600,7 @@ esac
         self.assertNotIn('\nvolumes:\n', compose)
         self.assertIn('source: ./data/postgres', compose)
         self.assertIn('source: ./data/android-backups', compose)
-        self.assertIn('create_host_path: false', compose)
+        self.assertIn('create_host_path: true', compose)
         self.assertIn('container_name: vigara-app', compose)
         self.assertIn('container_name: vigara-postgres', compose)
         self.assertTrue((production / 'prepare-storage.sh').exists())
@@ -607,6 +615,109 @@ esac
         self.assertIn('10001:10001 /var/lib/postgresql/data', calls)
         self.assertLess(calls.index('run --rm'), calls.index(' up -d'))
         self.assertNotIn('chown -R', calls)
+
+    def test_custom_bind_root_creates_data_and_prepares_external_permissions(self):
+        data_root = self.root / 'mounted data'
+        result = self.run_setup('\n\nn\n\n\nn\ny\n', storage_answer='y', bind_root_answer=str(data_root))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for name in ('postgres', 'android-backups', 'agent-releases'):
+            self.assertTrue((data_root / 'vigara' / 'data' / name).is_dir())
+        self.assertFalse((self.production / 'data').exists())
+        self.assertIn('source: ' + str(data_root / 'vigara/data/postgres'), (self.production / 'compose.yml').read_text())
+        calls = self.calls.read_text()
+        self.assertIn('source=' + str(data_root / 'vigara/data/android-backups'), calls)
+        self.assertLess(calls.index('run --rm'), calls.index(' up -d'))
+        self.assertIn(str(data_root / 'vigara/data'), result.stdout)
+
+    def test_bind_root_rejects_invalid_paths_and_existing_data(self):
+        for path in ('relative/path', '/tmp/bad,root', str(self.deploy.parent), str(self.production)):
+            with self.subTest(path=path):
+                result = self.run_setup('\n\nn\n\n\nn\nn\n', storage_answer='y', bind_root_answer=path)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(self.production.exists())
+        data_root = self.root / 'existing data'
+        data = data_root / 'vigara/data/postgres'
+        data.mkdir(parents=True)
+        (data / '.database-marker').write_text('preserve')
+        result = self.run_setup('\n\nn\n\n\nn\nn\n', storage_answer='y', bind_root_answer=str(data_root))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Bind data already exists', result.stderr)
+        self.assertEqual((data / '.database-marker').read_text(), 'preserve')
+        self.assertFalse(self.production.exists())
+
+    def test_bind_root_equal_to_compose_root_keeps_relative_layout(self):
+        result = self.run_setup('\n\nn\n\n\nn\nn\n', storage_answer='y', bind_root_answer=str(self.stacks_root))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('source: ./data/postgres', (self.production / 'compose.yml').read_text())
+        self.assertTrue((self.production / 'data/postgres').is_dir())
+
+    def test_bind_root_refuses_symlink_data_without_touching_target(self):
+        data_root = self.root / 'mounted data'
+        target = self.root / 'existing storage'
+        target.mkdir()
+        (target / 'important').write_text('preserve')
+        project = data_root / 'vigara'
+        project.mkdir(parents=True)
+        (project / 'data').symlink_to(target, target_is_directory=True)
+        result = self.run_setup('\n\nn\n\n\nn\nn\n', storage_answer='y', bind_root_answer=str(data_root))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('symlink', result.stderr)
+        self.assertEqual((target / 'important').read_text(), 'preserve')
+        self.assertEqual(list(target.iterdir()), [target / 'important'])
+
+    def test_saved_agent_root_handles_compose_interpolation_characters(self):
+        available = subprocess.run(['docker', 'compose', 'version'], capture_output=True)
+        if available.returncode:
+            self.skipTest('A real Docker Compose CLI is unavailable')
+        root = self.root / 'shared $compose "root"'
+        result = self.run_setup('\n\nn\n\n\nn\nn\n', root_answer=str(root))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        parsed = subprocess.run(['bash', str(root / 'vigara/compose.sh'), 'config', '--environment'],
+                                capture_output=True, text=True)
+        self.assertEqual(parsed.returncode, 0, parsed.stderr)
+        self.assertIn('VIGARA_COMPOSE_MANAGED_ROOT=' + str(root), parsed.stdout.splitlines())
+
+    def test_custom_bind_root_with_real_compose_and_proxy(self):
+        available = subprocess.run(['docker', 'compose', 'version'], capture_output=True)
+        if available.returncode:
+            self.skipTest('A real Docker Compose CLI is unavailable')
+        data_root = self.root / 'mounted data'
+        result = self.run_setup('vigara-prod\n\ny\nvigara.example.com\n\n\nn\n', storage_answer='y',
+                                bind_root_answer=str(data_root), proxy_answers='y\n', PROXY_STATE='missing')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for name in ('vigara-prod', 'vigara-prod-caddy'):
+            directory = self.stacks_root / name
+            parsed = subprocess.run(['bash', str(directory / 'compose.sh'), 'config', '--format', 'json'],
+                                    capture_output=True, text=True)
+            self.assertEqual(parsed.returncode, 0, parsed.stderr)
+            config = json.loads(parsed.stdout)
+            for service in config['services'].values():
+                for mount in service.get('volumes', []):
+                    if mount['target'] == '/var/run/docker.sock':
+                        continue
+                    self.assertTrue(mount['source'].startswith(str(data_root / name / 'data') + '/'))
+                    self.assertTrue(Path(mount['source']).is_dir())
+                    self.assertTrue(mount['bind']['create_host_path'])
+
+    def test_generated_agent_helper_applies_only_agent_settings(self):
+        result = self.run_setup('\n\nn\n\n\nn\nn\n')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        agent_env = self.production / 'agent.env'
+        self.assertEqual(agent_env.read_text(), f'VIGARA_COMPOSE_MANAGED_ROOT="{self.stacks_root}"\n')
+        self.assertEqual(agent_env.stat().st_mode & 0o777, 0o600)
+        binary = self.root / 'bin'
+        for name in ('sudo', 'systemctl'):
+            stub = binary / name
+            stub.write_text('#!/usr/bin/env bash\nprintf "%s %s\\n" "' + name + '" "$*" >> "$CALLS"\n'
+                            'if [[ ${1:-} == tee ]]; then cat >/dev/null; fi\nexit 0\n')
+            stub.chmod(0o700)
+        helper = self.production / 'configure-agent.sh'
+        result = subprocess.run(['bash', str(helper)], env=self.environment, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls.read_text()
+        self.assertIn('sudo install -D -m 0600 -- agent.env /etc/vigara-agent/compose.env', calls)
+        self.assertIn('sudo systemctl try-restart vigara-agent.service', calls)
+        self.assertNotIn('install -D -m 0600 -- .env ', calls)
 
     def test_permission_failure_retains_bind_configuration(self):
         result = self.run_setup('\n\nn\n\n\nn\ny\n', storage_answer='y', FAIL_PERMISSIONS='1')
@@ -645,7 +756,7 @@ esac
                         for mount in service.get('volumes', []):
                             self.assertEqual(mount['type'], 'bind')
                             if mount['target'] != '/var/run/docker.sock':
-                                self.assertFalse(mount.get('bind', {}).get('create_host_path', False))
+                                self.assertTrue(mount.get('bind', {}).get('create_host_path', False))
                                 self.assertTrue(Path(mount['source']).is_dir())
                     if directory.name == 'vigara-prod':
                         self.assertEqual(config['services']['app']['container_name'], 'vigara-prod-app')
