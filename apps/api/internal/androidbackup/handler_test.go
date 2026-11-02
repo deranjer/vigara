@@ -283,7 +283,7 @@ func testPool(t *testing.T) *pgxpool.Pool {
 		_, _ = bootstrap.Exec(ctx, `DROP SCHEMA `+pgx.Identifier{schema}.Sanitize()+` CASCADE`)
 		bootstrap.Close()
 	})
-	for _, name := range []string{"000001_initial_schema.up.sql", "000002_local_auth.up.sql", "000003_agent_enrollment.up.sql", "000012_android_file_backups.up.sql"} {
+	for _, name := range []string{"000001_initial_schema.up.sql"} {
 		migration, readErr := os.ReadFile(filepath.Join("..", "..", "migrations", name))
 		if readErr != nil {
 			t.Fatal(readErr)

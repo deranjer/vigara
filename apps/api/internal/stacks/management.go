@@ -18,6 +18,7 @@ import (
 
 	"github.com/deranjer/vigara/apps/api/internal/audit"
 	"github.com/deranjer/vigara/apps/api/internal/auth"
+	"github.com/deranjer/vigara/apps/api/internal/githubapp"
 	"github.com/deranjer/vigara/internal/protocol"
 	"github.com/deranjer/vigara/internal/stack"
 	"github.com/deranjer/vigara/internal/stackgit"
@@ -26,9 +27,10 @@ import (
 )
 
 type gitSettings struct {
-	Remote  string `json:"remote"`
-	Branch  string `json:"branch"`
-	Version int64  `json:"version"`
+	Remote   string `json:"remote"`
+	Branch   string `json:"branch"`
+	Version  int64  `json:"version"`
+	AuthMode string `json:"authMode,omitempty"`
 }
 
 func (a *API) settings(ctx context.Context) (gitSettings, error) {
@@ -43,7 +45,7 @@ type settingsReader interface {
 }
 
 func (a *API) readSettings(ctx context.Context, reader settingsReader) (gitSettings, error) {
-	s := gitSettings{Branch: "main"}
+	s := gitSettings{Branch: "main", AuthMode: "server"}
 	if a.Repository != nil {
 		s.Remote = a.Repository.Remote
 		s.Branch = a.Repository.Branch
@@ -51,7 +53,7 @@ func (a *API) readSettings(ctx context.Context, reader settingsReader) (gitSetti
 	if reader == nil {
 		return s, nil
 	}
-	e := reader.QueryRow(ctx, "SELECT remote,branch,version FROM stack_git_settings WHERE singleton=true").Scan(&s.Remote, &s.Branch, &s.Version)
+	e := reader.QueryRow(ctx, "SELECT remote,branch,version,auth_mode FROM stack_git_settings WHERE singleton=true").Scan(&s.Remote, &s.Branch, &s.Version, &s.AuthMode)
 	if errors.Is(e, pgx.ErrNoRows) {
 		return s, nil
 	}
@@ -73,7 +75,11 @@ func (a *API) repositoryFromSettings(s gitSettings) *stackgit.Repository {
 	if dir == "" {
 		dir = "/var/lib/vigira/stacks.git"
 	}
-	return &stackgit.Repository{Directory: dir, Remote: s.Remote, Branch: s.Branch}
+	repo := &stackgit.Repository{Directory: dir, Remote: s.Remote, Branch: s.Branch}
+	if s.AuthMode == "github-app" {
+		repo.Authenticate = a.githubAuth
+	}
+	return repo
 }
 func (a *API) requireRepository(w http.ResponseWriter, ctx context.Context) (*stackgit.Repository, bool) {
 	repo, e := a.repository(ctx)
@@ -88,7 +94,8 @@ func (a *API) requireRepository(w http.ResponseWriter, ctx context.Context) (*st
 	return repo, true
 }
 func (a *API) getSettings(w http.ResponseWriter, r *http.Request) {
-	if _, ok := a.Authz.Authorize(w, r, auth.PermStacksDeploy); !ok {
+	u, ok := a.Authz.Authorize(w, r, auth.PermStacksDeploy)
+	if !ok {
 		return
 	}
 	s, e := a.settings(r.Context())
@@ -96,7 +103,17 @@ func (a *API) getSettings(w http.ResponseWriter, r *http.Request) {
 		fail(w, e)
 		return
 	}
-	respond(w, 200, map[string]any{"remote": publicRemote(s.Remote), "branch": s.Branch, "version": s.Version, "authentication": "Server credentials", "credentialHelp": "Git uses the Vigara service account’s SSH keys or Git credential helper. Passwords and tokens are never included in repository URLs or returned to the browser."})
+	status, e := a.githubStatus(r.Context(), r)
+	if e != nil {
+		fail(w, e)
+		return
+	}
+	status["canManage"] = u.Can(auth.PermUsersManage)
+	label, help := "Server credentials", "Git uses the Vigara service account’s SSH keys or Git credential helper. Passwords and tokens are never included in repository URLs or returned to the browser."
+	if s.AuthMode == "github-app" {
+		label, help = "GitHub App", "Vigara automatically renews repository-scoped installation tokens. Saves push directly to the selected branch."
+	}
+	respond(w, 200, map[string]any{"remote": publicRemote(s.Remote), "branch": s.Branch, "version": s.Version, "authMode": s.AuthMode, "authentication": label, "credentialHelp": help, "githubApp": status})
 }
 
 var scpRemote = regexp.MustCompile(`^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[A-Za-z0-9_./~-]+$`)
@@ -140,6 +157,10 @@ func (a *API) editSettings(w http.ResponseWriter, r *http.Request, save bool) {
 	}
 	q.Remote = strings.TrimSpace(q.Remote)
 	q.Branch = strings.TrimSpace(q.Branch)
+	if q.AuthMode != "" && q.AuthMode != "server" && q.AuthMode != "github-app" {
+		http.Error(w, "Choose server credentials or GitHub App authentication.", 422)
+		return
+	}
 	ctx, cancel := stackgit.DefaultTimeout(r.Context())
 	defer cancel()
 	unlock, e := a.repoLock(ctx)
@@ -151,6 +172,19 @@ func (a *API) editSettings(w http.ResponseWriter, r *http.Request, save bool) {
 	current, e := a.settings(ctx)
 	if e != nil {
 		fail(w, e)
+		return
+	}
+	if q.AuthMode == "" {
+		q.AuthMode = current.AuthMode
+	}
+	if q.AuthMode == "github-app" {
+		if _, _, err := githubapp.Repository(q.Remote); err != nil {
+			http.Error(w, "GitHub App authentication requires an HTTPS github.com repository URL.", 422)
+			return
+		}
+	}
+	if q.AuthMode != current.AuthMode && !auth.SameOrigin(r) {
+		http.Error(w, "Use this server's Git settings to change authentication.", 403)
 		return
 	}
 	if !validRemote(q.Remote, current.Remote) || len(q.Branch) > 200 || strings.ContainsAny(q.Branch, "\r\n\x00") || q.Branch == "" {
@@ -171,7 +205,14 @@ func (a *API) editSettings(w http.ResponseWriter, r *http.Request, save bool) {
 	}
 	hash := sha256.Sum256([]byte(q.Remote + "\x00" + q.Branch))
 	candidate := &stackgit.Repository{Directory: filepath.Join(dir, "connection-tests", hex.EncodeToString(hash[:16])), Remote: q.Remote, Branch: q.Branch}
+	if q.AuthMode == "github-app" {
+		candidate.Authenticate = a.githubAuth
+	}
 	if _, e = candidate.List(ctx); e != nil {
+		if errors.Is(e, githubapp.ErrAccess) || errors.Is(e, githubapp.ErrUnavailable) {
+			http.Error(w, e.Error(), 422)
+			return
+		}
 		http.Error(w, "Could not read this repository and branch. Check the URL, branch and server credentials.", 422)
 		return
 	}
@@ -196,9 +237,9 @@ func (a *API) editSettings(w http.ResponseWriter, r *http.Request, save bool) {
 		}
 	}
 	if current.Version == 0 {
-		_, e = a.Pool.Exec(ctx, "INSERT INTO stack_git_settings(singleton,remote,branch) VALUES(true,$1,$2)", q.Remote, q.Branch)
+		_, e = a.Pool.Exec(ctx, "INSERT INTO stack_git_settings(singleton,remote,branch,auth_mode) VALUES(true,$1,$2,$3)", q.Remote, q.Branch, q.AuthMode)
 	} else {
-		_, e = a.Pool.Exec(ctx, "UPDATE stack_git_settings SET remote=$1,branch=$2,version=version+1,updated_at=now() WHERE singleton=true", q.Remote, q.Branch)
+		_, e = a.Pool.Exec(ctx, "UPDATE stack_git_settings SET remote=$1,branch=$2,auth_mode=$3,version=version+1,updated_at=now() WHERE singleton=true", q.Remote, q.Branch, q.AuthMode)
 	}
 	if e != nil {
 		fail(w, e)

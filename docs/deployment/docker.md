@@ -2,7 +2,7 @@
 
 The container runs the Vigira API and serves the web UI embedded in the same process. PostgreSQL is a separate service. On startup, the server applies pending migrations embedded in its binary before accepting requests. No migration container or mounted SQL files are required.
 
-The server preserves the `schema_migrations` history used by previous CLI/container deployments and serializes simultaneous migration attempts with a database lock. If a migration fails or the database is marked dirty, startup stops without resetting that state. Inspect and repair the failure before restarting; do not force the version forward without checking the database. The configured database user needs permission to apply the schema changes, including creating the `pgcrypto` extension on a fresh database.
+The bundled schema is consolidated into `000001_initial_schema` for a fresh installation, including native GitHub App authentication. Existing databases from the previous migration history must be recreated for this release; this is not an in-place upgrade. The server records schema version 1 in `schema_migrations` and serializes simultaneous initialization attempts with a database lock. If a migration fails or the database is marked dirty, startup stops without resetting that state. Inspect and repair the failure before restarting; do not force the version forward without checking the database. The configured database user needs permission to apply the schema changes, including creating the `pgcrypto` extension on a fresh database.
 
 ## Interactive Linux setup
 
@@ -30,6 +30,22 @@ directory or the selected project's containers or volumes already exist, the
 script offers a destructive fresh start. Declining preserves the deployment.
 For upgrades, continue using the existing deployment's `compose.sh`; this is
 an initial installer, not an adoption or migration tool.
+
+### Connect a GitHub stack repository
+
+Setup generates a GitHub App encryption key alongside the backup key, saves it
+in the private deployment `.env`, and forwards it to the API container. Keep this
+file and its keys across restarts and upgrades. The Git cache uses persistent
+storage in both the named-volume and bind-mount layouts.
+
+Once the server is running, sign in at the HTTPS address selected during setup,
+then open **Compose stacks → Git settings → GitHub App → Connect with GitHub**.
+GitHub creates the App and lets you select the repository. Saves push directly
+to your chosen branch; deployment is a separate action. See the
+[GitHub App setup guide](../git-backed-stacks.md#native-github-app-registration).
+If the HTTPS address was left blank, set `VIGIRA_PUBLIC_URL` in the existing
+`.env` and recreate the app container before connecting GitHub. No key needs to
+be regenerated.
 
 ### Start over after a previous installation
 
@@ -83,6 +99,7 @@ The default `.` layout is:
 | Vigara | `<root>/<project>/data/postgres` | `/var/lib/postgresql/data` |
 | Vigara, direct-port setup | `<root>/<project>/data/android-backups` | `/var/lib/vigira/android-backups` |
 | Vigara | `<root>/<project>/data/agent-releases` | `/var/lib/vigira/agent-releases` |
+| Vigara | `<root>/<project>/data/stack-git` | `/var/lib/vigira/stacks.git` |
 | New Caddy proxy | `<root>/<project>-caddy/data/caddy` | `/data` |
 | New Caddy proxy | `<root>/<project>-caddy/data/config` | `/config` |
 

@@ -21,10 +21,12 @@ services:
       VIGIRA_COOKIE_SECURE: "true"
       VIGIRA_MCP_URL: ${VIGIRA_MCP_URL:-}
       VIGIRA_PUBLIC_URL: ${VIGIRA_PUBLIC_URL:-}
+      VIGIRA_GITHUB_APP_MASTER_KEY: ${VIGIRA_GITHUB_APP_MASTER_KEY:-}
       VIGIRA_AGENT_RELEASE_TAG: ${VIGIRA_AGENT_RELEASE_TAG:-auto}
       VIGIRA_AGENT_RELEASE_CACHE: /var/lib/vigira/agent-releases
     volumes:
       - agent-releases:/var/lib/vigira/agent-releases
+      - stack-git:/var/lib/vigira/stacks.git
     # Caddy connects over the proxy network; no host port is published.
     labels:
       caddy: ${VIGIRA_DOMAIN:?Set VIGIRA_DOMAIN to your public hostname}
@@ -52,4 +54,5 @@ services:
 volumes:
   postgres-data:
   agent-releases:
+  stack-git:
 

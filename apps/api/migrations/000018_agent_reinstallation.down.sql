@@ -1,1 +1,0 @@
-ALTER TABLE agent_enrollment_tokens DROP COLUMN replacement_agent_id;

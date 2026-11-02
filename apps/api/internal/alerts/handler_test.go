@@ -393,7 +393,7 @@ func alertsTestPool(t *testing.T) *pgxpool.Pool {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	for _, name := range []string{"000001_initial_schema.up.sql", "000002_local_auth.up.sql", "000003_agent_enrollment.up.sql", "000005_telemetry.up.sql", "000007_alerts.up.sql", "000008_availability_policy.up.sql"} {
+	for _, name := range []string{"000001_initial_schema.up.sql"} {
 		migration, err := os.ReadFile("../../migrations/" + name)
 		if err != nil {
 			t.Fatal(err)

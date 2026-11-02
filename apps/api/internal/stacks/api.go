@@ -17,6 +17,7 @@ import (
 	"github.com/deranjer/vigara/apps/api/internal/audit"
 	"github.com/deranjer/vigara/apps/api/internal/auth"
 	"github.com/deranjer/vigara/apps/api/internal/channel"
+	"github.com/deranjer/vigara/apps/api/internal/githubapp"
 	"github.com/deranjer/vigara/internal/composesecrets"
 	"github.com/deranjer/vigara/internal/placement"
 	"github.com/deranjer/vigara/internal/protocol"
@@ -34,6 +35,8 @@ type Binding struct {
 	Recipients  []composesecrets.RecipientRecord `json:"recipients,omitempty"`
 }
 type Config struct {
+	GitHub             *githubapp.Client
+	PublicURL          string
 	Repository         *stackgit.Repository
 	Targets            map[string]Binding
 	SOPS               string
@@ -100,6 +103,11 @@ func Register(mux *http.ServeMux, c Config) *API {
 	mux.HandleFunc("POST /api/stack-placements/bindings", a.bindProfile)
 	mux.HandleFunc("POST /api/stacks", a.create)
 	mux.HandleFunc("GET /api/stacks/settings", a.getSettings)
+	mux.HandleFunc("POST /api/stacks/settings/github/start", a.startGitHubSetup)
+	mux.HandleFunc("GET /api/stacks/settings/github/callback", a.githubRegistrationCallback)
+	mux.HandleFunc("GET /api/stacks/settings/github/installed", a.githubInstallationCallback)
+	mux.HandleFunc("POST /api/stacks/settings/github/install", a.resumeGitHubInstall)
+	mux.HandleFunc("DELETE /api/stacks/settings/github", a.disconnectGitHub)
 	mux.HandleFunc("PUT /api/stacks/settings", func(w http.ResponseWriter, r *http.Request) { a.editSettings(w, r, true) })
 	mux.HandleFunc("POST /api/stacks/settings/test", func(w http.ResponseWriter, r *http.Request) { a.editSettings(w, r, false) })
 	mux.HandleFunc("GET /api/stacks/setup", a.setup)
@@ -147,6 +155,8 @@ func (a *API) authorize(w http.ResponseWriter, r *http.Request, write bool) (aut
 }
 func fail(w http.ResponseWriter, e error) {
 	switch {
+	case errors.Is(e, githubapp.ErrAccess), errors.Is(e, githubapp.ErrUnavailable):
+		http.Error(w, e.Error(), 422)
 	case errors.Is(e, errPlacementInactive):
 		http.Error(w, e.Error(), 409)
 	case errors.Is(e, placement.ErrInvalid):

@@ -185,11 +185,12 @@ use_bind_storage() {
       '      - postgres-data:/var/lib/postgresql/data') source=postgres; target=/var/lib/postgresql/data;;
       '      - android-backups:/var/lib/vigira/android-backups') source=android-backups; target=/var/lib/vigira/android-backups;;
       '      - agent-releases:/var/lib/vigira/agent-releases') source=agent-releases; target=/var/lib/vigira/agent-releases;;
+      '      - stack-git:/var/lib/vigira/stacks.git') source=stack-git; target=/var/lib/vigira/stacks.git;;
       '      - caddy-data:/data') source=caddy; target=/data;;
       '      - caddy-config:/config') source=config; target=/config;;
       *) printf '%s\n' "$line"; continue;;
     esac
-    case "$source" in android-backups|agent-releases) prepare_api=true; api_directories+=("$source");; esac
+    case "$source" in android-backups|agent-releases|stack-git) prepare_api=true; api_directories+=("$source");; esac
     if [[ $bind_root == . ]]; then
       mkdir -p -- "$directory/data/$source"
     else
@@ -379,7 +380,7 @@ public_url=''
 if [[ $mode == caddy ]]; then
   public_url="https://$domain"
 else
-  ask public_url 'HTTPS address agents can reach (leave blank to configure later)' ''
+  ask public_url 'HTTPS address for agents and GitHub App callbacks (leave blank to configure later)' ''
   [[ -z $public_url || $public_url =~ ^https://[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?(:[0-9]{1,5})?$ ]] || fail 'Enter an HTTPS origin without a path, query or credentials.'
 fi
 
@@ -403,9 +404,11 @@ temporary=$(mktemp -d "$stacks_root/.vigara-setup.XXXXXXXX")
 trap 'rm -rf -- "$temporary"' EXIT
 password=$(openssl rand -hex 32)
 backup_key=$(openssl rand -base64 32)
+github_app_key=$(openssl rand -base64 32)
 {
   printf 'POSTGRES_PASSWORD=%s\nVIGIRA_IMAGE=%s\n' "$password" "$image"
   printf 'VIGIRA_BACKUP_MASTER_KEY=%s\n' "$backup_key"
+  printf 'VIGIRA_GITHUB_APP_MASTER_KEY=%s\n' "$github_app_key"
   printf 'VIGIRA_MCP_URL=%s\n' "$mcp_origin"
   printf 'VIGIRA_PUBLIC_URL=%s\n' "$public_url"
   # Quote path values, escaping Compose interpolation separately from systemd.
@@ -438,7 +441,7 @@ echo 'Host agent Compose root configured from agent.env.'
 BASH
 chmod 600 "$temporary/agent.env"
 chmod 700 "$temporary/configure-agent.sh"
-unset password backup_key
+unset password backup_key github_app_key
 if [[ $mode == caddy ]]; then
   # Forward generated application settings without changing the shared template.
   sed -e 's/\r$//' -e '/      VIGIRA_ADDR:/i\      VIGIRA_BACKUP_MASTER_KEY: ${VIGIRA_BACKUP_MASTER_KEY:?Set VIGIRA_BACKUP_MASTER_KEY}' \
@@ -483,7 +486,12 @@ mv -T -- "$temporary" "$destination"
 trap - EXIT
 
 printf '\nConfiguration validated and saved to %s\nProject: %s\nImage: %s\nAccess: %s\n' "$destination" "$project" "$image" "$url"
-printf 'Back up .env securely: it contains the database password and backup master key.\n'
+printf 'Back up .env securely: it contains the database password and the backup and GitHub App encryption keys. Keep these keys across restarts and upgrades.\n'
+if [[ -n $public_url ]]; then
+  printf 'GitHub App setup: sign in at %s, then open Compose stacks > Git settings > GitHub App > Connect with GitHub.\n' "$public_url"
+else
+  printf 'GitHub App encryption key saved. Before connecting GitHub, set VIGIRA_PUBLIC_URL in .env to this server\x27s HTTPS origin and recreate the app container with compose.sh up -d.\n'
+fi
 printf 'Shared Compose root: %s\n' "$stacks_root"
 printf 'Persistent storage: %s\nContainer names: %s-app, %s-postgres\n' "$storage" "$project" "$project"
 if [[ $storage == bind ]]; then

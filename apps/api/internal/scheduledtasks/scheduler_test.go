@@ -29,6 +29,9 @@ func taskPool(t *testing.T) *pgxpool.Pool {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err = admin.Exec(context.Background(), `BEGIN; SELECT pg_advisory_xact_lock(138139136); CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public; COMMIT;`); err != nil {
+		t.Fatal(err)
+	}
 	schema := fmt.Sprintf("tasks_%d", time.Now().UnixNano())
 	if _, err = admin.Exec(context.Background(), "CREATE SCHEMA "+schema); err != nil {
 		t.Fatal(err)
@@ -42,7 +45,7 @@ func taskPool(t *testing.T) *pgxpool.Pool {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ddl, err := os.ReadFile(filepath.Join("..", "..", "migrations", "000023_scheduled_tasks.up.sql"))
+	ddl, err := os.ReadFile(filepath.Join("..", "..", "migrations", "000001_initial_schema.up.sql"))
 	if err != nil {
 		t.Fatal(err)
 	}

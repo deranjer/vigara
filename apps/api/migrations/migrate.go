@@ -18,9 +18,10 @@ import (
 //go:embed *.sql
 var files embed.FS
 
-// Apply runs pending up migrations, preserving the golang-migrate version
-// history used by previous CLI/container deployments. It never forces a dirty
-// version or runs down migrations.
+// Apply initializes a fresh database and applies subsequent migrations. The
+// squashed initial schema requires a fresh database instead of an upgrade from
+// the previous migration history. It never forces a dirty version or runs down
+// migrations.
 func Apply(connectionString string) error {
 	return apply(files, connectionString)
 }
