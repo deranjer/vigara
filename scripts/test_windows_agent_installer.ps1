@@ -1,4 +1,4 @@
-param([ValidateSet('legacy','fresh','failure','wrong-agent','managed','reset','reset-explicit','reset-cancel','reset-typo','reset-legacy','reset-decline','reset-failure','reset-service-failure','reset-missing','reset-reinstall','reset-noninteractive')][string]$Scenario = 'legacy')
+param([ValidateSet('legacy','fresh','failure','wrong-agent','managed','docker','reset','reset-explicit','reset-cancel','reset-typo','reset-legacy','reset-decline','reset-failure','reset-service-failure','reset-missing','reset-reinstall','reset-noninteractive')][string]$Scenario = 'legacy')
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 $fixture = Join-Path $repo ('.cache\installer-migration-tests\' + $Scenario + '-' + [Guid]::NewGuid())
@@ -10,7 +10,7 @@ $legacyDir = Join-Path $env:ProgramData 'Vigira'
 $currentDir = Join-Path $env:ProgramData 'Vigara'
 $saved = '{"agentId":"synthetic-agent","credential":"synthetic-credential","serverUrl":"https://example.invalid"}'
 New-Item -ItemType Directory -Force $legacyDir,$currentDir | Out-Null
-if ($Scenario -in @('fresh','managed') -or ($Scenario.StartsWith('reset') -and $Scenario -ne 'reset-legacy')) { [IO.File]::WriteAllText((Join-Path $currentDir 'agent.json'),$saved) }
+if ($Scenario -in @('fresh','managed','docker') -or ($Scenario.StartsWith('reset') -and $Scenario -ne 'reset-legacy')) { [IO.File]::WriteAllText((Join-Path $currentDir 'agent.json'),$saved) }
 else { [IO.File]::WriteAllText((Join-Path $legacyDir 'agent.json'),$saved) }
 $bundle = Join-Path $fixture 'bundle'
 New-Item -ItemType Directory -Force $bundle | Out-Null
@@ -36,13 +36,17 @@ if ($Scenario -eq 'managed') {
   [IO.File]::WriteAllText((Join-Path $bundle 'bootstrap.json'),'{"managedBackups":true,"reinstall":false}')
 }
 if ($Scenario -eq 'wrong-agent') { [IO.File]::WriteAllText((Join-Path $bundle 'bootstrap.json'),'{"reinstall":true,"agentId":"different-agent"}') }
+if ($Scenario -eq 'docker') {
+  Copy-Item -LiteralPath (Join-Path $repo 'apps\api\internal\agent\installers\docker_windows.ps1') -Destination (Join-Path $bundle 'configure-docker.ps1')
+  [IO.File]::WriteAllText((Join-Path $bundle 'bootstrap.json'),'{"reinstall":false,"docker":{"mode":"manage","host":"http://127.0.0.1:2375"}}')
+}
 function FakeService($name) {
   $service = [pscustomobject]@{ Name=$name; Status='Running'; StartType='Automatic' }
   $service | Add-Member ScriptMethod WaitForStatus { param($status,$timeout) if ($this.Status -ne $status) { throw 'Unexpected service state' } }
   $service | Add-Member ScriptMethod Refresh {}
   return $service
 }
-$global:OldService = if ($Scenario -in @('fresh','managed') -or ($Scenario.StartsWith('reset') -and $Scenario -ne 'reset-legacy')) { $null } else { FakeService 'VigiraAgent' }
+$global:OldService = if ($Scenario -in @('fresh','managed','docker') -or ($Scenario.StartsWith('reset') -and $Scenario -ne 'reset-legacy')) { $null } else { FakeService 'VigiraAgent' }
 $global:NewService = if ($Scenario.StartsWith('reset') -and $Scenario -ne 'reset-legacy') { FakeService 'VigaraAgent' } else { $null }
 $global:MigratedEnvironment = $null
 function New-Object {
@@ -76,6 +80,7 @@ function New-Service {
 }
 function icacls.exe { $global:LASTEXITCODE=0 }
 function Start-Sleep { param($Seconds) }
+function Invoke-WebRequest { param([switch]$UseBasicParsing,$Uri,$TimeoutSec) return [pscustomobject]@{StatusCode=200;Content='OK'} }
 function Read-Host {
   param($Prompt)
   if ($Scenario -eq 'reset-typo') { return 'reset' }
@@ -120,10 +125,13 @@ if ($Scenario -in @('failure','wrong-agent')) {
   if ($global:OldService -and $global:OldService.StartType -ne 'Disabled') {throw 'Legacy service still enabled'}
   if ($Scenario -eq 'legacy' -and $global:MigratedEnvironment[0] -ne 'VIGIRA_DOCKER_ENABLED=false') {throw 'Service environment was not migrated'}
 }
+if ($Scenario -eq 'docker') {
+  if ($global:MigratedEnvironment -notcontains 'VIGIRA_DOCKER_ENABLED=true' -or $global:MigratedEnvironment -notcontains 'VIGIRA_DOCKER_MODE=manage' -or $global:MigratedEnvironment -notcontains 'VIGIRA_DOCKER_HOST=http://127.0.0.1:2375') { throw 'Docker settings were not installed on the service' }
+}
 if ($Scenario -eq 'managed') {
   $state=Get-Content -Raw -LiteralPath (Join-Path $currentDir 'agent.json') | ConvertFrom-Json
   if (-not $state.managedBackups -or $state.agentId -ne 'synthetic-agent' -or $state.credential -ne 'synthetic-credential') {throw 'Managed opt-in did not preserve enrollment'}
   if (-not (Test-Path -LiteralPath (Join-Path $env:ProgramFiles 'Vigara\restic.exe'))) {throw 'Restic was not installed'}
 } elseif ([IO.File]::ReadAllText((Join-Path $currentDir 'agent.json')) -ne $saved) {throw 'Enrollment changed during migration'}
-if ($Scenario -notin @('fresh','managed') -and [IO.File]::ReadAllText((Join-Path $legacyDir 'agent.json')) -ne $saved) {throw 'Legacy credentials were modified'}
+if ($Scenario -notin @('fresh','managed','docker') -and [IO.File]::ReadAllText((Join-Path $legacyDir 'agent.json')) -ne $saved) {throw 'Legacy credentials were modified'}
 Write-Host ('PASS: ' + $Scenario + ' installer migration behavior')

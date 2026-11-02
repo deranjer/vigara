@@ -23,9 +23,9 @@ export function McpConnectionGuide({ status, error, admin }: { status?: McpStatu
     </>}
     <details open={status?.enabled === false}><summary>Server setup</summary><Stack gap="sm" mt="sm">
       <Text size="sm">For a new installation, run <Code>bash deploy/setup.sh</Code> and choose MCP when prompted. For an existing installation, keep its database, project name and credentials, and set this in the API server environment:</Text>
-      <Code block>{`VIGARA_MCP_URL=${origin}\nVIGARA_COOKIE_SECURE=true`}</Code>
+      <Code block>{`VIGIRA_MCP_URL=${origin}\nVIGIRA_COOKIE_SECURE=true`}</Code>
       <Text size="sm">Use your public HTTPS origin without /mcp. For Docker, ensure the app service forwards the setting; the current Caddy template includes:</Text>
-      <Code block>{'services:\n  app:\n    environment:\n      VIGARA_MCP_URL: ${VIGARA_MCP_URL:-}'}</Code>
+      <Code block>{'services:\n  app:\n    environment:\n      VIGIRA_MCP_URL: ${VIGIRA_MCP_URL:-}'}</Code>
       <Text size="sm">Edit the existing deployment’s .env and Compose file as needed, then use its compose.sh helper with <Code>up -d --wait app</Code>, or your original Compose command. Reload this page afterward. An empty MCP URL disables MCP.</Text>
       <Text size="sm">Route /mcp, /oauth/* and /.well-known/oauth-* to Vigara, preserving Host. Avoid an extra proxy login on these routes. Private LAN or VPN access on your laptop alone is insufficient for cloud connectors.</Text>
     </Stack></details>

@@ -41,7 +41,7 @@ if [[ -n $mcp_origin ]]; then
   if ! retry metadata "$mcp_origin/.well-known/oauth-protected-resource" resource "$mcp_origin/mcp" ||
      ! retry metadata "$mcp_origin/.well-known/oauth-authorization-server" issuer "$mcp_origin" ||
      ! retry challenge; then
-    printf 'MCP readiness failed. Check VIGARA_MCP_URL, forwarded Host, OAuth discovery routes and proxy login rules.\n' >&2
+    printf 'MCP readiness failed. Check VIGIRA_MCP_URL, forwarded Host, OAuth discovery routes and proxy login rules.\n' >&2
     exit 1
   fi
   printf 'MCP discovery and OAuth authentication boundary verified from this server: %s/mcp\n' "$mcp_origin"

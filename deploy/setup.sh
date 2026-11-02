@@ -68,7 +68,7 @@ write_helper() {
     printf '#!/usr/bin/env bash\nset -Eeuo pipefail\n'
     printf 'cd -- "$(dirname -- "${BASH_SOURCE[0]}")"\n'
     printf 'while IFS= read -r variable; do\n'
-    printf '  case "$variable" in VIGARA_*|VIGIRA_*|POSTGRES_*|COMPOSE_*) unset "$variable";; esac\n'
+    printf '  case "$variable" in VIGIRA_*|POSTGRES_*|COMPOSE_*) unset "$variable";; esac\n'
     printf 'done < <(compgen -e)\n'
     printf 'exec docker compose -p %q --env-file .env -f compose.yml "$@"\n' "$name"
   } > "$directory/compose.sh"
@@ -216,7 +216,7 @@ docker compose up --help | grep -q -- '--wait-timeout' || fail 'Update the Docke
 
 # Prevent exported configuration from silently overriding the generated env file.
 while IFS= read -r variable; do
-  case "$variable" in VIGARA_*|VIGIRA_*|POSTGRES_*|COMPOSE_*) unset "$variable";; esac
+  case "$variable" in VIGIRA_*|POSTGRES_*|COMPOSE_*) unset "$variable";; esac
 done < <(compgen -e)
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
@@ -355,25 +355,25 @@ trap 'rm -rf -- "$temporary"' EXIT
 password=$(openssl rand -hex 32)
 backup_key=$(openssl rand -base64 32)
 {
-  printf 'POSTGRES_PASSWORD=%s\nVIGARA_IMAGE=%s\n' "$password" "$image"
-  printf 'VIGARA_BACKUP_MASTER_KEY=%s\n' "$backup_key"
-  printf 'VIGARA_MCP_URL=%s\n' "$mcp_origin"
-  printf 'VIGARA_PUBLIC_URL=%s\n' "$public_url"
+  printf 'POSTGRES_PASSWORD=%s\nVIGIRA_IMAGE=%s\n' "$password" "$image"
+  printf 'VIGIRA_BACKUP_MASTER_KEY=%s\n' "$backup_key"
+  printf 'VIGIRA_MCP_URL=%s\n' "$mcp_origin"
+  printf 'VIGIRA_PUBLIC_URL=%s\n' "$public_url"
   if [[ $mode == caddy ]]; then
-    printf 'VIGARA_DOMAIN=%s\nVIGARA_PROXY_NETWORK=%s\n' "$domain" "$network"
+    printf 'VIGIRA_DOMAIN=%s\nVIGIRA_PROXY_NETWORK=%s\n' "$domain" "$network"
   else
     printf 'POSTGRES_USER=vigira\nPOSTGRES_DB=vigira\n'
-    printf 'VIGARA_BIND_ADDRESS=%s\nVIGARA_PORT=%s\nVIGARA_COOKIE_SECURE=%s\n' "$bind" "$port" "$secure"
+    printf 'VIGIRA_BIND_ADDRESS=%s\nVIGIRA_PORT=%s\nVIGIRA_COOKIE_SECURE=%s\n' "$bind" "$port" "$secure"
   fi
 } > "$temporary/.env"
 unset password backup_key
 if [[ $mode == caddy ]]; then
   # Forward generated application settings without changing the shared template.
-  sed -e 's/\r$//' -e '/      VIGARA_ADDR:/i\      VIGARA_BACKUP_MASTER_KEY: ${VIGARA_BACKUP_MASTER_KEY:?Set VIGARA_BACKUP_MASTER_KEY}' \
+  sed -e 's/\r$//' -e '/      VIGIRA_ADDR:/i\      VIGIRA_BACKUP_MASTER_KEY: ${VIGIRA_BACKUP_MASTER_KEY:?Set VIGIRA_BACKUP_MASTER_KEY}' \
     "$script_dir/compose.caddy.example.yml" > "$temporary/compose.yml"
 else
   sed -e 's/\r$//' -e 's/env_file: .env.staging/env_file: .env/g' \
-    -e 's/"${VIGARA_PORT:-8080}:8080"/"${VIGARA_BIND_ADDRESS:-127.0.0.1}:${VIGARA_PORT:-8080}:8080"/' \
+    -e 's/"${VIGIRA_PORT:-8080}:8080"/"${VIGIRA_BIND_ADDRESS:-127.0.0.1}:${VIGIRA_PORT:-8080}:8080"/' \
     "$script_dir/compose.staging.yml" > "$temporary/compose.yml"
 fi
 sed -i -e "/^  app:$/a\    container_name: ${project}-app" \
@@ -393,7 +393,7 @@ bash "$temporary/compose.sh" config --quiet
 if [[ $proxy_action == create ]]; then
   mkdir "$temporary/proxy"
   sed 's/\r$//' "$script_dir/compose.caddy-proxy.example.yml" > "$temporary/proxy/compose.yml"
-  printf 'VIGARA_CADDY_IMAGE=%s\nVIGARA_CADDY_CONTAINER=%s\nVIGARA_PROXY_NETWORK=%s\nVIGARA_DOCKER_SOCKET=%s\n' \
+  printf 'VIGIRA_CADDY_IMAGE=%s\nVIGIRA_CADDY_CONTAINER=%s\nVIGIRA_PROXY_NETWORK=%s\nVIGIRA_DOCKER_SOCKET=%s\n' \
     "$proxy_image" "$proxy" "$network" "$socket" > "$temporary/proxy/.env"
   write_helper "$temporary/proxy" "$proxy_project"
   if [[ $proxy_storage == bind ]]; then use_bind_storage "$temporary/proxy"; fi
@@ -412,7 +412,7 @@ if [[ $storage == bind ]]; then
   printf 'Vigara data: %s/data\n' "$destination"
   [[ $proxy_action != create || $proxy_storage != bind ]] || printf 'Caddy data: %s/data\n' "$proxy_destination"
 fi
-printf 'When enrolling the host agent, set VIGARA_COMPOSE_MANAGED_ROOT=%q for new managed stacks.\n' "$stacks_root"
+printf 'When enrolling the host agent, set VIGIRA_COMPOSE_MANAGED_ROOT=%q for new managed stacks.\n' "$stacks_root"
 if [[ -n $mcp_origin ]]; then
   printf 'MCP endpoint: %s/mcp\nConnection instructions: Account settings > Claude and ChatGPT.\n' "$mcp_origin"
 fi

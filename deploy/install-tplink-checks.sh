@@ -32,7 +32,7 @@ config_content='{
 dropin_content='# Managed by deploy/install-tplink-checks.sh for the existing test agent.
 [Service]
 Environment="VIGIRA_NETWORK_CHECKS_CONFIG=/etc/vigira-agent/tplink-network-checks.json"
-Environment="VIGARA_NETWORK_CHECKS_CONFIG=/etc/vigira-agent/tplink-network-checks.json"
+Environment="VIGIRA_NETWORK_CHECKS_CONFIG=/etc/vigira-agent/tplink-network-checks.json"
 '
 
 # Capture all potentially sensitive systemd/environment data inside Python.
@@ -48,7 +48,7 @@ import subprocess
 import sys
 
 service, config, dropin, expected_config, expected_dropin = sys.argv[1:]
-keys = {"VIGIRA_NETWORK_CHECKS_CONFIG", "VIGARA_NETWORK_CHECKS_CONFIG"}
+keys = {"VIGIRA_NETWORK_CHECKS_CONFIG"}
 
 def fail(message):
     print("Preflight refused: " + message, file=sys.stderr)
@@ -128,7 +128,7 @@ try:
             fail("an environment file could not be safely inspected.")
         contents = source.read_text().replace("\\\n", "")
         for line in contents.splitlines():
-            match = re.match(r"^\s*(VIGIRA_NETWORK_CHECKS_CONFIG|VIGARA_NETWORK_CHECKS_CONFIG)\s*=(.*)$", line)
+            match = re.match(r"^\s*(VIGIRA_NETWORK_CHECKS_CONFIG)\s*=(.*)$", line)
             if match:
                 values = words(match.group(2))
                 if len(values) > 1:

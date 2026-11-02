@@ -126,7 +126,7 @@ Published server images can automatically fetch matching agent assets; see
 [automatic release downloads](deployment/docker.md#automatic-agent-release-downloads).
 The manual procedure below remains supported for offline or private deployments.
 
-Set `VIGARA_AGENT_RELEASE_DIR` to that directory and `VIGARA_PUBLIC_URL` to the
+Set `VIGIRA_AGENT_RELEASE_DIR` to that directory and `VIGIRA_PUBLIC_URL` to the
 reachable HTTPS base URL of this Vigara instance (for example
 `https://vigara.example`). The directory must contain the generated
 `manifest.json` and fixed artifact filenames. The API verifies each SHA-256
@@ -137,10 +137,10 @@ shown as unavailable; the server does not build binaries during downloads.
 
 Bundles point agents at a server URL chosen from addresses the operator configures:
 
-- `VIGARA_PUBLIC_URL` is the default address.
-- `VIGARA_PUBLIC_URLS` is an optional comma-separated list of alternates, for example a LAN address and a Tailscale address. When more than one address is configured, **Add device** lets the administrator pick which one the new device should use. A request can only select a configured address; it cannot supply its own.
+- `VIGIRA_PUBLIC_URL` is the default address.
+- `VIGIRA_PUBLIC_URLS` is an optional comma-separated list of alternates, for example a LAN address and a Tailscale address. When more than one address is configured, **Add device** lets the administrator pick which one the new device should use. A request can only select a configured address; it cannot supply its own.
 
-HTTPS addresses are always accepted. Plain HTTP is accepted only when you set `VIGARA_ALLOW_INSECURE_AGENT_HTTP=true` **and** the host is a private-network address: loopback, RFC 1918 (`10/8`, `172.16/12`, `192.168/16`), IPv6 unique-local or link-local, the Tailscale/CGNAT range `100.64.0.0/10`, a `.local` or `.ts.net` name, or a single-label name such as `nas`. A public IP or dotted public hostname must use HTTPS even with the flag on, and entries that break the rule are ignored with a startup warning.
+HTTPS addresses are always accepted. Plain HTTP is accepted only when you set `VIGIRA_ALLOW_INSECURE_AGENT_HTTP=true` **and** the host is a private-network address: loopback, RFC 1918 (`10/8`, `172.16/12`, `192.168/16`), IPv6 unique-local or link-local, the Tailscale/CGNAT range `100.64.0.0/10`, a `.local` or `.ts.net` name, or a single-label name such as `nas`. A public IP or dotted public hostname must use HTTPS even with the flag on, and entries that break the rule are ignored with a startup warning.
 
 Plain HTTP means the agent's credential, telemetry, and inventory cross the network unencrypted, so anyone who can observe or alter that traffic can impersonate the agent or read its data. Use it only on a network you trust or over a VPN such as Tailscale (whose traffic is already encrypted), and never across the internet. The Add device dialog shows a warning whenever the selected address is not encrypted, and the installers repeat it. Prefer HTTPS where practical: for example put Caddy in front with `tls internal`, or use `tailscale serve` for a real certificate on a `*.ts.net` name.
 
@@ -158,13 +158,40 @@ secret. Run its installer on the target device; after successful enrollment the
 installer removes the extracted bootstrap file and the agent stores its
 per-device credential in protected state. Canceling a waiting enrollment
 revokes its token. Backup-enabled bundles install pinned Restic and enable server-managed backup
-configuration. Other feature selections set server-side capability limits;
-container modules still require local configuration. See [Managed device
+configuration. Selecting **Enable Docker access** also bundles the endpoint and
+access level and configures the agent service during installation. See [Managed device
 backups](managed-backups.md).
+
+### Configure Docker during installation
+
+In **Add device**, select **Enable Docker access** and choose view-only,
+management, container terminals, or (Linux only) stack deployment. Linux defaults
+to `unix:///var/run/docker.sock`; a loopback HTTP IP and port can be selected
+instead. Windows requires an already configured loopback HTTP endpoint; named
+pipes are not supported. The installer never enables a network listener on Docker.
+
+On Linux the installer writes a private `/etc/vigara-agent/docker.env`, adds a
+systemd override, and grants the service account membership in the selected
+socket's group without changing socket permissions. The service permits Unix
+sockets. It probes Docker as that account before reporting success. For stack
+deployment it checks the Compose CLI, creates the selected managed root without
+changing existing files, and runs as root with that root writable in the service
+filesystem restrictions. Encrypted stacks still require an operator-provisioned
+SOPS binary and age identity. `VIGIRA_COMPOSE_TARGETS_FILE` is optional for new
+managed stacks; set it only to approve existing deployment targets.
+
+Windows installs the selected `VIGIRA_DOCKER_ENABLED`, `VIGIRA_DOCKER_HOST`, and
+`VIGIRA_DOCKER_MODE` values in the service environment, preserving unrelated
+settings, after checking the local endpoint. Both installers preserve existing
+Docker settings when the option is not selected. A failed endpoint check is an
+installation error; correct the local prerequisites and rerun the installer.
+
+Docker socket or unrestricted API access can control the host, even when Vigara
+is configured for view-only access. Only select it for a trusted agent installation.
 
 ## Reinstalling and deleting devices
 
-Device names in Add device must be unique (ignoring case and surrounding whitespace). For an existing device, use **Device info → Reinstall agent**. This issues a new 30-minute, one-use bundle bound to the existing agent and platform, preserving its allowed capabilities, identity, policies, and history. Downloading does not change the current credential; successful enrollment with that bundle replaces it. A newer reinstall bundle cancels earlier pending reinstall bundles.
+Device names in Add device must be unique (ignoring case and surrounding whitespace). For an existing device, use **Device info → Reinstall agent**. This issues a new 30-minute, one-use bundle bound to the existing agent and platform, preserving its identity, policies, and history. Permissions remain unchanged unless you select **Configure Docker access during reinstall**. That explicit choice updates only Docker permissions when the bundle is enrolled; backup permissions are preserved. Downloading alone changes neither the current credential nor its permissions. Successful enrollment replaces the credential and applies the approved permissions. A newer reinstall bundle cancels earlier pending reinstall bundles.
 
 For Windows, extract the bundle and run **install.cmd**. It requests administrator permission and opens a PowerShell window that remains visible. Enrollment accepted by the server does not itself prove that the service was installed or is running.
 
@@ -180,6 +207,6 @@ New downloads contain `vigara-agent.exe` (Windows) or `vigara-agent` (Linux). Th
 
 Installers recognize the original `VigiraAgent` / `vigira-agent.service` installations and migrate their saved state without creating a new device. Original files remain available for rollback. Windows migration preserves the service environment and supports the original LocalSystem installation; a custom account or binary path requires manual migration. Linux migration retains the legacy service account so operator-managed backup files and configuration remain accessible.
 
-Use `VIGARA_*` environment names for new configuration. The original `VIGIRA_*` names are still accepted; an explicitly configured `VIGARA_*` value takes precedence. Existing database names, server storage directories, session cookies, and protocol identifiers remain compatible and are not renamed automatically.
+Use `VIGIRA_*` environment names for all configuration. Existing database names, server storage directories, session cookies, and protocol identifiers remain compatible and are not renamed automatically.
 
 Windows capacity collection covers mounted local drives. Protected system/recovery volumes do not suppress other measurements. A drive without disk-performance support has no throughput series; actual access failures still identify the affected drive rather than reporting a false zero.

@@ -21,9 +21,15 @@ try {
   $bootstrapPath = Join-Path $base 'bootstrap.json'
   $reinstall = $false
   $bootstrap = $null
+  $dockerEnvironment = @()
   if (Test-Path -LiteralPath $bootstrapPath) {
     $bootstrap = Get-Content -Raw -LiteralPath $bootstrapPath | ConvertFrom-Json
     if ($bootstrap.PSObject.Properties.Name -contains 'reinstall') { $reinstall = [bool]$bootstrap.reinstall }
+  }
+  if ($bootstrap -and ($bootstrap.PSObject.Properties.Name -contains 'docker') -and $null -ne $bootstrap.docker) {
+    . (Join-Path $base 'configure-docker.ps1')
+    $dockerEnvironment = @(Get-DockerEnvironment $bootstrap.docker)
+    Test-DockerEndpoint $bootstrap.docker
   }
   $savedPath = $statePath
   if (-not (Test-Path -LiteralPath $savedPath)) { $savedPath = $legacyState }
@@ -134,6 +140,15 @@ try {
       New-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\VigaraAgent' -Name Environment -PropertyType MultiString -Value $legacyEnvironment -Force | Out-Null
     }
   } else { Set-Service -Name VigaraAgent -StartupType Automatic }
+  if ($dockerEnvironment.Count -gt 0) {
+    $key = 'HKLM:\SYSTEM\CurrentControlSet\Services\VigaraAgent'
+    $properties = Get-ItemProperty -LiteralPath $key
+    $environment = @()
+    if ($properties.PSObject.Properties.Name -contains 'Environment') {
+      $environment = @($properties.Environment | Where-Object { $_ -notmatch '^VIGIRA_DOCKER_(ENABLED|HOST|MODE)=' })
+    }
+    New-ItemProperty -LiteralPath $key -Name Environment -PropertyType MultiString -Value @($environment + $dockerEnvironment) -Force | Out-Null
+  }
   Start-Service -Name VigaraAgent
   $service = Get-Service -Name VigaraAgent
   $service.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))

@@ -52,10 +52,10 @@ func (h *Handler) ConfigureReleaseSync(cache, tag, revision string) error {
 		tag = "agents-sha-" + revision
 	}
 	if !releaseTagPattern.MatchString(tag) {
-		return errors.New("agent release tag requires agents-sha- followed by a full source commit; local images need the VIGARA_REVISION build argument")
+		return errors.New("agent release tag requires agents-sha- followed by a full source commit; local images need the VIGIRA_REVISION build argument")
 	}
 	if cache == "" {
-		return errors.New("automatic agent releases require VIGARA_AGENT_RELEASE_CACHE")
+		return errors.New("automatic agent releases require VIGIRA_AGENT_RELEASE_CACHE")
 	}
 	h.releaseStore = &releaseStore{
 		cacheRoot: cache, automatic: automatic,

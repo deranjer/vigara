@@ -65,7 +65,7 @@ func releaseToken(t Target, s stack.Snapshot, images map[string]string) (string,
 		return "", err
 	}
 	b, _ := json.Marshal(images)
-	sum := sha256.Sum256(append([]byte("VIGARA-RELEASE-V1\x00"+s.ID+"\x00"+s.Commit+"\x00"+files+"\x00"), b...))
+	sum := sha256.Sum256(append([]byte("VIGIRA-RELEASE-V1\x00"+s.ID+"\x00"+s.Commit+"\x00"+files+"\x00"), b...))
 	return hex.EncodeToString(sum[:]), nil
 }
 

@@ -8,9 +8,11 @@ AGENT_USER=vigara-agent
 # files. Fresh installations use the canonical account and all services use
 # the canonical binary, state path, and unit name.
 if id -u vigira-agent >/dev/null 2>&1; then AGENT_USER=vigira-agent; fi
+if [ -f "$CONFIG" ]; then python3 "$BASE/configure-docker.py" validate "$CONFIG" "$AGENT_USER"; fi
 getent group vigara-agent >/dev/null || sudo groupadd --system vigara-agent
 id -u vigara-agent >/dev/null 2>&1 || sudo useradd --system --gid vigara-agent --home-dir /var/lib/vigara-agent --shell /usr/sbin/nologin vigara-agent
 sudo install -d -o "$AGENT_USER" -g "$AGENT_USER" -m 0700 /var/lib/vigara-agent
+if [ -f "$CONFIG" ]; then python3 "$BASE/configure-docker.py" probe "$CONFIG" "$AGENT_USER"; fi
 sudo systemctl stop vigara-agent.service 2>/dev/null || true
 sudo install -m 0755 "$BASE/vigara-agent" /usr/local/bin/vigara-agent
 if [ -f "$BASE/vigara-restic" ]; then
@@ -65,7 +67,6 @@ if [ "$REINSTALL" -eq 1 ] || sudo test ! -f /var/lib/vigara-agent/agent.json; th
   fi
   if [ "$MANAGED" -eq 1 ]; then sudo -u "$AGENT_USER" /usr/local/bin/vigara-agent --config /var/lib/vigara-agent/agent.json enable-managed-backups; fi
   printf '%s\n' "$TOKEN" | sudo -u "$AGENT_USER" /usr/local/bin/vigara-agent --config /var/lib/vigara-agent/agent.json enroll --server "$SERVER" --name "$NAME" $INSECURE_FLAG
-  rm -f -- "$CONFIG"
 fi
 if [ "$MANAGED" -eq 1 ]; then sudo -u "$AGENT_USER" /usr/local/bin/vigara-agent --config /var/lib/vigara-agent/agent.json enable-managed-backups; fi
 sudo install -m 0644 "$BASE/vigara-agent.service" /etc/systemd/system/vigara-agent.service
@@ -80,7 +81,10 @@ if [ "$MANAGED" -eq 1 ] || sudo python3 -c 'import json; exit(not json.load(open
   printf '[Service]\nUser=root\nGroup=root\nProtectHome=false\nProtectSystem=false\n' | sudo tee /etc/systemd/system/vigara-agent.service.d/90-managed-backups.conf >/dev/null
 fi
 sudo systemctl daemon-reload
+if [ -f "$CONFIG" ]; then python3 "$BASE/configure-docker.py" apply "$CONFIG" "$AGENT_USER"; fi
+sudo systemctl daemon-reload
 sudo systemctl enable --now vigara-agent.service
 sudo systemctl is-active --quiet vigara-agent.service
 if sudo systemctl cat vigira-agent.service >/dev/null 2>&1; then sudo systemctl disable vigira-agent.service; fi
+rm -f -- "$CONFIG"
 echo 'Vigara agent is running. Existing device identity and legacy files were preserved.'

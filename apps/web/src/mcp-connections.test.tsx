@@ -12,7 +12,7 @@ describe('MCP connection instructions', () => {
     const html = render({ enabled: false })
     expect(html).toContain('MCP disabled')
     expect(html).toContain('Ask your server administrator')
-    expect(html).toContain('VIGARA_MCP_URL=')
+    expect(html).toContain('VIGIRA_MCP_URL=')
     expect(html).toContain('Connect ChatGPT')
     expect(html).toContain('Connect Claude')
     expect(html).toContain('dynamic client registration')

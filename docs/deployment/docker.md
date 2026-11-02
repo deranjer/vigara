@@ -181,7 +181,7 @@ stack directories are left in place. The installer refuses a root within the
 Vigara source checkout.
 
 When configuring the host agent for new managed stacks, set its
-`VIGARA_COMPOSE_MANAGED_ROOT` to this same absolute root and grant the agent
+`VIGIRA_COMPOSE_MANAGED_ROOT` to this same absolute root and grant the agent
 write access through both filesystem permissions and its service sandbox. This
 is an **agent** setting, not an API server setting. The installer prints the
 selected value; agent installation/enrollment remains a separate step. Existing
@@ -197,7 +197,7 @@ bash ~/dockers/compose-stacks/vigara/compose.sh logs --tail 100
 ```
 
 The helper keeps the project name, environment file and Compose file together.
-It clears exported `VIGARA_*`, `VIGIRA_*`, `POSTGRES_*` and `COMPOSE_*` variables
+It clears exported `VIGIRA_*`, `VIGIRA_*`, `POSTGRES_*` and `COMPOSE_*` variables
 so the generated `.env` remains authoritative. Edit that file for later changes.
 Back it up securely; losing or replacing the backup master key can make managed
 backup credentials unrecoverable. Keep the generated Compose file too.
@@ -221,17 +221,17 @@ steps. This script does not configure agent downloads or optional Android storag
 
 ## Environment variable names
 
-Use `VIGARA_*` in deployment environment files. Before upgrading an existing
+Use `VIGIRA_*` in deployment environment files. Before upgrading an existing
 Compose deployment, rename these host-side inputs if present:
 
 | Previous name | Current name |
 | --- | --- |
-| `VIGIRA_IMAGE` | `VIGARA_IMAGE` |
-| `VIGIRA_PORT` | `VIGARA_PORT` |
-| `VIGIRA_DOMAIN` | `VIGARA_DOMAIN` |
-| `VIGIRA_PROXY_NETWORK` | `VIGARA_PROXY_NETWORK` |
-| `VIGIRA_PUBLIC_URL` | `VIGARA_PUBLIC_URL` |
-| `VIGIRA_AGENT_RELEASE_HOST_DIR` | `VIGARA_AGENT_RELEASE_HOST_DIR` |
+| `VIGIRA_IMAGE` | `VIGIRA_IMAGE` |
+| `VIGIRA_PORT` | `VIGIRA_PORT` |
+| `VIGIRA_DOMAIN` | `VIGIRA_DOMAIN` |
+| `VIGIRA_PROXY_NETWORK` | `VIGIRA_PROXY_NETWORK` |
+| `VIGIRA_PUBLIC_URL` | `VIGIRA_PUBLIC_URL` |
+| `VIGIRA_AGENT_RELEASE_HOST_DIR` | `VIGIRA_AGENT_RELEASE_HOST_DIR` |
 
 Compose reads these inputs before the application starts, so the application's
 legacy aliases cannot translate them. Old image, port and network inputs would
@@ -240,7 +240,7 @@ Run `docker compose --env-file YOUR_ENV_FILE -f YOUR_COMPOSE_FILE config --quiet
 after updating the names, and review your configured image, port and network.
 
 The application separately supports legacy `VIGIRA_*` settings; explicitly set
-`VIGARA_*` application settings take precedence, including empty values.
+`VIGIRA_*` application settings take precedence, including empty values.
 Keep existing database names, volume names and filesystem paths when upgrading;
 the environment prefix change does not require renaming stored data.
 
@@ -269,18 +269,18 @@ docker compose --env-file deploy/.env.staging -f deploy/compose.staging.yml pull
 docker compose --env-file deploy/.env.staging -f deploy/compose.staging.yml up -d --remove-orphans
 ```
 
-By default the setup pulls `ghcr.io/deranjer/vigara:staging`, persists database contents in the `postgres-data` volume, and publishes the app on port 8080. Set `VIGARA_PORT` in the environment file to change the host port. Set `VIGARA_IMAGE` to a commit tag or version tag to test a fixed image instead of the moving staging tag. For upgrades, pull the image and run the same `up` command; the server applies new migrations automatically. `--remove-orphans` removes the obsolete migration container from earlier deployments. Use an image containing automatic startup migrations with this simplified Compose file.
+By default the setup pulls `ghcr.io/deranjer/vigara:staging`, persists database contents in the `postgres-data` volume, and publishes the app on port 8080. Set `VIGIRA_PORT` in the environment file to change the host port. Set `VIGIRA_IMAGE` to a commit tag or version tag to test a fixed image instead of the moving staging tag. For upgrades, pull the image and run the same `up` command; the server applies new migrations automatically. `--remove-orphans` removes the obsolete migration container from earlier deployments. Use an image containing automatic startup migrations with this simplified Compose file.
 
 ## Caddy reverse-proxy example
 
 The [Caddy Compose example](https://github.com/deranjer/vigara/blob/main/deploy/compose.caddy.example.yml) connects the app to an existing external network shared with `caddy-docker-proxy`. It uses Caddy labels for HTTPS routing and keeps PostgreSQL on a private backend network with a named data volume. No app or database host port is published. Container and volume names are scoped to the Compose project.
 
-Create an environment file with your hostname and a URL-safe database password. Set `VIGARA_PROXY_NETWORK` to the existing proxy network name; it defaults to `web`. You can also set `VIGARA_IMAGE` to pin a version or commit tag.
+Create an environment file with your hostname and a URL-safe database password. Set `VIGIRA_PROXY_NETWORK` to the existing proxy network name; it defaults to `web`. You can also set `VIGIRA_IMAGE` to pin a version or commit tag.
 
 ```dotenv
 POSTGRES_PASSWORD=replace-with-a-long-random-url-safe-password
-VIGARA_DOMAIN=vigara.example.com
-VIGARA_PROXY_NETWORK=web
+VIGIRA_DOMAIN=vigara.example.com
+VIGIRA_PROXY_NETWORK=web
 ```
 
 ```sh
@@ -293,7 +293,7 @@ When replacing an existing deployment, preserve its actual database volume or bi
 
 ## Optional Android file storage
 
-Android uploads are disabled when `VIGARA_ANDROID_BACKUP_ROOT` is empty. To enable them, set it in `deploy/.env.staging` to `/var/lib/vigira/android-backups`. The Compose setup mounts that path from the persistent `android-backups` volume, and the container user can write there. Protect and back up this volume alongside PostgreSQL; the uploaded files are stored unencrypted. See [Android storage details](../android.md#enable-server-storage).
+Android uploads are disabled when `VIGIRA_ANDROID_BACKUP_ROOT` is empty. To enable them, set it in `deploy/.env.staging` to `/var/lib/vigira/android-backups`. The Compose setup mounts that path from the persistent `android-backups` volume, and the container user can write there. Protect and back up this volume alongside PostgreSQL; the uploaded files are stored unencrypted. See [Android storage details](../android.md#enable-server-storage).
 
 ## Automatic agent release downloads
 
@@ -307,7 +307,7 @@ uploaded to GitHub.
 
 The container publishing workflow waits for those assets before publishing the
 server image. The image embeds the same source revision as a bootstrap fallback.
-With `VIGARA_AGENT_RELEASE_TAG=auto` (the image default), the scheduled bundle
+With `VIGIRA_AGENT_RELEASE_TAG=auto` (the image default), the scheduled bundle
 scan runs at startup and every 24 hours, selecting the newest published releases
 whose protocol major version and pinned Restic version match this server.
 Bundles are enabled only after a complete release passes source revision,
@@ -331,7 +331,7 @@ device backups or unrelated files. An explicit release pin is honored by scans.
 Current Compose examples persist the cache at `/var/lib/vigira/agent-releases`.
 The installer supports either a named cache volume or
 `<compose-root>/<project>/data/agent-releases` in bind mode, including UID 10001
-ownership preparation. It sets `VIGARA_PUBLIC_URL` from the Caddy hostname; the
+ownership preparation. It sets `VIGIRA_PUBLIC_URL` from the Caddy hostname; the
 direct-port path prompts for an agent-facing HTTPS origin (or lets you configure
 it later).
 
@@ -345,16 +345,16 @@ bash ~/dockers/compose-stacks/vigara/compose.sh pull app
 bash ~/dockers/compose-stacks/vigara/compose.sh up -d --wait app
 ```
 
-Set `VIGARA_PUBLIC_URL` in your `.env` and ensure the app forwards it. Add a
+Set `VIGIRA_PUBLIC_URL` in your `.env` and ensure the app forwards it. Add a
 persistent cache mount to avoid downloading assets again on container recreation:
 
 ```yaml
 services:
   app:
     environment:
-      VIGARA_PUBLIC_URL: ${VIGARA_PUBLIC_URL}
-      VIGARA_AGENT_RELEASE_TAG: auto
-      VIGARA_AGENT_RELEASE_CACHE: /var/lib/vigira/agent-releases
+      VIGIRA_PUBLIC_URL: ${VIGIRA_PUBLIC_URL}
+      VIGIRA_AGENT_RELEASE_TAG: auto
+      VIGIRA_AGENT_RELEASE_CACHE: /var/lib/vigira/agent-releases
     volumes:
       - agent-releases:/var/lib/vigira/agent-releases
 volumes:
@@ -367,9 +367,9 @@ owned by the API container's UID/GID 10001. Existing installations without a
 cache mount can still fetch assets into the container filesystem; recreation
 will discard that cache.
 
-`VIGARA_AGENT_RELEASE_TAG=off` disables fetching. An explicit
+`VIGIRA_AGENT_RELEASE_TAG=off` disables fetching. An explicit
 `agents-sha-<40-character-commit>` pins another compatible release. An explicit
-`VIGARA_AGENT_RELEASE_DIR` keeps the manual, operator-provisioned directory and
+`VIGIRA_AGENT_RELEASE_DIR` keeps the manual, operator-provisioned directory and
 takes precedence over automatic downloads; clear it to switch to fetching.
 Outbound HTTPS access to GitHub and its `githubusercontent.com` asset hosts is
 required on a cold cache. Private GitHub repositories are not supported by the
@@ -378,9 +378,9 @@ anonymous fetcher; use the manual path below for those deployments.
 See [scheduled server tasks](../scheduled-tasks.md) for startup behavior, task
 status persistence, administrative controls and the built-in maintenance registry.
 
-For local Docker builds, pass `--build-arg VIGARA_REVISION="$(git rev-parse HEAD)"`
+For local Docker builds, pass `--build-arg VIGIRA_REVISION="$(git rev-parse HEAD)"`
 to select an already published same-commit release. Standalone binaries can set
-the release tag and a service-writable `VIGARA_AGENT_RELEASE_CACHE` explicitly.
+the release tag and a service-writable `VIGIRA_AGENT_RELEASE_CACHE` explicitly.
 
 Operators can use **Actions → Publish agent release assets → Run workflow** on
 `main` to publish missing assets for that commit. The normal container workflow
@@ -396,7 +396,7 @@ Agent bundle downloads require release files and a public HTTPS URL. Build the b
 python scripts/package_agent_releases.py 0.1.0 deploy/agent-releases
 ```
 
-Set `VIGARA_AGENT_RELEASE_HOST_DIR=./agent-releases` and `VIGARA_PUBLIC_URL=https://vigira.example` in `deploy/.env.staging`. Ensure the directory and files are readable by the container's UID 10001, usually with directory mode 755 and file mode 644. For a home network without HTTPS, you can instead set `VIGARA_PUBLIC_URL=http://192.168.1.50:8080` and `VIGARA_ALLOW_INSECURE_AGENT_HTTP=true`; add other addresses such as a Tailscale one with `VIGARA_PUBLIC_URLS`. This is limited to private-network addresses and leaves agent traffic unencrypted; read [Server addresses and plain HTTP](../agent.md#server-addresses-and-plain-http) first. Start or update the app with the optional override file:
+Set `VIGIRA_AGENT_RELEASE_HOST_DIR=./agent-releases` and `VIGIRA_PUBLIC_URL=https://vigira.example` in `deploy/.env.staging`. Ensure the directory and files are readable by the container's UID 10001, usually with directory mode 755 and file mode 644. For a home network without HTTPS, you can instead set `VIGIRA_PUBLIC_URL=http://192.168.1.50:8080` and `VIGIRA_ALLOW_INSECURE_AGENT_HTTP=true`; add other addresses such as a Tailscale one with `VIGIRA_PUBLIC_URLS`. This is limited to private-network addresses and leaves agent traffic unencrypted; read [Server addresses and plain HTTP](../agent.md#server-addresses-and-plain-http) first. Start or update the app with the optional override file:
 
 ```sh
 docker compose --env-file deploy/.env.staging -f deploy/compose.staging.yml -f deploy/compose.staging.downloads.example.yml up -d app
@@ -411,4 +411,4 @@ docker compose --env-file deploy/.env.staging -f deploy/compose.staging.yml ps
 curl http://localhost:8080/healthz
 ```
 
-The host should put the app behind its HTTPS reverse proxy and set `VIGARA_COOKIE_SECURE=true` in `deploy/.env.staging` when serving HTTPS. Use a URL-safe password in `POSTGRES_PASSWORD` because the database URL is assembled in Compose. Back up the `postgres-data` volume before testing upgrades or removing the stack. `docker compose down -v` deletes that database volume.
+The host should put the app behind its HTTPS reverse proxy and set `VIGIRA_COOKIE_SECURE=true` in `deploy/.env.staging` when serving HTTPS. Use a URL-safe password in `POSTGRES_PASSWORD` because the database URL is assembled in Compose. Back up the `postgres-data` volume before testing upgrades or removing the stack. `docker compose down -v` deletes that database volume.
