@@ -9,6 +9,28 @@ import sys
 import tempfile
 from urllib.parse import urlsplit
 import ipaddress
+import shlex
+
+
+def load_settings(bootstrap):
+    settings = bootstrap.get('docker')
+    if (bootstrap.get('reinstall') and isinstance(settings, dict)
+            and settings.get('mode') == 'deploy' and not settings.get('managedRoot')):
+        # These are the installer's EnvironmentFiles, in service precedence order.
+        root = ''
+        for file in ('/etc/vigara-agent/compose.env', '/etc/vigara-agent/docker.env'):
+            path = Path(file)
+            if not path.exists():
+                continue
+            for line in path.read_text().splitlines():
+                if line.startswith('VIGIRA_COMPOSE_MANAGED_ROOT='):
+                    values = shlex.split(line.split('=', 1)[1], comments=True)
+                    if len(values) != 1:
+                        raise ValueError('Invalid existing managed Compose root; set it explicitly in the reinstall bundle.')
+                    root = values[0]
+        if root:
+            settings = dict(settings, managedRoot=root)
+    return validate(settings)
 
 
 def validate(settings):
@@ -107,7 +129,7 @@ def apply(settings, agent_user):
 
 if __name__ == '__main__':
     try:
-        settings = validate(json.loads(Path(sys.argv[2]).read_text()).get('docker'))
+        settings = load_settings(json.loads(Path(sys.argv[2]).read_text()))
         if sys.argv[1] == 'apply':
             apply(settings, sys.argv[3])
         elif sys.argv[1] == 'probe':

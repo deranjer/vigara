@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest'
 import { dockerEnrollment } from './docker-enrollment'
 
 describe('Docker enrollment choices', () => {
+  it('leaves an omitted Compose root for the installer to preserve on reinstall', () => {
+    expect(dockerEnrollment(true, 'deploy', 'linux-amd64', '', '').docker?.managedRoot).toBe('')
+  })
   it('omits host changes and Docker grants unless explicitly selected', () => {
     expect(dockerEnrollment(false, 'deploy', 'linux-amd64', '', '/srv/stacks')).toEqual({ docker: undefined, features: [] })
   })

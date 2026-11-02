@@ -41,6 +41,8 @@ class LinuxResetTests(unittest.TestCase):
 import json,os,sys
 from pathlib import Path
 state=Path(sys.argv[sys.argv.index('--config')+1])
+if os.getenv('EXPECT_USER') and os.getenv('AGENT_RUN_AS') != os.getenv('EXPECT_USER'):
+ sys.exit('Enrollment used the wrong state owner')
 if 'enroll' in sys.argv:
  if os.getenv('FAIL_ENROLL'): sys.exit(1)
  if os.getenv('EXPECT_FRESH') and state.exists(): sys.exit('Old state reached enrollment')
@@ -48,9 +50,11 @@ if 'enroll' in sys.argv:
 '''
         (self.bundle / 'vigara-agent').write_text(agent)
         self.command('sudo', '''#!/usr/bin/env python3
-import subprocess,sys
+import os,subprocess,sys
 args=sys.argv[1:]
-if args[0]=='-u': args=args[2:]
+if args[0]=='-u':
+ os.environ['AGENT_RUN_AS']=args[1]
+ args=args[2:]
 if args[0]=='chown': sys.exit(0)
 if args[0]=='install':
  filtered=[]
@@ -73,6 +77,9 @@ state=root/(unit+'.running')
 with (root/'service-calls').open('a') as f: f.write(' '.join(args)+'\\n')
 if args[0]=='is-active': sys.exit(0 if state.exists() else 1)
 if args[0]=='cat': sys.exit(1)
+if args[0]=='show':
+ print(os.getenv('SERVICE_USER','vigara-agent'))
+ sys.exit(0)
 if args[0]=='stop': state.unlink(missing_ok=True)
 if args[0] in ('start','enable'):
  if os.getenv('FAIL_START') and args[0]=='enable': sys.exit(1)
@@ -101,6 +108,26 @@ if args[0] in ('start','enable'):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assert_saved()
         self.assertEqual(list(self.state.glob('agent.before-reset-*.json')), [])
+
+    def test_reinstall_renews_with_existing_root_service_account(self):
+        self.bootstrap.update(reinstall=True, agentId='old-agent')
+        self.write_bootstrap()
+        result = self.install('--non-interactive', SERVICE_USER='root', EXPECT_USER='root')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads((self.state / 'agent.json').read_text())['agentId'], 'new-agent')
+
+    def test_reinstall_keeps_unprivileged_service_account(self):
+        self.bootstrap.update(reinstall=True, agentId='old-agent')
+        self.write_bootstrap()
+        result = self.install('--non-interactive', EXPECT_USER='vigara-agent')
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_selected_deploy_uses_root_for_enrollment(self):
+        self.bootstrap.update(reinstall=True, agentId='old-agent', docker={'mode': 'deploy'})
+        self.write_bootstrap()
+        (self.bundle / 'configure-docker.py').write_text('pass\n')
+        result = self.install('--non-interactive', EXPECT_USER='root')
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_confirmed_reset_backs_up_and_reenrolls(self):
         result = self.install('--reset-enrollment', answer='RESET\n', EXPECT_FRESH='1')

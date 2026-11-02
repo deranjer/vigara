@@ -219,3 +219,20 @@ Installers recognize the original `VigiraAgent` / `vigira-agent.service` install
 Use `VIGIRA_*` environment names for all configuration. Existing database names, server storage directories, session cookies, and protocol identifiers remain compatible and are not renamed automatically.
 
 Windows capacity collection covers mounted local drives. Protected system/recovery volumes do not suppress other measurements. A drive without disk-performance support has no throughput series; actual access failures still identify the affected drive rather than reporting a false zero.
+
+### Linux reinstall account and Compose directory
+
+Reinstall renews credentials using the existing service account. Docker deploy
+and managed-backup installations use root-owned state; the installer does not
+make that state readable by the unprivileged account to renew enrollment.
+
+When configuring Docker deploy during reinstall, leave **Managed Compose
+directory** blank to preserve the host's existing installer configuration. A
+nonempty path explicitly changes it. Fresh installs without a selected path use
+`/var/lib/vigara-agent/compose-stacks`. The main setup script passes its chosen
+shared stacks directory into initial host registration. The agent does not move
+existing stacks when this setting changes.
+
+If an older reinstall replaced your selected path with the default, enter the
+original path explicitly when generating the replacement reinstall bundle. The
+server cannot infer a path that has already been overwritten on the host.

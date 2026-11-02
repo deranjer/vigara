@@ -54,3 +54,13 @@ func TestDockerInstallerUpdatesOnlyExplicitDockerPermissions(t *testing.T) {
 		}
 	}
 }
+
+func TestDockerOmittedRootRemainsHostChoice(t *testing.T) {
+	settings := dockerSetup{Mode: "deploy", Host: "unix:///var/run/docker.sock"}
+	if err := settings.validate("linux-amd64"); err != nil {
+		t.Fatal(err)
+	}
+	if settings.ManagedRoot != "" {
+		t.Fatal("server replaced omitted root before host could preserve local choice")
+	}
+}
