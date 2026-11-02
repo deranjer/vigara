@@ -629,6 +629,35 @@ esac
         self.assertLess(calls.index('run --rm'), calls.index(' up -d'))
         self.assertIn(str(data_root / 'vigara/data'), result.stdout)
 
+    def test_bind_directory_failure_prints_manual_commands(self):
+        data_root = self.root / 'mounted data'
+        real_mkdir = shutil.which('mkdir')
+        mkdir = self.root / 'bin' / 'mkdir'
+        mkdir.write_text('''#!/usr/bin/env bash
+for path in "$@"; do
+  if [[ $path == "$FAIL_MKDIR_PATH" ]]; then
+    echo 'mkdir: Permission denied' >&2
+    exit 1
+  fi
+done
+exec "$REAL_MKDIR" "$@"
+''')
+        mkdir.chmod(0o700)
+        for failing_path in (data_root, data_root / 'vigara/data/postgres'):
+            with self.subTest(path=failing_path):
+                result = self.run_setup('\n\nn\n\n\nn\nn\n', storage_answer='y',
+                                        bind_root_answer=str(data_root),
+                                        FAIL_MKDIR_PATH=str(failing_path), REAL_MKDIR=real_mkdir)
+                self.assertNotEqual(result.returncode, 0)
+                escaped_project = str(data_root / 'vigara').replace(' ', r'\ ')
+                self.assertIn('Run these commands, then rerun setup:', result.stderr)
+                self.assertIn('sudo mkdir -p -- ' + escaped_project + '/data', result.stderr)
+                self.assertIn(f'sudo chown -- {os.getuid()}:{os.getgid()} '
+                              f'{escaped_project} {escaped_project}/data', result.stderr)
+                self.assertNotIn('chown -R', result.stderr)
+                self.assertFalse(self.production.exists())
+                self.assertNotIn(' up -d', self.calls.read_text())
+
     def test_bind_root_rejects_invalid_paths_and_existing_data(self):
         for path in ('relative/path', '/tmp/bad,root', str(self.deploy.parent), str(self.production)):
             with self.subTest(path=path):
