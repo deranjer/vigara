@@ -2,6 +2,14 @@
 
 This contract defines portable Git data for Compose stacks, logical server profiles, assignments, and observed releases. Docker Compose remains the service definition language. These files describe desired configuration and its ownership; they do not perform provisioning or deployment. The current implementation issues in ENG-176–184 define adoption, secret editing, Git sync, deployment execution, and recovery separately.
 
+## Starting and stopping deployed stacks
+
+The Compose stacks page has Start and Stop buttons on every card and table row. They change the existing containers for that stack on its assigned device, using the same permission checks and audit trail as container actions. Start resumes paused containers as well. These actions do not apply saved configuration, pull images, create missing containers, or enforce Compose dependency ordering; use Deploy for configuration changes and missing containers.
+
+Start all stacks and Stop all stacks cover every deployed or imported stack across devices, regardless of search, device filters, or pagination. Bulk actions exclude stacks whose ID or Compose project name is `vigara` or `vigara-caddy`. Individual controls remain available for those stacks. Offline devices, incomplete inventories, insufficient permissions, and active deployments are reported instead of being silently skipped, and failures in one stack do not prevent other stacks from being processed.
+
+Runtime chips refresh every ten seconds. Red means observed containers are not all running, or containers are missing from the currently deployed configuration. Offline observations are gray, and incomplete inventories cannot show an all-running green chip. The separate deployment chip continues to describe the last deployment attempt.
+
 ## Portable repository layout
 
 The [Profiles and assignments editor](stack-profiles.md) implements authoring, Git persistence, initial device binding and exclusive epoch-1 assignment deployment. The agent checks the supported resource prerequisites before preview and apply. Fenced replacement, replicas, startup ordering and automatic resource provisioning remain pending. Direct deployments of stacks without an enabled assignment do not consume profile requirements.
