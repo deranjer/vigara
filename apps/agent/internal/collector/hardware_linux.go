@@ -16,6 +16,20 @@ import (
 func collectHardware(ctx context.Context) *protocol.HardwareInventory {
 	r := emptyHardware()
 	read := func(path string) string { data, _ := os.ReadFile(path); return hardwareText(string(data)) }
+	system := &protocol.HardwareComponent{Manufacturer: read("/sys/class/dmi/id/sys_vendor"), Model: read("/sys/class/dmi/id/product_name")}
+	if system.Manufacturer != "" || system.Model != "" {
+		r.System = system
+		r.Environment = hardwareEnvironment(system.Manufacturer, system.Model)
+	}
+	if r.Environment == nil {
+		// --vm excludes containers; failure or missing tools leaves detection unknown.
+		detectCtx, cancel := context.WithTimeout(ctx, time.Second)
+		output, err := exec.CommandContext(detectCtx, "systemd-detect-virt", "--vm").Output()
+		cancel()
+		if err == nil {
+			r.Environment = detectedVM(string(output))
+		}
+	}
 	b := &protocol.HardwareComponent{Manufacturer: read("/sys/class/dmi/id/board_vendor"), Model: read("/sys/class/dmi/id/board_name"), Version: read("/sys/class/dmi/id/board_version")}
 	if b.Manufacturer != "" || b.Model != "" {
 		r.Motherboard = b
@@ -57,6 +71,16 @@ func collectHardware(ctx context.Context) *protocol.HardwareInventory {
 		}
 	}
 	return r
+}
+
+func detectedVM(output string) *protocol.HardwareEnvironment {
+	value := strings.TrimSpace(output)
+	// Only accept known VM results, never arbitrary command output or "none".
+	names := map[string]string{"qemu": "QEMU/KVM", "kvm": "QEMU/KVM", "amazon": "Amazon EC2", "vmware": "VMware", "microsoft": "Hyper-V", "oracle": "VirtualBox", "xen": "Xen", "bochs": "Bochs", "parallels": "Parallels", "bhyve": "bhyve", "apple": "Apple Virtualization"}
+	if name := names[value]; name != "" {
+		return &protocol.HardwareEnvironment{Kind: "virtual-machine", Hypervisor: name}
+	}
+	return nil
 }
 
 func parseMemoryModules(output string) []protocol.HardwareComponent {

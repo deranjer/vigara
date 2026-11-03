@@ -4,6 +4,19 @@ package collector
 
 import "testing"
 
+func TestDetectedVM(t *testing.T) {
+	for _, value := range []string{"kvm\n", "qemu\n", "microsoft\n", "vmware\n"} {
+		if got := detectedVM(value); got == nil || got.Kind != "virtual-machine" {
+			t.Fatalf("missed VM %q: %+v", value, got)
+		}
+	}
+	for _, value := range []string{"", "none\n", "docker\n", "lxc\n", "unknown-output\n"} {
+		if got := detectedVM(value); got != nil {
+			t.Fatalf("misidentified %q as VM: %+v", value, got)
+		}
+	}
+}
+
 func TestParseMemoryModulesSkipsEmptySlots(t *testing.T) {
 	modules := parseMemoryModules(`Memory Device
     Size: No Module Installed
