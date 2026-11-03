@@ -25,6 +25,67 @@ import (
 
 type authorizer struct{ user auth.User }
 
+func TestRepositoryLockWaitLeavesPoolCapacity(t *testing.T) {
+	config := testPool(t).Config()
+	config.MaxConns = 2
+	pool, err := pgxpool.NewWithConfig(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	a := &API{Config: Config{Pool: pool}}
+	unlock, err := a.repoLock(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if unlock != nil {
+			unlock()
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	done := make(chan error, 1)
+	before := pool.Stat().AcquireCount()
+	go func() {
+		release, err := a.repoLock(ctx)
+		if err == nil {
+			release()
+		}
+		done <- err
+	}()
+	defer func() { cancel(); <-done }()
+	for pool.Stat().AcquireCount() == before {
+		select {
+		case <-ctx.Done():
+			t.Fatal("lock waiter never acquired a connection")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	queryCtx, queryCancel := context.WithTimeout(context.Background(), time.Second)
+	defer queryCancel()
+	if err := pool.Ping(queryCtx); err != nil {
+		t.Fatalf("a waiting repository request exhausted the pool and blocked the lock holder's queries: %v", err)
+	}
+	select {
+	case <-done:
+		// Restore the signal so cleanup does not block.
+		done <- nil
+		t.Fatal("repository lock did not exclude a second holder")
+	default:
+	}
+	unlock()
+	unlock = nil
+	select {
+	case err := <-done:
+		done <- err
+		if err != nil {
+			t.Fatalf("waiting request did not acquire the released lock: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("waiting request did not acquire the released lock")
+	}
+}
+
 func (a authorizer) Authorize(w http.ResponseWriter, r *http.Request, p auth.Permission) (auth.User, bool) {
 	if !a.user.Can(p) {
 		http.Error(w, "forbidden", 403)

@@ -150,6 +150,42 @@ func TestSettingsAndCreateStackPersistence(t *testing.T) {
 	if w := call("GET", "/api/stacks", nil); w.Code != 200 || !strings.Contains(w.Body.String(), "\"serviceCount\":1") {
 		t.Fatal("saved service count", w.Code, w.Body)
 	}
+	// Batched summaries must pick the latest deployment for each stack and
+	// only report drafts belonging to the current user, including unsaved stacks.
+	if _, e := pool.Exec(ctx, `INSERT INTO stack_bindings(stack_id,agent_id,project_name,directory,display_name)
+		VALUES('unsaved',$1,'unsaved','/srv/managed/unsaved','Unsaved stack')`, agent); e != nil {
+		t.Fatal(e)
+	}
+	var otherUser string
+	if e := pool.QueryRow(ctx, "INSERT INTO users(username,display_name,password_hash) VALUES('other','Other','test-only') RETURNING id::text").Scan(&otherUser); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := pool.Exec(ctx, `INSERT INTO stack_drafts(stack_id,user_id,files) VALUES('media',$1,'{}'),('unsaved',$2,'{}')`, user, otherUser); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := pool.Exec(ctx, `INSERT INTO stack_deployments(id,stack_id,agent_id,project_name,actor_name,commit_id,configuration_digest,snapshot,plan_token,pull,status,created_at)
+		VALUES('older','media',$1,'media','owner','old','old-digest','{}','token',false,'failed',now()-interval '1 hour'),
+		('newer','media',$1,'media','owner','new','new-digest','{}','token',false,'succeeded',now())`, agent); e != nil {
+		t.Fatal(e)
+	}
+	w := call("GET", "/api/stacks", nil)
+	var listing struct {
+		Stacks []struct {
+			ID, DeploymentStatus, DeploymentCommit, DeploymentDigest string
+			Draft                                                    bool
+		}
+	}
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &listing) != nil || len(listing.Stacks) != 2 {
+		t.Fatalf("batched list: %d %s", w.Code, w.Body)
+	}
+	for _, s := range listing.Stacks {
+		if s.ID == "media" && (!s.Draft || s.DeploymentStatus != "succeeded" || s.DeploymentCommit != "new" || s.DeploymentDigest != "new-digest") {
+			t.Fatalf("wrong saved stack summary: %+v", s)
+		}
+		if s.ID == "unsaved" && (s.Draft || s.DeploymentStatus != "" || s.DeploymentCommit != "") {
+			t.Fatalf("other user's draft or deployment leaked into summary: %+v", s)
+		}
+	}
 
 }
 func errorsIsNotFound(e error) bool { return e == stackgit.ErrNotFound }
