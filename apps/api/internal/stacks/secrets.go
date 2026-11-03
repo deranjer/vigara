@@ -188,6 +188,20 @@ func (a *API) editEnvironment(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Stack recipient policy is not configured.", 422)
 		return
 	}
+	if len(b.Recipients) == 0 {
+		b, err = a.ensureEnvironmentRecipients(ctx, s, b)
+		if err != nil {
+			http.Error(w, errEnvironmentSetup.Error(), 422)
+			return
+		}
+	}
+	// Provisioned policies use native age on agents without a SOPS binary.
+	// Canonicalize new legacy requests on retries too, while retaining existing
+	// SOPS inputs and operator-managed policies unchanged.
+	_, operatorManaged := a.Targets[id]
+	if !operatorManaged && s.Files[q.Path] == "" && strings.HasSuffix(q.Path, ".sops") && automaticEnvironmentPolicy(b) {
+		q.Path = strings.TrimSuffix(q.Path, ".sops") + ".age"
+	}
 	plain := []byte(*q.Value)
 	q.Value = nil
 	defer clear(plain)

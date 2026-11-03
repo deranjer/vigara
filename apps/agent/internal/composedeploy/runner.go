@@ -121,6 +121,13 @@ func Register(c *channel.Client, r *Runner) {
 		}
 	}
 	c.Calls[protocol.MethodComposeTargets] = func(ctx context.Context, p json.RawMessage) (any, error) { return r.TargetInfo(), nil }
+	c.Calls[protocol.MethodComposeRecipient] = func(ctx context.Context, p json.RawMessage) (any, error) {
+		var q protocol.ComposeCreateTarget
+		if json.Unmarshal(p, &q) != nil {
+			return nil, stack.ErrInvalid
+		}
+		return r.EnvironmentRecipient(q)
+	}
 	c.Calls[protocol.MethodComposeCreate] = func(ctx context.Context, p json.RawMessage) (any, error) {
 		var q protocol.ComposeCreateTarget
 		if json.Unmarshal(p, &q) != nil {
