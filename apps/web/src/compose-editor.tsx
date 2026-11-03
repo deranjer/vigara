@@ -14,10 +14,10 @@ const yaml = configureMonacoYaml(monaco, { enableSchemaRequest: false })
 
 type Props = {
   stackId: string; path: string; value: string; original: string; compare: boolean
-  composeFile: boolean; disabled: boolean; onChange: (value: string) => void; onSave: () => void
+  composeFile: boolean; disabled: boolean; review?: boolean; onChange: (value: string) => void; onSave: () => void
 }
 
-export default function ComposeEditor({ stackId, path, value, original, compare, composeFile, disabled, onChange, onSave }: Props) {
+export default function ComposeEditor({ stackId, path, value, original, compare, composeFile, disabled, review = false, onChange, onSave }: Props) {
   const host = useRef<HTMLDivElement>(null)
   const models = useRef<{ draft: monaco.editor.ITextModel; saved: monaco.editor.ITextModel } | null>(null)
   const instance = useRef<monaco.editor.IStandaloneCodeEditor | monaco.editor.IStandaloneDiffEditor | null>(null)
@@ -29,22 +29,22 @@ export default function ComposeEditor({ stackId, path, value, original, compare,
 
   useEffect(() => {
     const language = /\.ya?ml$/i.test(path) ? 'yaml' : 'plaintext'
-    const uri = (side: string) => monaco.Uri.from({ scheme: 'inmemory', path: '/stacks/' + stackId + '/' + side + '/' + path })
+    const uri = (side: string) => monaco.Uri.from({ scheme: 'inmemory', path: '/stacks/' + stackId + '/' + (review ? 'review/' : '') + side + '/' + path })
     const draft = monaco.editor.createModel('', language, uri('draft'))
     const saved = monaco.editor.createModel('', language, uri('saved'))
     draft.updateOptions(indentation); saved.updateOptions(indentation)
     models.current = { draft, saved }
-    const subscription = draft.onDidChangeContent(() => callbacks.current.onChange(draft.getValue()))
+    const subscription = draft.onDidChangeContent(() => { if (!review) callbacks.current.onChange(draft.getValue()) })
     return () => { subscription.dispose(); draft.dispose(); saved.dispose(); models.current = null }
-  }, [path, stackId])
+  }, [path, stackId, review])
 
   useEffect(() => {
-    if (!models.current) return
+    if (!models.current || review) return
     void yaml.update({ enableSchemaRequest: false, indentation: '  ', format: { enable: true }, schemas: composeFile ? [{
       uri: 'https://compose-spec.io/schema/compose-spec.json', schema: composeSchema,
       fileMatch: [models.current.draft.uri.toString(), models.current.saved.uri.toString()],
     }] : [] })
-  }, [composeFile, path, stackId])
+  }, [composeFile, path, stackId, review])
 
   useEffect(() => {
     if (!host.current || !models.current) return
@@ -54,7 +54,7 @@ export default function ComposeEditor({ stackId, path, value, original, compare,
       tabFocusMode: false, padding: { top: 12, bottom: 12 },
     }
     const editor = compare
-      ? monaco.editor.createDiffEditor(host.current, { ...options, originalEditable: false, renderSideBySide: true, originalAriaLabel: 'Saved version: ' + path, modifiedAriaLabel: 'Your draft: ' + path })
+      ? monaco.editor.createDiffEditor(host.current, { ...options, originalEditable: false, renderSideBySide: true, useInlineViewWhenSpaceIsLimited: false, renderSideBySideInlineBreakpoint: 0, ignoreTrimWhitespace: false, originalAriaLabel: 'Saved version: ' + path, modifiedAriaLabel: 'Your draft: ' + path })
       : monaco.editor.create(host.current, { ...options, model: models.current.draft })
     if (compare) (editor as monaco.editor.IStandaloneDiffEditor).setModel({ original: models.current.saved, modified: models.current.draft })
     const editable = compare ? (editor as monaco.editor.IStandaloneDiffEditor).getModifiedEditor() : editor as monaco.editor.IStandaloneCodeEditor
@@ -63,17 +63,17 @@ export default function ComposeEditor({ stackId, path, value, original, compare,
     setTabMovesFocus(false)
     instance.current = editor
     return () => { configuration.dispose(); editor.dispose(); instance.current = null }
-  }, [compare, path, stackId])
+  }, [compare, path, stackId, review])
 
   useEffect(() => {
     const model = models.current?.draft
     if (model && model.getValue() !== value) model.setValue(value)
-  }, [value, compare, path, stackId])
+  }, [value, compare, path, stackId, review])
   useEffect(() => {
     const model = models.current?.saved
     if (model && model.getValue() !== original) model.setValue(original)
-  }, [original, compare, path, stackId])
-  useEffect(() => { instance.current?.updateOptions({ readOnly: disabled }) }, [disabled, compare, path, stackId])
+  }, [original, compare, path, stackId, review])
+  useEffect(() => { instance.current?.updateOptions({ readOnly: disabled }) }, [disabled, compare, path, stackId, review])
   useEffect(() => { monaco.editor.setTheme(theme === 'dark' ? 'vs-dark' : 'vs') }, [theme])
   useEffect(() => {
     if (!expanded) return
@@ -83,8 +83,11 @@ export default function ComposeEditor({ stackId, path, value, original, compare,
   }, [expanded])
 
   return <Stack gap="xs" className={expanded ? 'compose-editor compose-editor-expanded' : 'compose-editor'}>
-    <Group justify="space-between"><Text size="sm" fw={600}>{compare ? 'Saved version ↔ Your draft' : 'Your draft'} · {path}</Text><Button size="xs" variant="default" onClick={() => setExpanded((current) => !current)}>{expanded ? 'Exit expanded view' : 'Expand editor'}</Button></Group>
-    <div ref={host} className="compose-editor-surface" />
-    <Text size="xs" c="dimmed">{tabMovesFocus ? 'Tab moves focus' : 'Tab indents by 2 spaces'} · Shift+Tab unindents · Ctrl/Cmd+S saves to Git · Ctrl+M (Mac: Ctrl+Shift+M) toggles Tab focus · F1 for commands</Text>
+    <Group justify="space-between"><Text size="sm" fw={600}>{review ? 'Side-by-side comparison' : compare ? 'Saved version ↔ Your draft' : 'Your draft'}{!review && ' · ' + path}</Text><Button size="xs" variant="default" onClick={() => setExpanded((current) => !current)}>{expanded ? 'Exit expanded view' : 'Expand editor'}</Button></Group>
+    <div className="compose-editor-scroll"><div className={compare ? 'compose-editor-content compose-diff-content' : 'compose-editor-content'}>
+      {compare && <div className="compose-diff-labels"><Text size="xs" fw={600}>Saved version</Text><Text size="xs" fw={600}>Your draft</Text></div>}
+      <div ref={host} className="compose-editor-surface" />
+    </div></div>
+    {!review && <Text size="xs" c="dimmed">{tabMovesFocus ? 'Tab moves focus' : 'Tab indents by 2 spaces'} · Shift+Tab unindents · Ctrl/Cmd+S saves to Git · Ctrl+M (Mac: Ctrl+Shift+M) toggles Tab focus · F1 for commands</Text>}
   </Stack>
 }

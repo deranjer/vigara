@@ -67,6 +67,16 @@ body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--mantine
 .compose-editor-surface { height: 520px; min-width: 0; overflow: hidden; border: 1px solid var(--mantine-color-default-border); border-radius: var(--mantine-radius-sm); }
 .compose-editor-expanded { position: fixed; inset: 12px; z-index: 200; padding: 16px; background: var(--mantine-color-body); border: 1px solid var(--mantine-color-default-border); border-radius: var(--mantine-radius-md); box-shadow: 0 0 0 20px #0005; }
 .compose-editor-expanded .compose-editor-surface { flex: 1; min-height: 0; height: auto; }
+.compose-editor-expanded .compose-editor-scroll, .compose-editor-expanded .compose-editor-content { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.compose-editor-scroll { overflow-x: auto; }
+.compose-diff-content { min-width: 700px; }
+.compose-diff-labels { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--mantine-color-default-border); border-bottom: 0; background: var(--mantine-color-default-hover); }
+.compose-diff-labels > * { padding: 8px 12px; }
+.compose-diff-labels > * + * { border-left: 1px solid var(--mantine-color-default-border); }
+.stack-diff-file { min-width: 0; overflow: hidden; }
+.stack-diff-path { overflow-wrap: anywhere; }
+.stack-loading { width: 100%; min-height: min(60vh, 520px); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; }
+.stack-loading-editor { min-height: 320px; }
 @media (max-width: 640px) { .compose-editor-surface { height: 420px; } .compose-editor-expanded { inset: 4px; padding: 8px; } }
 
 .stack-search { flex: 1; min-width: 220px; }
