@@ -20,6 +20,23 @@ spec.loader.exec_module(installer)
 
 
 class DockerInstallerTests(unittest.TestCase):
+    def test_reinstall_preserves_root_from_existing_environment_files(self):
+        existing = {'/etc/vigara-agent/compose.env': 'VIGIRA_COMPOSE_MANAGED_ROOT="/home/operator/stacks"\n',
+                    '/etc/vigara-agent/docker.env': 'VIGIRA_DOCKER_MODE=deploy\n'}
+        bootstrap = {'reinstall': True, 'docker': {'mode': 'deploy', 'host': 'http://127.0.0.1:2375'}}
+        with patch.object(installer.Path, 'exists', lambda p: str(p) in existing), \
+             patch.object(installer.Path, 'read_text', lambda p: existing[str(p)]):
+            self.assertEqual(installer.load_settings(bootstrap)['managedRoot'], '/home/operator/stacks')
+            existing['/etc/vigara-agent/docker.env'] += 'VIGIRA_COMPOSE_MANAGED_ROOT="/srv/latest stacks"\n'
+            self.assertEqual(installer.load_settings(bootstrap)['managedRoot'], '/srv/latest stacks')
+            bootstrap['docker']['managedRoot'] = '/srv/explicit'
+            self.assertEqual(installer.load_settings(bootstrap)['managedRoot'], '/srv/explicit')
+
+    def test_reinstall_without_existing_root_uses_fresh_default(self):
+        with patch.object(installer.Path, 'exists', return_value=False):
+            result = installer.load_settings({'reinstall': True, 'docker': {'mode': 'deploy', 'host': 'http://127.0.0.1:2375'}})
+        self.assertEqual(result['managedRoot'], '/var/lib/vigara-agent/compose-stacks')
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

@@ -73,11 +73,11 @@ AGENT_USER=vigara-agent
 # files. Fresh installations use the canonical account and all services use
 # the canonical binary, state path, and unit name.
 if id -u vigira-agent >/dev/null 2>&1; then AGENT_USER=vigira-agent; fi
-if [ -f "$CONFIG" ]; then python3 "$BASE/configure-docker.py" validate "$CONFIG" "$AGENT_USER"; fi
+if [ -f "$CONFIG" ]; then sudo python3 "$BASE/configure-docker.py" validate "$CONFIG" "$AGENT_USER"; fi
 getent group vigara-agent >/dev/null || sudo groupadd --system vigara-agent
 id -u vigara-agent >/dev/null 2>&1 || sudo useradd --system --gid vigara-agent --home-dir /var/lib/vigara-agent --shell /usr/sbin/nologin vigara-agent
 sudo install -d -o "$AGENT_USER" -g "$AGENT_USER" -m 0700 /var/lib/vigara-agent
-if [ -f "$CONFIG" ]; then python3 "$BASE/configure-docker.py" probe "$CONFIG" "$AGENT_USER"; fi
+if [ -f "$CONFIG" ]; then sudo python3 "$BASE/configure-docker.py" probe "$CONFIG" "$AGENT_USER"; fi
 if sudo systemctl is-active --quiet vigara-agent.service; then
   CURRENT_RUNNING=1
   sudo systemctl stop vigara-agent.service
@@ -125,7 +125,18 @@ if b['agentId'] != s['agentId']: raise SystemExit('Reinstall bundle belongs to a
 PY
   fi
 fi
-if [ -f "$CONFIG" ]; then python3 "$BASE/configure-docker.py" apply "$CONFIG" "$AGENT_USER"; fi
+if [ -f "$CONFIG" ]; then sudo python3 "$BASE/configure-docker.py" apply "$CONFIG" "$AGENT_USER"; fi
+# Deploy/backup services own their state as root. Renew enrollment with the
+# effective service account instead of handing its private state to another user.
+ENROLL_USER=$AGENT_USER
+CURRENT_USER=$(sudo systemctl show --property=User --value vigara-agent.service 2>/dev/null || true)
+if [ "$CURRENT_USER" = root ] || [ "$MANAGED" -eq 1 ]; then ENROLL_USER=root; fi
+if [ -f "$CONFIG" ] && python3 - "$CONFIG" <<'PY'
+import json,sys
+b=json.load(open(sys.argv[1]))
+raise SystemExit(0 if (b.get('docker') or {}).get('mode') == 'deploy' else 1)
+PY
+then ENROLL_USER=root; fi
 if [ "$REINSTALL" -eq 1 ] || sudo test ! -f /var/lib/vigara-agent/agent.json; then
   test -f "$CONFIG" || { echo 'No saved enrollment. Download a device bundle.' >&2; exit 1; }
   INSECURE=$(python3 -c 'import json,sys; print("1" if json.load(open(sys.argv[1])).get("insecureHttp") else "")' "$CONFIG")
@@ -134,13 +145,13 @@ if [ "$REINSTALL" -eq 1 ] || sudo test ! -f /var/lib/vigara-agent/agent.json; th
     INSECURE_FLAG="--allow-insecure-private-http"
     echo 'WARNING: plain HTTP; use only on a trusted private network or VPN.' >&2
   fi
-  if [ "$MANAGED" -eq 1 ]; then sudo -u "$AGENT_USER" /usr/local/bin/vigara-agent --config /var/lib/vigara-agent/agent.json enable-managed-backups; fi
-  printf '%s\n' "$TOKEN" | sudo -u "$AGENT_USER" /usr/local/bin/vigara-agent --config /var/lib/vigara-agent/agent.json enroll --server "$SERVER" --name "$NAME" $INSECURE_FLAG
+  if [ "$MANAGED" -eq 1 ]; then sudo -u "$ENROLL_USER" /usr/local/bin/vigara-agent --config /var/lib/vigara-agent/agent.json enable-managed-backups; fi
+  printf '%s\n' "$TOKEN" | sudo -u "$ENROLL_USER" /usr/local/bin/vigara-agent --config /var/lib/vigara-agent/agent.json enroll --server "$SERVER" --name "$NAME" $INSECURE_FLAG
   sudo test -f /var/lib/vigara-agent/agent.json || fail 'Enrollment did not save agent.json.'
   ENROLLMENT_SAVED=1
   rm -f -- "$CONFIG"
 fi
-if [ "$MANAGED" -eq 1 ]; then sudo -u "$AGENT_USER" /usr/local/bin/vigara-agent --config /var/lib/vigara-agent/agent.json enable-managed-backups; fi
+if [ "$MANAGED" -eq 1 ]; then sudo -u "$ENROLL_USER" /usr/local/bin/vigara-agent --config /var/lib/vigara-agent/agent.json enable-managed-backups; fi
 sudo install -m 0644 "$BASE/vigara-agent.service" /etc/systemd/system/vigara-agent.service
 if [ "$AGENT_USER" = vigira-agent ]; then
   sudo mkdir -p /etc/systemd/system/vigara-agent.service.d

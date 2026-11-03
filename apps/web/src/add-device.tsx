@@ -25,7 +25,7 @@ export function AddDevice({ opened, onClose, device }: Props) {
   const [dockerCeiling, setDockerCeiling] = useState<string | null>('read')
   const [dockerEnabled, setDockerEnabled] = useState(false)
   const [dockerHost, setDockerHost] = useState('')
-  const [composeRoot, setComposeRoot] = useState('/var/lib/vigara-agent/compose-stacks')
+  const [composeRoot, setComposeRoot] = useState('')
   const effectiveDockerHost = dockerHost || (target?.startsWith('linux-') ? 'unix:///var/run/docker.sock' : 'http://127.0.0.1:2375')
 
   const selectedOption = availability.serverUrls.find((option) => option.url === serverUrl)
@@ -90,7 +90,7 @@ export function AddDevice({ opened, onClose, device }: Props) {
   }
 
   function close() {
-    if (['enrolled', 'canceled', 'expired'].includes(status)) { setSession(''); setStatus(''); setName(device?.name ?? ''); setBackupFeature(false); setDockerCeiling('read'); setDockerEnabled(false); setDockerHost(''); setComposeRoot('/var/lib/vigara-agent/compose-stacks') }
+    if (['enrolled', 'canceled', 'expired'].includes(status)) { setSession(''); setStatus(''); setName(device?.name ?? ''); setBackupFeature(false); setDockerCeiling('read'); setDockerEnabled(false); setDockerHost(''); setComposeRoot('') }
     onClose()
   }
 
@@ -131,7 +131,7 @@ export function AddDevice({ opened, onClose, device }: Props) {
           { value: 'deploy', label: 'Manage, terminals and deploy stacks', disabled: !target?.startsWith('linux-') },
         ]} /></>}
       {dockerEnabled && <><TextInput disabled={!!session} label="Docker endpoint on this device" value={dockerHost} placeholder={effectiveDockerHost} onChange={(event) => setDockerHost(event.currentTarget.value)} description={target?.startsWith('linux-') ? 'Default: local Docker socket. A loopback HTTP IP and port is also supported.' : 'Requires an existing loopback HTTP Docker endpoint. Windows named pipes are not supported; the installer does not expose the Docker daemon.'} />
-        {dockerCeiling === 'deploy' && <TextInput disabled={!!session} label="Managed Compose directory on this device" value={composeRoot} onChange={(event) => setComposeRoot(event.currentTarget.value)} description="The installer creates this directory. Existing stacks are preserved." />}
+        {dockerCeiling === 'deploy' && <TextInput disabled={!!session} label="Managed Compose directory on this device" value={composeRoot} placeholder={device ? 'Keep the host’s configured directory' : '/var/lib/vigara-agent/compose-stacks'} onChange={(event) => setComposeRoot(event.currentTarget.value)} description={device ? 'Leave blank to preserve the directory configured on this host. Enter a path only to change it.' : 'Choose the directory containing your Compose stacks. Blank uses the default shown above.'} />}
         <Alert color="yellow" title="Docker host access">Docker socket or unrestricted API access can control the host, including when Vigara is set to view-only. Only install this bundle on a host where you approve that access. Linux stack deployment runs the agent as root with write access to the selected Compose directory.</Alert></>}
       <Text size="sm" c="dimmed">Telemetry and inventory are included. Selected Docker and backup settings are applied when you run the installer on the device.</Text>
       {status && <Alert color={status === 'enrolled' ? 'green' : status === 'waiting' ? 'blue' : 'gray'} title={`Enrollment ${status}`}>{status === 'waiting' ? <>Extract the bundle on the device and run <code>{target?.startsWith('linux-') ? 'sh install.sh' : 'install.cmd'}</code> as an administrator. This one-use enrollment expires after 30 minutes.</> : status === 'enrolled' ? 'Enrollment was accepted. Installation is complete only when the installer confirms the service is running and the device reports a successful check-in.' : status === 'canceled' ? 'The enrollment was canceled.' : 'The enrollment expired.'}</Alert>}

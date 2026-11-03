@@ -51,10 +51,9 @@ func (d *dockerSetup) validate(target string) error {
 		if !strings.HasPrefix(target, "linux-") {
 			return errors.New("Compose stack deployment is supported on Linux agents only")
 		}
-		if d.ManagedRoot == "" {
-			d.ManagedRoot = "/var/lib/vigara-agent/compose-stacks"
-		}
-		if !dockerManagedPath.MatchString(d.ManagedRoot) || strings.Contains(d.ManagedRoot, "..") || strings.Trim(d.ManagedRoot, "/ ") == "" {
+		// An omitted root is resolved on the host: preserve its local choice on
+		// reinstall, or use the fresh-install default when none exists.
+		if d.ManagedRoot != "" && (!dockerManagedPath.MatchString(d.ManagedRoot) || strings.Contains(d.ManagedRoot, "..") || strings.Trim(d.ManagedRoot, "/ ") == "") {
 			return errors.New("Compose root must be an absolute Linux directory without parent traversal")
 		}
 	} else if d.ManagedRoot != "" {
