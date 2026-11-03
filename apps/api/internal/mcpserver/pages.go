@@ -113,7 +113,7 @@ func renderPage(w http.ResponseWriter, data any, callback ...string) {
 }
 
 func (h *Handler) consentPage(w http.ResponseWriter, r *http.Request, a authorization, message string) {
-	labels := map[string]string{"devices.read": "Device names, platforms, and monitoring status", "containers.read": "Container names, images, and observed state", "containers.manage": "Start, stop, restart and remove containers; manage Docker images, networks and volumes", "stacks.deploy": "Read Compose source, create and edit stacks, encrypted environment inputs, Git settings and placements; preview and deploy saved revisions", "backups.read": "Read backup results and settings only; no backup changes or deletion", "alerts.read": "Alert incidents and recent failures"}
+	labels := map[string]string{"devices.read": "Device names, platforms, and monitoring status", "containers.read": "Container names, images, observed state, live inspection and logs (logs may contain secrets)", "containers.manage": "Start, stop, restart and remove containers; manage Docker images, networks and volumes", "stacks.deploy": "Read Compose source, create and edit stacks, encrypted environment inputs, Git settings and placements; preview and deploy saved revisions", "backups.read": "Read backup results and settings only; no backup changes or deletion", "alerts.read": "Alert incidents and recent failures"}
 	scopes := []string{}
 	for _, scope := range a.Scopes {
 		scopes = append(scopes, labels[scope])

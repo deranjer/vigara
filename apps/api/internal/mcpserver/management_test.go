@@ -112,6 +112,35 @@ func TestManagementRejectsPathInjection(t *testing.T) {
 	}
 }
 
+func TestContainerLogsBridge(t *testing.T) {
+	h, _ := testHandler(t)
+	h.management = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" || r.URL.Path != "/api/containers/00000000-0000-0000-0000-000000000001/web/logs/snapshot" ||
+			r.URL.Query().Get("tail") != "50" || r.URL.Query().Get("timestamps") != "true" || r.URL.Query().Get("since") != "2026-11-03T12:00:00+01:00" || r.URL.Query().Has("follow") {
+			t.Fatalf("unexpected log request: %s %s", r.Method, r.URL)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"lines":[{"s":"o","m":"hello"}],"truncated":false}`))
+	})
+	tail := 50
+	w := rpc(managementTransport(h, principal{User: auth.User{Role: auth.RoleViewer}, Scopes: []string{"containers.read"}}), "", "tools/call", map[string]any{
+		"name": "get_container_logs", "arguments": managementInput{AgentID: "00000000-0000-0000-0000-000000000001", ContainerID: "web", Tail: &tail, Timestamps: true, Since: "2026-11-03T12:00:00+01:00"},
+	})
+	if strings.Contains(w.Body.String(), `"isError":true`) || !strings.Contains(w.Body.String(), `"m":"hello"`) {
+		t.Fatalf("logs not returned: %s", w.Body)
+	}
+	for _, op := range managementOperations {
+		if op.name != "get_container_logs" {
+			continue
+		}
+		for _, bad := range []int{-1, 0, 5001} {
+			if _, err := op.target(managementInput{AgentID: "agent", ContainerID: "web", Tail: &bad}); err == nil {
+				t.Fatalf("accepted invalid tail %d", bad)
+			}
+		}
+	}
+}
+
 func TestManagementAuthorizerRejectsCookieAndMissingPrincipal(t *testing.T) {
 	r := httptest.NewRequest("GET", "https://vigara.example/api/stacks", nil)
 	r.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: "web-session"})
