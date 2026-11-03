@@ -6,6 +6,7 @@ const (
 	MethodComposeStatus        = "compose.status"
 	MethodComposeTargets       = "compose.targets"
 	MethodComposeCreate        = "compose.create"
+	MethodComposeRecipient     = "compose.recipient"
 	MethodComposeDiscover      = "compose.discover"
 	MethodComposeImportPreview = "compose.importPreview"
 	MethodComposeImportPrepare = "compose.importPrepare"
@@ -13,7 +14,7 @@ const (
 )
 
 func init() {
-	for _, method := range []string{MethodComposeValidate, MethodComposeDeploy, MethodComposeStatus, MethodComposeTargets, MethodComposeCreate, MethodComposeDiscover, MethodComposeImportPreview, MethodComposeImportPrepare, MethodComposeImportConfirm} {
+	for _, method := range []string{MethodComposeValidate, MethodComposeDeploy, MethodComposeStatus, MethodComposeTargets, MethodComposeCreate, MethodComposeRecipient, MethodComposeDiscover, MethodComposeImportPreview, MethodComposeImportPrepare, MethodComposeImportConfirm} {
 		channelMethodTiers[method] = DockerModeDeploy
 	}
 }
@@ -55,6 +56,9 @@ type ComposeImportPrepared struct {
 type ComposeCreateTarget struct {
 	ID          string `json:"id"`
 	ProjectName string `json:"projectName"`
+}
+type ComposeRecipient struct {
+	Recipient string `json:"recipient"`
 }
 type ComposeTargetInfo struct {
 	ID          string `json:"id"`

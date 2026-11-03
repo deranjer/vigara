@@ -127,7 +127,7 @@ func (a *API) importRecovery(w http.ResponseWriter, r *http.Request) {
 	file := filepath.Join(importKeyDirectory(a.Config), "recovery.age")
 	info, err := os.Lstat(file)
 	if err != nil || !info.Mode().IsRegular() || info.Size() > 8192 {
-		http.Error(w, "Review an import before downloading its recovery key.", 409)
+		http.Error(w, "Encrypt a stack environment or review an import before downloading the recovery key.", 409)
 		return
 	}
 	if actual, err := filepath.EvalSymlinks(file); err != nil || actual != file {
