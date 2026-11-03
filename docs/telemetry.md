@@ -81,3 +81,9 @@ paths or endpoint values.
 These checks do not establish support for any specific TP-Link model or
 firmware. Model-specific TP-Link, SNMP, SSH, ICMP, and Prometheus collection
 remain deferred until requirements and supported hardware are identified.
+
+## Telemetry freshness and container recreation
+
+A device is considered fresh only when both its check-in and telemetry observation are within five minutes. A connected agent can continue checking in while telemetry delivery is rejected; inspect the agent service logs for delivery errors in that case.
+
+Telemetry accepts at most 512 metrics per snapshot. This is not a lifetime quota on metric-and-label combinations: recreated Docker containers have new container IDs, so historical series must not block fresh reports. Series metadata records its latest observation time and expires with the configured hourly-history retention window. The upgrade preserves existing metadata for a full retention window. Historical snapshots and rollups are retained normally.

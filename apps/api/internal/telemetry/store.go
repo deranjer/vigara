@@ -13,7 +13,7 @@ import (
 
 const (
 	maxSnapshotsPerMinute = 10
-	maxSeriesPerAgent     = 512
+	maxMetricsPerSnapshot = 512
 )
 
 var ErrRateLimited = errors.New("telemetry ingestion rate exceeded")
@@ -30,6 +30,13 @@ type postgresStore struct{ pool *pgxpool.Pool }
 func NewPostgresStore(pool *pgxpool.Pool) Store { return postgresStore{pool: pool} }
 
 func (s postgresStore) Ingest(ctx context.Context, agentID string, snapshots []protocol.TelemetrySnapshot, now time.Time) error {
+	// Bound each observation, not the lifetime union of labels. Container IDs
+	// change on recreation and must not permanently block otherwise valid reports.
+	for _, snapshot := range snapshots {
+		if len(snapshot.Metrics) > maxMetricsPerSnapshot {
+			return ErrSeriesLimit
+		}
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -95,19 +102,14 @@ func (s postgresStore) Ingest(ctx context.Context, agentID string, snapshots []p
 			WHERE EXCLUDED.observed_at >= agent_telemetry_latest.observed_at
 			RETURNING agent_id
 		)
-		INSERT INTO telemetry_metric_series(agent_id,metric_name,labels)
-		SELECT DISTINCT $1, metric->>'name', COALESCE(NULLIF(metric->'labels','null'::jsonb),'{}'::jsonb)
+		INSERT INTO telemetry_metric_series(agent_id,metric_name,labels,last_observed_at)
+		SELECT $1, metric->>'name', COALESCE(NULLIF(metric->'labels','null'::jsonb),'{}'::jsonb), max(incoming.observed_at)
 		FROM incoming JOIN raw USING(report_id) CROSS JOIN LATERAL jsonb_array_elements(COALESCE(incoming.payload->'metrics','[]'::jsonb)) AS elements(metric)
-		ON CONFLICT DO NOTHING`, agentID, inputJSON, now.Add(-48*time.Hour))
+		GROUP BY metric->>'name', COALESCE(NULLIF(metric->'labels','null'::jsonb),'{}'::jsonb)
+		ON CONFLICT(agent_id,metric_name,labels) DO UPDATE
+		SET last_observed_at=GREATEST(telemetry_metric_series.last_observed_at, EXCLUDED.last_observed_at)`, agentID, inputJSON, now.Add(-48*time.Hour))
 	if err != nil {
 		return err
-	}
-	var seriesCount int
-	if err = tx.QueryRow(ctx, `SELECT count(*) FROM telemetry_metric_series WHERE agent_id=$1 AND NOT legacy`, agentID).Scan(&seriesCount); err != nil {
-		return err
-	}
-	if seriesCount > maxSeriesPerAgent {
-		return ErrSeriesLimit
 	}
 	if _, err = tx.Exec(ctx, `UPDATE devices d SET last_seen_at=$2 FROM agent_identities i WHERE i.id=$1 AND d.id=i.device_id`, agentID, now); err != nil {
 		return err

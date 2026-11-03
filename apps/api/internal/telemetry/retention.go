@@ -159,11 +159,16 @@ func (s postgresStore) retainBatch(ctx context.Context, cfg RetentionConfig, now
 	if err != nil {
 		return false, err
 	}
+	// Registry entries describe retained history, not an agent's lifetime quota.
+	seriesDelete, err := tx.Exec(ctx, `DELETE FROM telemetry_metric_series WHERE ctid IN (SELECT ctid FROM telemetry_metric_series WHERE last_observed_at < $1 ORDER BY last_observed_at LIMIT 10000 FOR UPDATE)`, now.Add(-cfg.RollupAge))
+	if err != nil {
+		return false, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, err
 	}
 	// Expired rollups and dedup keys must drain even when no raw rows remain.
-	return len(raw) == 0 && rollupDelete.RowsAffected() < 10000 && dedupDelete.RowsAffected() < 10000, nil
+	return len(raw) == 0 && rollupDelete.RowsAffected() < 10000 && dedupDelete.RowsAffected() < 10000 && seriesDelete.RowsAffected() < 10000, nil
 }
 
 func RunRetentionWorker(ctx context.Context, store Store, cfg RetentionConfig, logger *slog.Logger) {
