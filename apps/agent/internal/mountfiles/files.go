@@ -114,20 +114,36 @@ func (s *Service) List(ctx context.Context, p protocol.DockerFileParams) (protoc
 		return result, failure("The folder is unavailable or outside the mount.")
 	}
 	defer dir.Close()
+	return listDirectory(dir, result)
+}
+
+func listDirectory(dir *os.Root, result protocol.DockerFilesResult) (protocol.DockerFilesResult, error) {
 	f, err := dir.Open(".")
 	if err != nil {
 		return result, failure("The folder could not be read.")
 	}
 	defer f.Close()
-	infos, err := f.Readdir(protocol.MaxDockerFileEntries + 1)
+	// Readdir's metadata lookups can use the file's stored path instead of the
+	// opened directory (notably with rooted files on Go 1.25.0). Enumerate only
+	// names, then resolve metadata through the root's directory descriptor. This
+	// also keeps listings correct if the directory is renamed while open.
+	names, err := f.Readdirnames(protocol.MaxDockerFileEntries + 1)
 	if err != nil && !errors.Is(err, io.EOF) {
 		return result, failure("The folder could not be read.")
 	}
-	if len(infos) > protocol.MaxDockerFileEntries {
+	if len(names) > protocol.MaxDockerFileEntries {
 		result.Truncated = true
-		infos = infos[:protocol.MaxDockerFileEntries]
+		names = names[:protocol.MaxDockerFileEntries]
 	}
-	for _, info := range infos {
+	for _, name := range names {
+		info, err := dir.Lstat(name)
+		// Entries may disappear between enumeration and the metadata lookup.
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return result, failure("A folder entry could not be read.")
+		}
 		result.Entries = append(result.Entries, entry(info))
 	}
 	sort.Slice(result.Entries, func(i, j int) bool {
