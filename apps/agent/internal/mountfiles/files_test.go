@@ -46,9 +46,14 @@ func TestBrowseAndReadAreBoundedToStorage(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, "configs"), 0750); err != nil {
 		t.Fatal(err)
 	}
+	write(t, filepath.Join(dir, "configs", "site.conf"), "nested config")
 	listing, err := s.List(context.Background(), protocol.DockerFileParams{})
 	if err != nil || len(listing.Entries) != 2 || listing.Entries[0].Kind != "directory" {
 		t.Fatalf("list = %+v, %v", listing, err)
+	}
+	nested, err := s.List(context.Background(), protocol.DockerFileParams{Path: "configs"})
+	if err != nil || len(nested.Entries) != 1 || nested.Entries[0].Name != "site.conf" || nested.Entries[0].Size != int64(len("nested config")) {
+		t.Fatalf("nested list = %+v, %v", nested, err)
 	}
 	file, err := s.Read(context.Background(), protocol.DockerFileParams{Path: "Caddyfile"})
 	if err != nil || !strings.Contains(file.Content, "reverse_proxy") || len(file.Version) != 64 {

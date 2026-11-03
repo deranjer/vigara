@@ -10,6 +10,35 @@ import (
 	"github.com/deranjer/vigara/internal/protocol"
 )
 
+func TestDirectoryListingUsesOpenedRootAfterRename(t *testing.T) {
+	base := t.TempDir()
+	source := filepath.Join(base, "source")
+	if err := os.Mkdir(source, 0700); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(source, "config"), "opened mount")
+	root, err := os.OpenRoot(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	if err := os.Rename(source, filepath.Join(base, "moved")); err != nil {
+		t.Fatal(err)
+	}
+	// Replace the old pathname with different metadata. A path-based Lstat
+	// would report this directory rather than the file in the opened root.
+	if err := os.MkdirAll(filepath.Join(source, "config"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	result, err := listDirectory(root, protocol.DockerFilesResult{Entries: []protocol.DockerFileEntry{}})
+	if err != nil || len(result.Entries) != 1 {
+		t.Fatalf("renamed root: %+v, %v", result, err)
+	}
+	if got := result.Entries[0]; got.Name != "config" || got.Kind != "file" || got.Size != int64(len("opened mount")) {
+		t.Fatalf("metadata came from stale path: %+v", got)
+	}
+}
+
 func TestSpecialFileAndSymlinkReadsNeverFollowOrBlock(t *testing.T) {
 	s, dir := setup(t)
 	write(t, filepath.Join(dir, "target"), "secret")
