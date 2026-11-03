@@ -91,6 +91,7 @@ func RegisterAPI(mux *http.ServeMux, cfg Config) {
 	mux.HandleFunc("GET /api/containers/{agent}/{id}/stats", a.stream(protocol.MethodDockerStats))
 	mux.HandleFunc("GET /api/containers/{agent}/{id}/exec", a.exec)
 	a.registerResources(mux)
+	a.registerFiles(mux)
 	mux.HandleFunc("POST /api/containers/{agent}/{id}/actions", a.action)
 	mux.HandleFunc("POST /api/containers/{agent}/{id}/recreate", a.recreate)
 }

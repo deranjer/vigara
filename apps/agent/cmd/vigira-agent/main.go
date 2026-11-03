@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/deranjer/vigara/apps/agent/internal/composedeploy"
 	"github.com/deranjer/vigara/apps/agent/internal/dockerapi"
 	"github.com/deranjer/vigara/apps/agent/internal/dockerchannel"
+	"github.com/deranjer/vigara/apps/agent/internal/mountfiles"
 	agentruntime "github.com/deranjer/vigara/apps/agent/internal/runtime"
 	"github.com/deranjer/vigara/internal/composeadoption"
 	"github.com/deranjer/vigara/internal/protocol"
@@ -202,6 +204,19 @@ func registerDocker(live *agentchannel.Client, logger *slog.Logger) {
 	}
 	dockerchannel.Register(live, api)
 	dockerchannel.RegisterResources(live, api)
+	filesMode := strings.ToLower(strings.TrimSpace(os.Getenv("VIGIRA_DOCKER_FILES")))
+	if filesMode == "read" || filesMode == "write" {
+		if runtime.GOOS != "linux" || !strings.HasPrefix(strings.TrimSpace(os.Getenv("VIGIRA_DOCKER_HOST")), "unix://") {
+			logger.Warn("mount file access requires an agent on the native Linux Docker host with a local Unix socket")
+		} else if protocol.DockerTierRank(protocol.DockerTier(live.Capabilities())) >= protocol.DockerTierRank(protocol.DockerModeExec) {
+			backupDir := os.Getenv("VIGIRA_DOCKER_FILES_BACKUP_DIR")
+			if backupDir == "" {
+				backupDir = "/var/lib/vigira-agent/mount-file-backups"
+			}
+			dockerchannel.RegisterFiles(live, &mountfiles.Service{Resolver: api, Writable: filesMode == "write", BackupDirectory: backupDir})
+			logger.Info("mount file access is enabled", "mode", filesMode)
+		}
+	}
 	if protocol.DockerTierRank(protocol.DockerTier(live.Capabilities())) >= protocol.DockerTierRank(protocol.DockerModeManage) {
 		dockerchannel.RegisterManage(live, api)
 		dockerchannel.RegisterResourceManagement(live, api)

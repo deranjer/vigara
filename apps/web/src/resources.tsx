@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Alert, Anchor, Badge, Button, Card, Checkbox, Code, Group, List, Loader, Modal, Select, Stack, Table, Text, TextInput, Title } from '@mantine/core'
 import { canManage, drainRecords, manageBlocker, type HostEntry } from './container-utils'
 import { route as routeOf, type Route, type Section } from './route'
+import { MountFiles } from './mount-files'
+import { canBrowseFiles } from './mount-file-utils'
 import {
   confirmWord, filterBy, imageName, isInUse, plurals, pruneConfirmWord, pruneDescription, pullRefProblem, removeBlocker, resourcesPath, shortId, sizeLabel, sortRows, summarizePrune, usageLabel,
   type ImageRow, type InspectResult, type NetworkRow, type PruneResult, type ResourceKind, type UsedBy, type VolumeRow,
@@ -116,16 +118,17 @@ export function Resources({ kind, route, role, onNavigate }: Props) {
         </>}
     </Card>
 
-    {detail && hostId && <DetailDialog kind={kind} hostId={hostId} row={detail} mayManage={mayManage} onClose={() => setDetail(null)} onRemove={(row) => { setDetail(null); setRemoving(row) }} onOpenContainer={(name) => onNavigate(routeOf('containers', hostId, name))} />}
+    {detail && hostId && <DetailDialog key={`${hostId}/${kind}/${keyOf(kind, detail)}`} kind={kind} hostId={hostId} row={detail} mayManage={mayManage} browseFiles={canBrowseFiles(role, host?.dockerTier)} onClose={() => setDetail(null)} onRemove={(row) => { setDetail(null); setRemoving(row) }} onOpenContainer={(name) => onNavigate(routeOf('containers', hostId, name))} />}
     {removing && hostId && <RemoveDialog kind={kind} hostId={hostId} row={removing} onClose={() => setRemoving(null)} onDone={() => void refresh()} />}
     {pruning && hostId && <PruneDialog kind={kind} hostId={hostId} onClose={() => setPruning(false)} onDone={() => void refresh()} />}
     {pulling && hostId && <PullDialog hostId={hostId} onClose={() => setPulling(false)} onDone={() => void refresh()} />}
   </>
 }
 
-function DetailDialog({ kind, hostId, row, mayManage, onClose, onRemove, onOpenContainer }: { kind: ResourceKind; hostId: string; row: Row; mayManage: boolean; onClose: () => void; onRemove: (row: Row) => void; onOpenContainer: (name: string) => void }) {
+function DetailDialog({ kind, hostId, row, mayManage, browseFiles, onClose, onRemove, onOpenContainer }: { kind: ResourceKind; hostId: string; row: Row; mayManage: boolean; browseFiles: boolean; onClose: () => void; onRemove: (row: Row) => void; onOpenContainer: (name: string) => void }) {
   const [inspect, setInspect] = useState<InspectResult | null>(null)
   const [error, setError] = useState('')
+  const [browsing, setBrowsing] = useState(false)
   useEffect(() => {
     let active = true
     request<InspectResult>(`${resourcesPath(hostId, kind)}/inspect?ref=${encodeURIComponent(refOf(kind, row))}`).then((value) => { if (active) setInspect(value) }).catch((cause: unknown) => { if (active) setError(cause instanceof Error ? cause.message : 'Details could not be loaded.') })
@@ -137,6 +140,7 @@ function DetailDialog({ kind, hostId, row, mayManage, onClose, onRemove, onOpenC
   const image = inspect?.image
   const network = inspect?.network
   const volume = inspect?.volume
+  if (browsing) return <MountFiles hostId={hostId} target={{ kind: 'volume', id: (row as VolumeRow).name }} label={(row as VolumeRow).name} onClose={() => setBrowsing(false)} />
   return <Modal opened onClose={onClose} title={nameOf(kind, row)} size="lg" centered>
     <Stack gap="sm">
       {error && <Alert color="red">{error}</Alert>}
@@ -148,7 +152,7 @@ function DetailDialog({ kind, hostId, row, mayManage, onClose, onRemove, onOpenC
         {field('Options', network.internal ? 'Internal (no outside access)' : undefined)}
         {network.members && network.members.length > 0 && <Table verticalSpacing="xs"><Table.Thead><Table.Tr><Table.Th>Container</Table.Th><Table.Th>IPv4</Table.Th><Table.Th>MAC</Table.Th></Table.Tr></Table.Thead><Table.Tbody>{network.members.map((member) => <Table.Tr key={member.id}><Table.Td>{member.name}</Table.Td><Table.Td>{member.ipv4 || '–'}</Table.Td><Table.Td>{member.mac || '–'}</Table.Td></Table.Tr>)}</Table.Tbody></Table>}</Stack>}
       {volume && <Stack gap="xs">{field('Name', <Code>{volume.name}</Code>)}{field('Driver', volume.driver)}{field('Mount point on the host', <Code>{volume.mountpoint}</Code>)}{field('Size', sizeLabel(volume.size))}{field('Created', volume.created ? new Date(volume.created).toLocaleString() : undefined)}
-        {volume.anonymous && field('Kind', 'Anonymous: created for a container without a name')}</Stack>}
+        {volume.anonymous && field('Kind', 'Anonymous: created for a container without a name')}{browseFiles && <Button variant="light" onClick={() => setBrowsing(true)}>Browse files</Button>}</Stack>}
       <div><Text size="xs" c="dimmed" fw={600} tt="uppercase">Used by</Text>
         {isInUse(usedBy) ? <Group gap="xs" mt={4}>{usedBy!.map((user) => <Anchor key={user.id} size="sm" component="button" onClick={() => onOpenContainer(user.name)}>{user.name}</Anchor>)}</Group> : <Text size="sm" c="dimmed">No container uses this.</Text>}</div>
       {mayManage && <Group justify="space-between" mt="xs"><Text size="xs" c="dimmed">{blocker ?? ''}</Text><Button color="red" variant="light" disabled={blocker !== null} onClick={() => onRemove(row)}>Remove…</Button></Group>}
