@@ -1,0 +1,2 @@
+DROP INDEX telemetry_metric_series_observed_idx;
+ALTER TABLE telemetry_metric_series DROP COLUMN last_observed_at;

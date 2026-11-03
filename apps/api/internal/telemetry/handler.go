@@ -149,7 +149,7 @@ func validate(s protocol.TelemetrySnapshot, agentID string, now time.Time) error
 	if s.Host.OS == "" || len(s.Host.OS) > 64 || s.Host.Architecture == "" || len(s.Host.Architecture) > 64 || s.Host.AgentVersion == "" || len(s.Host.AgentVersion) > 64 || len(s.Host.OSVersion) > 256 || len(s.Host.CPUModel) > 256 || s.Host.LogicalCPUs < 0 {
 		return errors.New("invalid host summary")
 	}
-	if len(s.Metrics) > 512 || len(s.Capabilities) > 128 || len(s.Errors) > 128 {
+	if len(s.Metrics) > maxMetricsPerSnapshot || len(s.Capabilities) > 128 || len(s.Errors) > 128 {
 		return errors.New("snapshot exceeds item limits")
 	}
 	if err := s.Host.HardwareInventory.Validate(now); err != nil {
