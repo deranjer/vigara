@@ -237,7 +237,7 @@ func telemetryTestPool(t *testing.T) *pgxpool.Pool {
 	}
 	t.Cleanup(pool.Close)
 	// Every telemetry test uses the same complete schema as a fresh server.
-	for _, name := range []string{"000001_initial_schema.up.sql", "000003_telemetry_series_freshness.up.sql"} {
+	for _, name := range []string{"000001_initial_schema.up.sql", "000003_telemetry_series_freshness.up.sql", "000004_telemetry_delivery.up.sql"} {
 		migration, err := os.ReadFile("../../migrations/" + name)
 		if err != nil {
 			t.Fatal(err)

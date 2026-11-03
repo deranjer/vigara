@@ -442,6 +442,18 @@ func (h *Handler) poll(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if req.TelemetryDelivery != nil {
+		if err := req.TelemetryDelivery.Validate(time.Now().UTC()); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		q := req.TelemetryDelivery
+		if _, err := h.pool.Exec(r.Context(), `INSERT INTO agent_telemetry_delivery(agent_id,queue_reported_at,queued_snapshots,oldest_queued_at,newest_queued_at) VALUES($1,now(),$2,$3,$4)
+   ON CONFLICT(agent_id) DO UPDATE SET queue_reported_at=EXCLUDED.queue_reported_at,queued_snapshots=EXCLUDED.queued_snapshots,oldest_queued_at=EXCLUDED.oldest_queued_at,newest_queued_at=EXCLUDED.newest_queued_at`, agentID, q.QueuedSnapshots, q.OldestQueuedAt, q.NewestQueuedAt); err != nil {
+			http.Error(w, "could not update telemetry delivery status", http.StatusInternalServerError)
+			return
+		}
+	}
 	capabilities, _ := json.Marshal(req.Capabilities)
 	commandTag, err := h.pool.Exec(r.Context(), `UPDATE devices d SET last_seen_at=now() FROM agent_identities i WHERE i.id=$1 AND d.id=i.device_id`, agentID)
 	if err == nil && commandTag.RowsAffected() == 1 {
@@ -475,7 +487,7 @@ func (h *Handler) poll(w http.ResponseWriter, r *http.Request) {
 		job.Deadline = time.Now().UTC().Add(backupExecutionLimit)
 	}
 	configuration := &protocol.AgentConfiguration{Version: "backup-v1", GeneratedAt: time.Now().UTC(), Modules: []protocol.ModuleConfiguration{{ModuleID: "restic.backup", ModuleVersion: "1.0.0", Enabled: true}}}
-	writeJSON(w, protocol.AgentResponse{ProtocolVersion: protocol.CurrentVersion, ServerTime: time.Now().UTC(), PollAfterSeconds: 30, Configuration: configuration, Job: job, BackupProgressEnabled: req.SupportsBackupProgress, ManagedBackup: desired})
+	writeJSON(w, protocol.AgentResponse{ProtocolVersion: protocol.CurrentVersion, ServerTime: time.Now().UTC(), PollAfterSeconds: 30, SupportsTelemetryDelivery: true, Configuration: configuration, Job: job, BackupProgressEnabled: req.SupportsBackupProgress, ManagedBackup: desired})
 }
 
 func (h *Handler) reports(w http.ResponseWriter, r *http.Request) {

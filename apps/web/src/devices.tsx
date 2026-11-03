@@ -5,6 +5,8 @@ import { ReferenceArea } from 'recharts'
 import { DeviceInfo, DeviceSettings, MonitoringOverview } from './device-panels'
 import { DeviceMonitoring } from './device-monitoring'
 import { type HardwareInventory } from './device-info-utils'
+import { TelemetryDeliveryChip, TelemetryDeliveryPanel } from './telemetry-delivery'
+import { staleReason, type TelemetryDelivery } from './telemetry-delivery-utils'
 import { AddDevice } from './add-device'
 import { DeviceBackups } from './backup-config'
 import { chartRows, formatMetric, type MetricSeries, type RateUnit } from './metric-utils'
@@ -12,7 +14,7 @@ import { chartRows, formatMetric, type MetricSeries, type RateUnit } from './met
 type Metric = { name: string; value: number; unit: string; labels?: Record<string, string> }
 type DockerContainer = { id: string; name?: string; image?: string; state: string }
 type Snapshot = { observedAt?: string; host?: { os?: string; osVersion?: string; architecture?: string; agentVersion?: string; cpuModel?: string; logicalCpus?: number; totalMemoryBytes?: number; uptimeSeconds?: number; hardwareInventory?: HardwareInventory }; metrics?: Metric[]; dockerContainers?: DockerContainer[]; errors?: { capability: string; message: string }[] }
-export type Device = { id: string; name: string; platformId?: string | null; status: 'healthy' | 'stale' | 'failed' | 'unsupported'; agentId?: string | null; platform: string; architecture: string; agentVersion: string; capabilities: string[]; lastSeenAt?: string | null; latest?: Snapshot; telemetryObservedAt?: string | null; collectionErrors?: Snapshot['errors'] }
+export type Device = { telemetryDelivery?: TelemetryDelivery | null; id: string; name: string; platformId?: string | null; status: 'healthy' | 'stale' | 'failed' | 'unsupported'; agentId?: string | null; platform: string; architecture: string; agentVersion: string; capabilities: string[]; lastSeenAt?: string | null; latest?: Snapshot; telemetryObservedAt?: string | null; collectionErrors?: Snapshot['errors'] }
 type Point = { at: string; value: number | null; min?: number; max?: number; samples: number; resolutionSeconds?: number }
 type Series = { name: string; unit: string; labels: Record<string, string>; points: Point[] }
 type History = { range: string; windowStart: string; windowEnd: string; metrics: string[]; series: Series[]; resolutionSeconds: number; resolution: string }
@@ -190,7 +192,7 @@ function BackupHistory({ refresh, deviceId }: { refresh: number; deviceId?: stri
 
 function DeviceHealthIssues({ device }: { device: Device }) {
   return <Stack gap={4}>
-    {device.status === 'stale' && <Text size="xs" c="yellow">Stale check-in · {relativeLabel(device.lastSeenAt)}</Text>}
+    {device.status === 'stale' && <Text size="xs" c="yellow">{staleReason(device)}</Text>}
     {device.status === 'failed' && <Text size="xs" c="red">Device needs attention</Text>}
     {device.collectionErrors?.map((issue, index) => <Text key={index} size="xs" c="red" style={{ overflowWrap: 'anywhere' }}>{issue.capability}: {issue.message}</Text>)}
   </Stack>
@@ -239,8 +241,8 @@ export function Devices({ section, selectedId, onSelect }: { section: 'devices' 
     // Refresh deliberately preserves selection and tab drafts.
   }, [refresh])
   useEffect(() => {
-    if (section !== 'monitoring' || selectedId) return
-    const timer = window.setInterval(() => setRefresh((value) => value + 1), 30_000)
+    if (!selectedId && section !== 'monitoring') return
+    const timer = window.setInterval(() => setRefresh((value) => value + 1), 15_000)
     return () => window.clearInterval(timer)
   }, [section, selectedId])
   useEffect(() => { setMonitoringPanel('overview'); initialMetric.current = true; setZoomBase(null); setHistory(null); setHistoryError(''); setMetricNames([]); setCustomStart(''); setCustomEnd(''); setAppliedInterval(null); setRange('24h') }, [selectedId])
@@ -282,7 +284,7 @@ export function Devices({ section, selectedId, onSelect }: { section: 'devices' 
 <div>
 <Group>
 <Title order={3}>{selected.name}</Title>
-<Badge color={statusColor[selected.status]} variant="light">{statusLabel[selected.status]}</Badge>{availability?.maintenanceActive && <Badge color="blue" variant="light">Maintenance active</Badge>}{availability && !availability.expectedAwake && <Badge color="gray" variant="light">Expected offline</Badge>}</Group>
+<Badge title={selected.status === 'stale' ? staleReason(selected) : undefined} color={statusColor[selected.status]} variant="light">{statusLabel[selected.status]}</Badge><TelemetryDeliveryChip device={selected} />{availability?.maintenanceActive && <Badge color="blue" variant="light">Maintenance active</Badge>}{availability && !availability.expectedAwake && <Badge color="gray" variant="light">Expected offline</Badge>}</Group>
 <Text c="dimmed" mt="xs">{[selected.platform, selected.architecture].filter(Boolean).join(' · ') || 'Platform not reported'}{selected.agentVersion ? ` · Agent ${selected.agentVersion}` : ''}</Text>
 </div>
 <div className="checkin">
@@ -293,6 +295,7 @@ export function Devices({ section, selectedId, onSelect }: { section: 'devices' 
 </Group>
 
       </Card>
+      <TelemetryDeliveryPanel device={selected} />
       <Tabs value={detailTab} onChange={setDetailTab} keepMounted={false}>
         <Tabs.List mb="lg">
           <Tabs.Tab value="info">Device info</Tabs.Tab>
@@ -424,7 +427,7 @@ export function Devices({ section, selectedId, onSelect }: { section: 'devices' 
 </Table.Td>
 <Table.Td>{[device.platform, device.architecture].filter(Boolean).join(' · ') || 'Unknown'}</Table.Td>
 <Table.Td>
-<Badge color={statusColor[device.status]} variant="light">{statusLabel[device.status]}</Badge>
+<Badge title={device.status === 'stale' ? staleReason(device) : undefined} color={statusColor[device.status]} variant="light">{statusLabel[device.status]}</Badge><TelemetryDeliveryChip device={device} />
 </Table.Td>
 <Table.Td>
 <Text size="sm">{relativeLabel(device.lastSeenAt)}</Text>

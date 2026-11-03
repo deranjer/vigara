@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	maxSnapshotsPerMinute = 10
+	MaxSnapshotsPerMinute = 10
 	maxMetricsPerSnapshot = 512
 )
 
@@ -60,7 +60,7 @@ func (s postgresStore) Ingest(ctx context.Context, agentID string, snapshots []p
 	if !now.Before(window.Add(time.Minute)) {
 		window, count = now, 0
 	}
-	if count+len(snapshots) > maxSnapshotsPerMinute {
+	if count+len(snapshots) > MaxSnapshotsPerMinute {
 		return ErrRateLimited
 	}
 	if _, err = tx.Exec(ctx, `UPDATE telemetry_ingest_limits SET window_started_at=$2, snapshot_count=$3 WHERE agent_id=$1`, agentID, window, count+len(snapshots)); err != nil {

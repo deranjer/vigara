@@ -87,3 +87,11 @@ remain deferred until requirements and supported hardware are identified.
 A device is considered fresh only when both its check-in and telemetry observation are within five minutes. A connected agent can continue checking in while telemetry delivery is rejected; inspect the agent service logs for delivery errors in that case.
 
 Telemetry accepts at most 512 metrics per snapshot. This is not a lifetime quota on metric-and-label combinations: recreated Docker containers have new container IDs, so historical series must not block fresh reports. Series metadata records its latest observation time and expires with the configured hourly-history retention window. The upgrade preserves existing metadata for a full retention window. Historical snapshots and rollups are retained normally.
+
+## Per-device upload delivery status
+
+Device cards and table rows show upload throttling and the number of queued snapshots when available. The device detail page includes a delivery panel above the tabs, refreshed every 15 seconds. It separates the last agent check-in from the latest monitoring observation, reports the latest upload response and last accepted upload time, and shows the device's queue count, queue report time, and age of its oldest queued snapshot. The panel explains the per-device allowance of 10 snapshots per minute and automatic retries. It does not estimate completion time from a single queue sample.
+
+The server records authenticated telemetry responses independently of ingestion transactions, so rejected batches can still show as rate limited or rejected. A successful upload clears the previous rate-limit response. Recent check-ins with old monitoring data are described as delayed measurements, rather than overdue check-ins.
+
+Exact backlog counts require an updated agent. Queue metadata is reported through normal authenticated polls only after the server advertises support. Older agents continue working; missing counts display as not reported, and old reports display as last-known values. Queue metadata includes only counts and observation timestamps, not telemetry contents or credentials. Neither the server nor UI treats an unavailable count as zero.

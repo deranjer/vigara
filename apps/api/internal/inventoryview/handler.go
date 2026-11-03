@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/deranjer/vigara/apps/api/internal/auth"
+	"github.com/deranjer/vigara/apps/api/internal/telemetry"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -61,6 +62,7 @@ type Device struct {
 	Capabilities        []string        `json:"capabilities"`
 	Latest              json.RawMessage `json:"latest"`
 	TelemetryObservedAt *time.Time      `json:"telemetryObservedAt"`
+	TelemetryDelivery   json.RawMessage `json:"telemetryDelivery,omitempty"`
 	CollectionErrors    json.RawMessage `json:"collectionErrors"`
 }
 
@@ -98,9 +100,9 @@ func (h *Handler) devices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := h.pool.Query(r.Context(), `SELECT d.id::text,d.display_name,d.platform_id,d.created_at,d.last_seen_at,
-		i.id::text,i.revoked_at IS NOT NULL,COALESCE(i.platform,''),COALESCE(i.architecture,''),COALESCE(i.agent_version,''),COALESCE(i.capabilities,'[]'::jsonb),l.payload,l.observed_at
+		i.id::text,i.revoked_at IS NOT NULL,COALESCE(i.platform,''),COALESCE(i.architecture,''),COALESCE(i.agent_version,''),COALESCE(i.capabilities,'[]'::jsonb),l.payload,l.observed_at,CASE WHEN delivery.agent_id IS NULL THEN NULL ELSE jsonb_build_object('lastAttemptAt',delivery.last_attempt_at,'lastStatusCode',delivery.last_status_code,'retryAt',delivery.retry_at,'lastAcceptedAt',delivery.last_accepted_at,'queueReportedAt',delivery.queue_reported_at,'queuedSnapshots',delivery.queued_snapshots,'oldestQueuedAt',delivery.oldest_queued_at,'newestQueuedAt',delivery.newest_queued_at,'limitPerMinute',$3::int) END
 		FROM devices d LEFT JOIN LATERAL (SELECT * FROM agent_identities ai WHERE ai.device_id=d.id ORDER BY (ai.revoked_at IS NULL) DESC,ai.created_at DESC LIMIT 1) i ON true
-		LEFT JOIN agent_telemetry_latest l ON l.agent_id=i.id ORDER BY d.display_name,d.id LIMIT $1 OFFSET $2`, limit, offset)
+		LEFT JOIN agent_telemetry_latest l ON l.agent_id=i.id LEFT JOIN agent_telemetry_delivery delivery ON delivery.agent_id=i.id ORDER BY d.display_name,d.id LIMIT $1 OFFSET $2`, limit, offset, telemetry.MaxSnapshotsPerMinute)
 	if err != nil {
 		http.Error(w, "could not load devices", 500)
 		return
@@ -111,7 +113,7 @@ func (h *Handler) devices(w http.ResponseWriter, r *http.Request) {
 		var d Device
 		var caps, payload []byte
 		var obs *time.Time
-		if err = rows.Scan(&d.ID, &d.Name, &d.PlatformID, &d.CreatedAt, &d.LastSeenAt, &d.AgentID, &d.Revoked, &d.Platform, &d.Architecture, &d.AgentVersion, &caps, &payload, &obs); err != nil {
+		if err = rows.Scan(&d.ID, &d.Name, &d.PlatformID, &d.CreatedAt, &d.LastSeenAt, &d.AgentID, &d.Revoked, &d.Platform, &d.Architecture, &d.AgentVersion, &caps, &payload, &obs, &d.TelemetryDelivery); err != nil {
 			http.Error(w, "could not load devices", 500)
 			return
 		}

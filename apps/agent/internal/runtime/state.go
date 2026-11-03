@@ -12,7 +12,7 @@ import (
 )
 
 const MaxQueuedReports = 500
-const MaxQueuedTelemetry = 100
+const MaxQueuedTelemetry = protocol.MaxQueuedTelemetrySnapshots
 const MaxResticProfiles = 32
 
 // ResticProfile is installed by a trusted local operator in the private agent

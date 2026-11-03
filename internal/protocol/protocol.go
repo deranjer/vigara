@@ -11,29 +11,31 @@ const CurrentVersion = "v1"
 // AgentRequest is sent by an enrolled agent when polling for current desired
 // state and work. AgentID is the stable server-issued device identity.
 type AgentRequest struct {
-	ProtocolVersion        string               `json:"protocolVersion"`
-	AgentID                string               `json:"agentId"`
-	AgentVersion           string               `json:"agentVersion"`
-	Platform               string               `json:"platform"`
-	Architecture           string               `json:"architecture"`
-	Capabilities           []string             `json:"capabilities"`
-	KnownConfigVersion     string               `json:"knownConfigVersion,omitempty"`
-	LastSeenJobID          string               `json:"lastSeenJobId,omitempty"`
-	SupportsManagedBackups bool                 `json:"supportsManagedBackups,omitempty"`
-	ManagedBackupStatus    *ManagedBackupStatus `json:"managedBackupStatus,omitempty"`
-	SupportsBackupProgress bool                 `json:"supportsBackupProgress,omitempty"`
+	TelemetryDelivery      *TelemetryQueueStatus `json:"telemetryDelivery,omitempty"`
+	ProtocolVersion        string                `json:"protocolVersion"`
+	AgentID                string                `json:"agentId"`
+	AgentVersion           string                `json:"agentVersion"`
+	Platform               string                `json:"platform"`
+	Architecture           string                `json:"architecture"`
+	Capabilities           []string              `json:"capabilities"`
+	KnownConfigVersion     string                `json:"knownConfigVersion,omitempty"`
+	LastSeenJobID          string                `json:"lastSeenJobId,omitempty"`
+	SupportsManagedBackups bool                  `json:"supportsManagedBackups,omitempty"`
+	ManagedBackupStatus    *ManagedBackupStatus  `json:"managedBackupStatus,omitempty"`
+	SupportsBackupProgress bool                  `json:"supportsBackupProgress,omitempty"`
 }
 
 // AgentResponse returns the latest configuration and at most one authorized
 // job. Empty Job means no work is currently available.
 type AgentResponse struct {
-	ProtocolVersion       string              `json:"protocolVersion"`
-	ServerTime            time.Time           `json:"serverTime"`
-	PollAfterSeconds      int                 `json:"pollAfterSeconds"`
-	Configuration         *AgentConfiguration `json:"configuration,omitempty"`
-	Job                   *Job                `json:"job,omitempty"`
-	ManagedBackup         *ManagedBackup      `json:"managedBackup,omitempty"`
-	BackupProgressEnabled bool                `json:"backupProgressEnabled,omitempty"`
+	SupportsTelemetryDelivery bool                `json:"supportsTelemetryDelivery,omitempty"`
+	ProtocolVersion           string              `json:"protocolVersion"`
+	ServerTime                time.Time           `json:"serverTime"`
+	PollAfterSeconds          int                 `json:"pollAfterSeconds"`
+	Configuration             *AgentConfiguration `json:"configuration,omitempty"`
+	Job                       *Job                `json:"job,omitempty"`
+	ManagedBackup             *ManagedBackup      `json:"managedBackup,omitempty"`
+	BackupProgressEnabled     bool                `json:"backupProgressEnabled,omitempty"`
 }
 
 // AgentConfiguration is a complete desired-state snapshot, not a patch.
