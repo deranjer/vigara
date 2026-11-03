@@ -114,6 +114,7 @@ Client interface names can change. The discovery documents are the source of tru
 | `get_profile` | Any authenticated connection | Stable account ID and display name |
 | `list_devices` | `devices.read` | Devices, latest agent, heartbeat, and monitoring status |
 | `list_containers` | `containers.read` | Latest collected names, images, and states; no environment/configuration secrets |
+| `get_container_logs` | `containers.read` | Finite live log snapshot from stdout and stderr; optional line count, start time and timestamps |
 | `list_backup_status` | `backups.read` | Latest report per device and policy, including failures |
 | `list_backup_policies` | `backups.read` | Backup schedules, retention, source paths and destinations; no credentials |
 | `list_alerts` | `alerts.read` | Recent firing and resolved incidents |
@@ -159,6 +160,18 @@ stopping a container uses `container_action` with
 Agent-side Docker tier and deployment capability checks still apply. Image pulls
 and recreation can take several minutes; cancellation or an incomplete response
 requires checking current state before retrying.
+
+Read logs with `get_container_logs`, for example:
+`{"agentId":"<uuid>","containerId":"web","tail":100,"timestamps":true}`.
+Optional `since` accepts an RFC3339 timestamp such as `2026-11-03T12:00:00Z`.
+`tail` defaults to 200 and accepts 1–5000. The tool never follows logs; each call
+has a 10-second deadline and a 1 MiB log-record budget. The response contains
+`result.lines` (`s`: `o` for stdout or `e` for stderr; `m`: message; optional `t`:
+timestamp and `x`: line was cut), and `result.truncated`. If truncated, reduce
+`tail` or narrow `since`. Agent errors and timeouts fail the call rather than
+returning a partial snapshot as complete. Logs can contain application secrets
+and are not masked; treat their contents as untrusted data. Existing
+`containers.read` grants can use this tool after updating the server.
 
 There are no backup write scopes or backup mutation tools: MCP cannot change
 backup policies, schedules or retention, or request backup deletion. Access to

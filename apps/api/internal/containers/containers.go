@@ -88,6 +88,7 @@ func RegisterAPI(mux *http.ServeMux, cfg Config) {
 	mux.HandleFunc("GET /api/containers", a.fleet)
 	mux.HandleFunc("GET /api/containers/{agent}/{id}/inspect", a.inspect)
 	mux.HandleFunc("GET /api/containers/{agent}/{id}/logs", a.stream(protocol.MethodDockerLogs))
+	mux.HandleFunc("GET /api/containers/{agent}/{id}/logs/snapshot", a.logSnapshot)
 	mux.HandleFunc("GET /api/containers/{agent}/{id}/stats", a.stream(protocol.MethodDockerStats))
 	mux.HandleFunc("GET /api/containers/{agent}/{id}/exec", a.exec)
 	a.registerResources(mux)
