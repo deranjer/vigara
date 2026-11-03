@@ -70,6 +70,9 @@ body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--mantine
 @media (max-width: 640px) { .compose-editor-surface { height: 420px; } .compose-editor-expanded { inset: 4px; padding: 8px; } }
 
 .stack-search { flex: 1; min-width: 220px; }
+.stack-deploy-preview { overflow-wrap: anywhere; }
+.stack-deploy-preview .mantine-Stack-root { min-width: 0; }
+.stack-deploy-preview code { white-space: pre-wrap; overflow-wrap: anywhere; }
 .stack-summary-card, .stack-card-name { min-width: 0; overflow-wrap: anywhere; }
 .stack-summary-card > .mantine-Stack-root { height: 100%; }
 .stack-summary-card .mantine-Badge-root { flex-shrink: 0; }

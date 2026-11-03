@@ -3,6 +3,7 @@ package stackgit
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -139,5 +140,60 @@ func TestRejectedPushIsNotDeployable(t *testing.T) {
 	saved, e = r.Save(ctx, sample("web"), "alice")
 	if e != nil || saved.State != "saved" {
 		t.Fatalf("retry push: %+v %v", saved, e)
+	}
+}
+
+func TestReadBatchedBlobsPreservesBytesAndLimits(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+		valid bool
+	}{
+		{"contents", map[string]string{"empty.txt": "", "no-newline.txt": "hello", "multiline.txt": "one\r\ntwo\n", "binary.txt": "a\x00b\n", "unicode.txt": "caf\u00e9 \u4e16\u754c", "limit.txt": strings.Repeat("x", 128<<10)}, true},
+		{"oversized-file", map[string]string{"large.txt": strings.Repeat("x", (128<<10)+1)}, false},
+		{"oversized-stack", map[string]string{"a.txt": strings.Repeat("x", 128<<10), "b.txt": strings.Repeat("x", 128<<10), "c.txt": strings.Repeat("x", 128<<10), "d.txt": "x"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, seed := fixture(t)
+			dir := filepath.Join(seed, "stacks", "demo")
+			if e := os.MkdirAll(dir, 0700); e != nil {
+				t.Fatal(e)
+			}
+			for path, content := range tc.files {
+				if e := os.WriteFile(filepath.Join(dir, path), []byte(content), 0600); e != nil {
+					t.Fatal(e)
+				}
+			}
+			git(t, seed, "-c", "core.autocrlf=false", "add", ".")
+			git(t, seed, "commit", "-m", "Add files")
+			git(t, seed, "push", r.Remote, "main")
+			s, e := r.Read(context.Background(), "demo", "")
+			if tc.valid {
+				if e != nil || !stack.Equal(s.Files, tc.files) {
+					t.Fatalf("contents changed: %v", e)
+				}
+			} else if !errors.Is(e, stack.ErrInvalid) {
+				t.Fatalf("oversized input accepted: %v", e)
+			}
+		})
+	}
+}
+
+func TestReadBatchedBlobsFileCount(t *testing.T) {
+	r, seed := fixture(t)
+	dir := filepath.Join(seed, "stacks", "demo")
+	if e := os.MkdirAll(dir, 0700); e != nil {
+		t.Fatal(e)
+	}
+	for i := 0; i < 65; i++ {
+		if e := os.WriteFile(filepath.Join(dir, fmt.Sprintf("file-%02d.txt", i)), []byte("x"), 0600); e != nil {
+			t.Fatal(e)
+		}
+	}
+	git(t, seed, "add", ".")
+	git(t, seed, "commit", "-m", "Too many files")
+	git(t, seed, "push", r.Remote, "main")
+	if _, e := r.Read(context.Background(), "demo", ""); !errors.Is(e, stack.ErrInvalid) {
+		t.Fatalf("file count limit ignored: %v", e)
 	}
 }

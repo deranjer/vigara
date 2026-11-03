@@ -183,22 +183,42 @@ func fail(w http.ResponseWriter, e error) {
 
 // One database advisory lock serializes repository mutations across API replicas.
 func (a *API) repoLock(ctx context.Context) (func(), error) {
-	c, e := a.Pool.Acquire(ctx)
-	if e != nil {
-		return nil, e
-	}
-	if _, e = c.Exec(ctx, "SELECT pg_advisory_lock(731946281)"); e != nil {
-		c.Release()
-		return nil, e
-	}
-	return func() {
-		release, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if _, e := c.Exec(release, "SELECT pg_advisory_unlock(731946281)"); e != nil {
-			_ = c.Conn().Close(release)
+	for {
+		c, e := a.Pool.Acquire(ctx)
+		if e != nil {
+			return nil, e
 		}
+		var locked bool
+		if e = c.QueryRow(ctx, "SELECT pg_try_advisory_lock(731946281)").Scan(&locked); e != nil {
+			// A canceled response may hide a successful acquisition. Closing the
+			// session guarantees it cannot return a held lock to the pool.
+			closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = c.Conn().Close(closeCtx)
+			cancel()
+			c.Release()
+			return nil, e
+		}
+		if locked {
+			return func() {
+				release, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if _, e := c.Exec(release, "SELECT pg_advisory_unlock(731946281)"); e != nil {
+					_ = c.Conn().Close(release)
+				}
+				c.Release()
+			}, nil
+		}
+		// Waiting with an acquired connection can exhaust the pool while the
+		// current lock holder still needs a connection for its own queries.
 		c.Release()
-	}, nil
+		timer := time.NewTimer(50 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 func (a *API) record(ctx context.Context, u auth.User, id, action, outcome string, detail map[string]any) {
 	if a.Audit == nil {
@@ -218,7 +238,11 @@ func (a *API) list(w http.ResponseWriter, r *http.Request) {
 		fail(w, e)
 		return
 	}
-	defer unlock()
+	defer func() {
+		if unlock != nil {
+			unlock()
+		}
+	}()
 	repo, e := a.repository(ctx)
 	if e != nil {
 		fail(w, e)
@@ -233,6 +257,10 @@ func (a *API) list(w http.ResponseWriter, r *http.Request) {
 		fail(w, e)
 		return
 	}
+	// Only Git access needs the repository lock. Database summaries must not
+	// hold up saves or other readers once the confirmed snapshots are captured.
+	unlock()
+	unlock = nil
 	bindings, e := a.bindings(ctx)
 	if e != nil {
 		fail(w, e)
@@ -268,6 +296,53 @@ func (a *API) list(w http.ResponseWriter, r *http.Request) {
 			items = append(items, stack.Snapshot{ID: id, Files: map[string]string{}})
 		}
 	}
+	ids := make([]string, 0, len(items))
+	for _, s := range items {
+		ids = append(ids, s.ID)
+	}
+	latestByStack := map[string]deployment{}
+	rows, e = a.Pool.Query(ctx, `SELECT DISTINCT ON (stack_id) stack_id,commit_id,status,created_at,configuration_digest
+		FROM stack_deployments WHERE stack_id=ANY($1::text[]) ORDER BY stack_id,created_at DESC,id DESC`, ids)
+	if e != nil {
+		fail(w, e)
+		return
+	}
+	for rows.Next() {
+		var latest deployment
+		if e = rows.Scan(&latest.StackID, &latest.Commit, &latest.Status, &latest.CreatedAt, &latest.Digest); e != nil {
+			rows.Close()
+			fail(w, e)
+			return
+		}
+		latestByStack[latest.StackID] = latest
+	}
+	e = rows.Err()
+	rows.Close()
+	if e != nil {
+		fail(w, e)
+		return
+	}
+	drafts := map[string]bool{}
+	rows, e = a.Pool.Query(ctx, "SELECT stack_id FROM stack_drafts WHERE stack_id=ANY($1::text[]) AND user_id=$2", ids, u.ID)
+	if e != nil {
+		fail(w, e)
+		return
+	}
+	for rows.Next() {
+		var id string
+		if e = rows.Scan(&id); e != nil {
+			rows.Close()
+			fail(w, e)
+			return
+		}
+		drafts[id] = true
+	}
+	e = rows.Err()
+	rows.Close()
+	if e != nil {
+		fail(w, e)
+		return
+	}
 	summaries := []map[string]any{}
 	for _, s := range items {
 		m, validation := stack.Validate(s)
@@ -283,18 +358,8 @@ func (a *API) list(w http.ResponseWriter, r *http.Request) {
 		if project == "" {
 			project = b.ProjectName
 		}
-		latest := deployment{}
-		e = a.Pool.QueryRow(ctx, "SELECT commit_id,status,created_at,configuration_digest FROM stack_deployments WHERE stack_id=$1 ORDER BY created_at DESC LIMIT 1", s.ID).Scan(&latest.Commit, &latest.Status, &latest.CreatedAt, &latest.Digest)
-		if e != nil && !errors.Is(e, pgx.ErrNoRows) {
-			fail(w, e)
-			return
-		}
-		var draftPresent bool
-		e = a.Pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM stack_drafts WHERE stack_id=$1 AND user_id=$2)", s.ID, u.ID).Scan(&draftPresent)
-		if e != nil {
-			fail(w, e)
-			return
-		}
+		latest := latestByStack[s.ID]
+		draftPresent := drafts[s.ID]
 		summaries = append(summaries, map[string]any{"id": s.ID, "name": name, "projectName": project, "commit": s.Commit, "digest": stack.Digest(s), "valid": validation == nil, "assigned": assigned, "agentId": b.AgentID, "deviceName": names[b.AgentID], "directory": b.Directory, "serviceCount": serviceCount(s, m), "draft": draftPresent, "imported": b.Imported, "deploymentStatus": latest.Status, "deploymentCommit": latest.Commit, "deploymentDigest": latest.Digest, "deploymentAt": latest.CreatedAt})
 	}
 	sort.Slice(summaries, func(i, j int) bool { return summaries[i]["name"].(string) < summaries[j]["name"].(string) })

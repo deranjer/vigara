@@ -6,13 +6,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -113,44 +113,60 @@ func (r *Repository) read(ctx context.Context, id, commit string) (stack.Snapsho
 	if !stack.ValidID(id) || !stack.CommitPattern.MatchString(commit) {
 		return s, ErrNotFound
 	}
-	listing, e := r.run(ctx, "", nil, "ls-tree", "-r", "-z", commit, "--", "stacks/"+id+"/")
+	listing, e := r.run(ctx, "", nil, "ls-tree", "-r", "-l", "-z", commit, "--", "stacks/"+id+"/")
 	if e != nil {
 		return s, e
 	}
 	total := 0
+	type entry struct {
+		path, hash string
+		size       int
+	}
+	entries := []entry{}
+	var input strings.Builder
 	for _, record := range strings.Split(listing, "\x00") {
 		if record == "" {
 			continue
 		}
 		info, p, ok := strings.Cut(record, "\t")
 		fields := strings.Fields(info)
-		if !ok || len(fields) != 3 || fields[0] != "100644" || fields[1] != "blob" {
+		if !ok || len(fields) != 4 || fields[0] != "100644" || fields[1] != "blob" {
 			return s, stack.ErrInvalid
 		}
 		p = strings.TrimPrefix(p, "stacks/"+id+"/")
 		if !stack.ValidPath(p) {
 			return s, stack.ErrInvalid
 		}
-		size, e := r.run(ctx, "", nil, "cat-file", "-s", fields[2])
-		if e != nil {
-			return s, e
-		}
-		var n int
-		if _, e = fmt.Sscan(size, &n); e != nil || n > 128<<10 {
+		n, e := strconv.Atoi(fields[3])
+		if e != nil || n < 0 || n > 128<<10 {
 			return s, stack.ErrInvalid
 		}
 		total += n
-		if total > stack.MaxBytes || len(s.Files) >= 64 {
+		if total > stack.MaxBytes || len(entries) >= 64 {
 			return s, stack.ErrInvalid
 		}
-		content, e := r.run(ctx, "", nil, "cat-file", "blob", fields[2])
-		if e != nil {
-			return s, e
-		}
-		s.Files[p] = content
+		entries = append(entries, entry{p, fields[2], n})
+		input.WriteString(fields[2] + "\n")
 	}
-	if len(s.Files) == 0 {
+	if len(entries) == 0 {
 		return s, ErrNotFound
+	}
+	// Read all validated blobs in one process instead of two processes per file.
+	// Sizes from ls-tree enforce limits before cat-file reads any file contents.
+	out, e := r.run(ctx, input.String(), nil, "cat-file", "--batch")
+	if e != nil {
+		return s, e
+	}
+	for _, entry := range entries {
+		header, rest, ok := strings.Cut(out, "\n")
+		if !ok || header != entry.hash+" blob "+strconv.Itoa(entry.size) || len(rest) <= entry.size || rest[entry.size] != '\n' {
+			return s, ErrGit
+		}
+		s.Files[entry.path] = rest[:entry.size]
+		out = rest[entry.size+1:]
+	}
+	if out != "" {
+		return s, ErrGit
 	}
 	return s, nil
 }
