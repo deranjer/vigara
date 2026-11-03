@@ -32,7 +32,7 @@ func TestImportRunningProjectDockerDrill(t *testing.T) {
 		t.Fatal(err)
 	}
 	project := fmt.Sprintf("vigara-import-drill-%d", time.Now().UnixNano())
-	compose := "services:\n  app:\n    image: busybox:1.37\n    command: [sh, -c, 'sleep 600']\n    env_file: .env\n    volumes: [state:/state]\nvolumes:\n  state: {}\n"
+	compose := "services:\n  app:\n    image: busybox:1.37\n    command: [sh, -c, 'sleep 600']\n    env_file: .env\n    volumes: [state:/state, cache:/cache, config:/config]\nvolumes:\n  state: {}\n  cache: {}\n  config: {}\n"
 	if err := os.WriteFile(filepath.Join(directory, "compose.yml"), []byte(compose), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -89,6 +89,11 @@ func TestImportRunningProjectDockerDrill(t *testing.T) {
 		t.Fatal(err)
 	}
 	q := protocol.ComposeImportRequest{Directory: "existing", Token: discovery.Candidates[0].Token, ID: "imported", Name: "Imported", EditorRecipient: editor, RecoveryRecipient: recovery}
+	for i := 0; i < 16; i++ {
+		if _, err := r.PreviewImport(ctx, q); err != nil {
+			t.Fatalf("unchanged project rejected during repeated review %d: %v", i, err)
+		}
+	}
 	prepared, err := r.PrepareImport(ctx, q)
 	if err != nil {
 		t.Fatal("prepare", err)
@@ -121,7 +126,14 @@ func TestImportRunningProjectDockerDrill(t *testing.T) {
 		t.Fatal("deploy imported stack", result, err)
 	}
 	final := observe()
-	if len(final.Containers) != 1 || len(final.Containers[0].StorageBinds) != 1 || final.Containers[0].StorageBinds[0].Name != before.Containers[0].StorageBinds[0].Name {
+	volumes := func(c composeadoption.RuntimeContainer) map[string]string {
+		out := map[string]string{}
+		for _, mount := range c.StorageBinds {
+			out[mount.Destination] = mount.Name
+		}
+		return out
+	}
+	if len(final.Containers) != 1 || len(final.Containers[0].StorageBinds) != 3 || !stack.Equal(volumes(final.Containers[0]), volumes(before.Containers[0])) {
 		t.Fatal("deployment moved existing storage")
 	}
 	var env []string

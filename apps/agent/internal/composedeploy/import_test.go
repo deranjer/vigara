@@ -11,6 +11,7 @@ import (
 	"time"
 
 	agentchannel "github.com/deranjer/vigara/apps/agent/internal/channel"
+	"github.com/deranjer/vigara/internal/composeadoption"
 	"github.com/deranjer/vigara/internal/composesecrets"
 	"github.com/deranjer/vigara/internal/protocol"
 	"github.com/deranjer/vigara/internal/stack"
@@ -249,6 +250,77 @@ func TestImportRejectsChangedSourceAndSymlinkedEnvironment(t *testing.T) {
 	}
 	if _, err = r.ConfirmImport(ctx, q); err == nil {
 		t.Fatal("symlinked environment accepted")
+	}
+}
+
+func TestImportReviewAcceptsReorderedMountInventory(t *testing.T) {
+	r, _, _ := existingFixture(t)
+	base := r.runCommand
+	inspections := 0
+	r.runCommand = func(ctx context.Context, dir string, args ...string) ([]byte, error) {
+		data, err := base(ctx, dir, args...)
+		if err != nil || args[0] != "inspect" {
+			return data, err
+		}
+		var container map[string]any
+		if err := json.Unmarshal(data, &container); err != nil {
+			t.Fatal(err)
+		}
+		mounts := container["Mounts"].([]any)
+		mounts = append(mounts,
+			map[string]any{"Source": "/var/lib/docker/volumes/existing-cache/_data", "Destination": "/cache", "Type": "volume", "Name": "existing-cache", "RW": true},
+			map[string]any{"Source": "/var/lib/docker/volumes/existing-config/_data", "Destination": "/config", "Type": "volume", "Name": "existing-config", "RW": false})
+		inspections++
+		if inspections%2 == 0 {
+			mounts[0], mounts[2] = mounts[2], mounts[0]
+		}
+		container["Mounts"] = mounts
+		return json.Marshal(container)
+	}
+	discovery, err := r.DiscoverImports(context.Background())
+	if err != nil || len(discovery.Candidates) != 1 {
+		t.Fatal(discovery, err)
+	}
+	q := protocol.ComposeImportRequest{Directory: discovery.Candidates[0].Directory, Token: discovery.Candidates[0].Token, ID: "review", Name: "Review"}
+	for i := 0; i < 8; i++ {
+		if _, err := r.PreviewImport(context.Background(), q); err != nil {
+			t.Fatalf("unchanged project rejected on review %d: %v", i, err)
+		}
+	}
+	if _, err := r.ConfirmImport(context.Background(), q); err != nil {
+		t.Fatal("unchanged project rejected during confirmation", err)
+	}
+}
+
+func TestImportTokenStillFencesRealRuntimeChanges(t *testing.T) {
+	r, _, _ := existingFixture(t)
+	root, preview, err := r.scanImports(context.Background())
+	if err != nil || len(preview.Applications) != 1 {
+		t.Fatal(preview, err)
+	}
+	app := preview.Applications[0]
+	before, err := candidateToken(root, app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*composeadoption.RuntimeContainer){
+		"container identity": func(c *composeadoption.RuntimeContainer) { c.ID = strings.Repeat("e", 64) },
+		"start time":         func(c *composeadoption.RuntimeContainer) { c.StartedAt = "2026-11-02T00:00:00Z" },
+		"state":              func(c *composeadoption.RuntimeContainer) { c.State = "exited" },
+		"mount source":       func(c *composeadoption.RuntimeContainer) { c.StorageBinds[0].Source = "/different-data" },
+		"mount destination":  func(c *composeadoption.RuntimeContainer) { c.StorageBinds[0].Destination = "/different-target" },
+		"mount permissions":  func(c *composeadoption.RuntimeContainer) { c.StorageBinds[0].ReadWrite = false },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := app
+			changed.Containers = append([]composeadoption.RuntimeContainer{}, app.Containers...)
+			changed.Containers[0].StorageBinds = append([]composeadoption.StorageBind{}, app.Containers[0].StorageBinds...)
+			mutate(&changed.Containers[0])
+			after, err := candidateToken(root, changed)
+			if err != nil || before == after {
+				t.Fatal("real runtime change was not detected", err)
+			}
+		})
 	}
 }
 

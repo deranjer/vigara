@@ -144,6 +144,18 @@ func candidateToken(root string, app composeadoption.Application) (string, error
 	}
 	containers := append([]composeadoption.RuntimeContainer(nil), app.Containers...)
 	sort.Slice(containers, func(i, j int) bool { return containers[i].ID < containers[j].ID })
+	for i := range containers {
+		// Docker's mount inventory is a set, not an ordered Compose input.
+		// Canonicalize a private copy so a different inspect order cannot stale
+		// an unchanged candidate or mutate the captured review observation.
+		mounts := append([]composeadoption.StorageBind{}, containers[i].StorageBinds...)
+		sort.Slice(mounts, func(i, j int) bool {
+			left, _ := json.Marshal(mounts[i])
+			right, _ := json.Marshal(mounts[j])
+			return bytes.Compare(left, right) < 0
+		})
+		containers[i].StorageBinds = mounts
+	}
 	data, _ := json.Marshal(struct {
 		Directory, Project string
 		Hashes             map[string]string
