@@ -46,7 +46,22 @@ type Runner struct {
 var errTarget = errors.New("stack target unavailable, changed, or not approved on this device")
 var errCompose = errors.New("Compose validation or deployment failed; check the stack configuration and device prerequisites")
 var errJournal = errors.New("the deployment journal could not confirm the outcome; inspect this device before retrying")
+var errExternalNetwork = errors.New("a required external network is unavailable")
+var errExternalVolume = errors.New("a required external volume is unavailable")
+var errBindMount = errors.New("a required bind mount is missing on this device")
+var errUnsupportedStack = errors.New("this runner supports image-based stacks with interpolation inputs; builds, hooks and service file inputs need migration first")
 var immutableImage = regexp.MustCompile(`^[^\s@]+@sha256:[a-f0-9]{64}$`)
+
+// Only known, fixed messages may cross the channel. Command output and wrapped
+// errors may include rendered environment values or host credentials.
+func validationFailure(err error) error {
+	for _, known := range []error{errTarget, errCompose, errJournal, errExternalNetwork, errExternalVolume, errBindMount, errUnsupportedStack, stack.ErrInvalid} {
+		if errors.Is(err, known) {
+			return &protocol.ChannelError{Code: protocol.ErrCodeBadRequest, Message: known.Error()}
+		}
+	}
+	return err
+}
 
 func validImages(images map[string]string) bool {
 	if len(images) == 0 || len(images) > 256 {
@@ -141,7 +156,8 @@ func Register(c *channel.Client, r *Runner) {
 		if json.Unmarshal(p, &s) != nil {
 			return nil, stack.ErrInvalid
 		}
-		return r.Plan(ctx, s)
+		plan, err := r.Plan(ctx, s)
+		return plan, validationFailure(err)
 	}
 	c.Calls[protocol.MethodComposeDeploy] = func(ctx context.Context, p json.RawMessage) (any, error) {
 		var q Request
@@ -520,20 +536,20 @@ func (r *Runner) modelWithImages(ctx context.Context, s stack.Snapshot, t Target
 	for _, network := range model.Networks {
 		if network.External {
 			if _, e := r.command(ctx, dir, "network", "inspect", "--format", "{{.Name}}", network.Name); e != nil {
-				return plan, errors.New("a required external network is unavailable")
+				return plan, errExternalNetwork
 			}
 		}
 	}
 	for _, volume := range model.Volumes {
 		if volume.External {
 			if _, e := r.command(ctx, dir, "volume", "inspect", "--format", "{{.Name}}", volume.Name); e != nil {
-				return plan, errors.New("a required external volume is unavailable")
+				return plan, errExternalVolume
 			}
 		}
 	}
 	for name, svc := range model.Services {
 		if !immutableImage.MatchString(svc.Image) || svc.Build != nil || svc.Develop != nil || svc.Extends != nil || (svc.EnvFile != nil && len(m.Compose.EnvironmentFiles) == 0) || svc.Configs != nil || svc.Secrets != nil || svc.PostStart != nil || svc.PreStop != nil || svc.PreStart != nil {
-			return plan, errors.New("this runner supports image-based stacks with interpolation inputs; builds, hooks and service file inputs need migration first")
+			return plan, errUnsupportedStack
 		}
 		for _, v := range svc.Volumes {
 			if v.Type == "bind" {
@@ -545,7 +561,7 @@ func (r *Runner) modelWithImages(ctx context.Context, s stack.Snapshot, t Target
 					return plan, errTarget
 				}
 				if _, e := os.Stat(source); e != nil {
-					return plan, errors.New("a required bind mount is missing on this device")
+					return plan, errBindMount
 				}
 			}
 		}

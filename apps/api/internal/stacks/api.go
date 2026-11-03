@@ -163,7 +163,23 @@ func (a *API) authorize(w http.ResponseWriter, r *http.Request, write bool) (aut
 	return u, true
 }
 func fail(w http.ResponseWriter, e error) {
+	var gitError *stackgit.CommandError
+	var channelError *protocol.ChannelError
 	switch {
+	case errors.As(e, &gitError):
+		http.Error(w, gitError.Error(), 502)
+	case errors.Is(e, stackgit.ErrGit):
+		http.Error(w, stackgit.ErrGit.Error(), 502)
+	case errors.Is(e, context.DeadlineExceeded):
+		http.Error(w, "The stack operation timed out while waiting for Git, the repository lock, database, or device. Check server and device connectivity, then retry.", 504)
+	case errors.Is(e, context.Canceled):
+		http.Error(w, "The stack operation was canceled before it completed. Refresh the stack to check its current state.", 502)
+	case errors.Is(e, channel.ErrAgentOffline):
+		http.Error(w, "The target device is offline. Reconnect its agent before retrying the stack operation.", 503)
+	case errors.Is(e, channel.ErrAgentDisconnected):
+		http.Error(w, "The target device disconnected during the stack operation. Check its connection and current stack state before retrying.", 502)
+	case errors.As(e, &channelError):
+		http.Error(w, "The target device rejected the stack operation: "+channelError.Error(), 502)
 	case errors.Is(e, githubapp.ErrAccess), errors.Is(e, githubapp.ErrUnavailable):
 		http.Error(w, e.Error(), 422)
 	case errors.Is(e, errPlacementInactive):

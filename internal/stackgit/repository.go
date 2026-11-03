@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -75,9 +74,17 @@ func (r *Repository) run(ctx context.Context, input string, extra []string, args
 	cmd.Stdin = strings.NewReader(input)
 	out := &bounded{limit: 4 << 20}
 	cmd.Stdout = out
-	cmd.Stderr = io.Discard
-	if cmd.Run() != nil {
-		return "", ErrGit
+	stderr := &bounded{limit: 64 << 10}
+	cmd.Stderr = stderr
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		operation := "command"
+		if len(args) > 0 {
+			operation = args[0]
+		}
+		return "", commandFailure(operation, stderr.String(), err)
 	}
 	return out.String(), nil
 }
@@ -90,7 +97,7 @@ func (r *Repository) init(ctx context.Context) error {
 	}
 	if _, e := os.Stat(filepath.Join(r.Directory, "HEAD")); os.IsNotExist(e) {
 		if e = os.MkdirAll(r.Directory, 0700); e != nil {
-			return ErrGit
+			return commandFailure("initialize repository", "", e)
 		}
 		if _, e = r.run(ctx, "", nil, "init", "--bare", r.Directory); e != nil {
 			return e
