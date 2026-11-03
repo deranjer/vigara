@@ -35,7 +35,7 @@ function starter(id: string, projectName: string): Files {
 export function Stacks({ route, role, onNavigate }: { route: Route; role: string; onNavigate: (route: Route) => void }) {
  if (role !== 'admin') return <Alert title="Stack access requires an administrator">Sign in as an administrator to manage Compose stacks.</Alert>
  if (route.id) return <StackEditor key={route.id} id={route.id} projectName={route.id} onBack={() => onNavigate(routeOf('stacks'))} />
- return <StackList onOpen={(id) => onNavigate(routeOf('stacks',id))} />
+ return <StackList role={role} onOpen={(id) => onNavigate(routeOf('stacks',id))} />
 }
 
 function StackEditor({ id, projectName, onBack }: { id: string; projectName: string; onBack: () => void }) {
