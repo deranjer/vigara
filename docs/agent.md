@@ -23,6 +23,20 @@ permission restrictions, or unavailable firmware tables leave individual
 categories unavailable without failing ordinary monitoring. Serial numbers are
 not included. Older agents continue to work and show unreported hardware fields.
 
+Linux and Windows also collect reported system manufacturer/model values and
+identify common virtual machine signatures. Linux falls back to
+`systemd-detect-virt --vm` with a one-second timeout when SMBIOS does not identify
+the guest. Missing detection data means unknown, not confirmed physical hardware.
+QEMU/KVM does not imply Proxmox; a Proxmox label requires an explicit SMBIOS
+identifier and is marked as reported metadata.
+
+Confirmed guests show virtual CPU counts and guest-visible memory. Empty
+motherboard and memory module cards are hidden with an explanation, while
+reported entries remain visible as guest-reported components. Graphics and BIOS
+remain visible. These values describe the guest view, not the host's physical
+components or authoritative VM configuration and ballooning limits. Updated
+agents must report a fresh hardware inventory before VM-specific display applies.
+
 ## Enrollment
 
 The API creates one-use enrollment tokens that are limited to a set of module

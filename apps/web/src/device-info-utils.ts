@@ -1,5 +1,5 @@
 export type HardwareComponent = { name?: string; manufacturer?: string; model?: string; version?: string; slot?: string; capacityBytes?: number; speedMTs?: number }
-export type HardwareInventory = { observedAt?: string; gpuStatus?: string; gpus?: HardwareComponent[]; memoryStatus?: string; memoryModules?: HardwareComponent[]; boardStatus?: string; motherboard?: HardwareComponent; firmwareStatus?: string; firmware?: HardwareComponent }
+export type HardwareInventory = { observedAt?: string; system?: HardwareComponent; environment?: { kind: 'virtual-machine'; hypervisor?: string; platform?: string }; gpuStatus?: string; gpus?: HardwareComponent[]; memoryStatus?: string; memoryModules?: HardwareComponent[]; boardStatus?: string; motherboard?: HardwareComponent; firmwareStatus?: string; firmware?: HardwareComponent }
 type Metric = { name: string; value: number; labels?: Record<string, string> }
 
 export function driveUsage(metrics: Metric[] = []) {

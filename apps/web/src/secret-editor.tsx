@@ -119,7 +119,7 @@ export function SecretEditor({ id, files, busy, persistDraft, onBusy, onEncrypte
     <Group gap="xs">{Object.keys(files).filter((file) => file.endsWith('.age') || file.endsWith('.sops')).map((file) => <Button key={file} size="compact-xs" variant={file === path ? 'light' : 'subtle'} disabled={busy} onClick={() => { hide(); setPath(file) }}>{file}</Button>)}</Group>
     {error && <Alert color="red">{error}</Alert>}
     {editing ? <>
-      <Textarea label={source ? 'Revealed dotenv contents' : 'Replacement dotenv contents'} value={value} onChange={(event) => setValue(event.currentTarget.value)} minRows={8} spellCheck={false} autoComplete="off" autoCorrect="off" autoCapitalize="off" data-1p-ignore data-lpignore="true" />
+      <Textarea label={source ? 'Revealed dotenv contents' : 'Replacement dotenv contents'} value={value} onChange={(event) => setValue(event.currentTarget.value)} rows={20} resize="vertical" styles={{ input: { height: 'clamp(320px, 50vh, 640px)', minHeight: 240, fontFamily: 'var(--mantine-font-family-monospace)', lineHeight: 1.5 } }} spellCheck={false} autoComplete="off" autoCorrect="off" autoCapitalize="off" data-1p-ignore data-lpignore="true" />
       <Text size="xs" c="dimmed">Hide or leave this tab to clear the form. Encryption clears it even if the request fails.</Text>
       <Group><Button disabled={busy} onClick={() => void encrypt()}>Encrypt into draft</Button><Button variant="default" onClick={hide}>Hide and clear</Button></Group>
     </> : <Group>

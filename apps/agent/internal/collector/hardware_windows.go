@@ -19,6 +19,7 @@ import (
 const hardwareScript = `$ErrorActionPreference='Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $r=@{gpuStatus='unavailable';memoryStatus='unavailable';boardStatus='unavailable';firmwareStatus='unavailable'}
+try {$s=Get-CimInstance Win32_ComputerSystem -OperationTimeoutSec 2 | Select-Object -First 1; if($s){$r.system=@{manufacturer=$s.Manufacturer;model=$s.Model}}} catch {}
 try {$r.gpus=@(Get-CimInstance Win32_VideoController -OperationTimeoutSec 2 | Select-Object -First 16 | ForEach-Object {@{name=$_.Name;manufacturer=$_.AdapterCompatibility;version=$_.DriverVersion}}); if($r.gpus.Count){$r.gpuStatus='collected'}} catch {}
 try {$r.memoryModules=@(Get-CimInstance Win32_PhysicalMemory -OperationTimeoutSec 2 | Select-Object -First 64 | ForEach-Object {@{slot=$_.DeviceLocator;manufacturer=$_.Manufacturer;model=$_.PartNumber;capacityBytes=[uint64]$_.Capacity;speedMTs=[uint64]$_.ConfiguredClockSpeed}}); if($r.memoryModules.Count){$r.memoryStatus='collected'}} catch {}
 try {$b=Get-CimInstance Win32_BaseBoard -OperationTimeoutSec 2 | Select-Object -First 1; if($b){$r.motherboard=@{manufacturer=$b.Manufacturer;model=$b.Product;version=$b.Version};$r.boardStatus='collected'}} catch {}
@@ -40,6 +41,10 @@ func collectHardware(ctx context.Context) *protocol.HardwareInventory {
 		return result
 	}
 	parsed.ObservedAt = result.ObservedAt
+	if parsed.System != nil {
+		cleanHardwareComponent(parsed.System)
+		parsed.Environment = hardwareEnvironment(parsed.System.Manufacturer, parsed.System.Model)
+	}
 	for _, items := range [][]protocol.HardwareComponent{parsed.GPUs, parsed.MemoryModules} {
 		for i := range items {
 			cleanHardwareComponent(&items[i])
