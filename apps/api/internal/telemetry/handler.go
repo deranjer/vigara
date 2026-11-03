@@ -48,19 +48,27 @@ func (h *Handler) ingest(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	reply := func(status int, message string) {
+		h.recordDelivery(r.Context(), agentID, status)
+		if status == http.StatusAccepted {
+			w.WriteHeader(status)
+		} else {
+			http.Error(w, message, status)
+		}
+	}
 	if batch.AgentID != agentID {
-		http.Error(w, "credential does not belong to this agent", http.StatusForbidden)
+		reply(http.StatusForbidden, "credential does not belong to this agent")
 		return
 	}
 	seen := make(map[string]bool, len(batch.Snapshots))
 	now := time.Now().UTC()
 	for _, snapshot := range batch.Snapshots {
 		if err := validate(snapshot, agentID, now); err != nil {
-			http.Error(w, "invalid telemetry snapshot: "+err.Error(), http.StatusBadRequest)
+			reply(http.StatusBadRequest, "invalid telemetry snapshot: "+err.Error())
 			return
 		}
 		if seen[snapshot.ID] {
-			http.Error(w, "duplicate telemetry snapshot id", http.StatusBadRequest)
+			reply(http.StatusBadRequest, "duplicate telemetry snapshot id")
 			return
 		}
 		seen[snapshot.ID] = true
@@ -68,22 +76,22 @@ func (h *Handler) ingest(w http.ResponseWriter, r *http.Request) {
 	err := h.store.Ingest(r.Context(), agentID, batch.Snapshots, now)
 	if errors.Is(err, ErrRateLimited) {
 		w.Header().Set("Retry-After", "60")
-		http.Error(w, "telemetry ingestion rate exceeded", http.StatusTooManyRequests)
+		reply(http.StatusTooManyRequests, "telemetry ingestion rate exceeded")
 		return
 	}
 	if errors.Is(err, ErrSeriesLimit) {
-		http.Error(w, "telemetry metric series limit exceeded", http.StatusUnprocessableEntity)
+		reply(http.StatusUnprocessableEntity, "telemetry metric series limit exceeded")
 		return
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
-		http.Error(w, "invalid or revoked agent credential", http.StatusUnauthorized)
+		reply(http.StatusUnauthorized, "invalid or revoked agent credential")
 		return
 	}
 	if err != nil {
-		http.Error(w, "could not store telemetry", http.StatusInternalServerError)
+		reply(http.StatusInternalServerError, "could not store telemetry")
 		return
 	}
-	w.WriteHeader(http.StatusAccepted)
+	reply(http.StatusAccepted, "")
 }
 
 func (h *Handler) authenticatedAgent(w http.ResponseWriter, r *http.Request) (string, bool) {
