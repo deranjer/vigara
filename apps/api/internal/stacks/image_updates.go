@@ -24,6 +24,7 @@ type imageSettings struct {
 	Version     int64               `json:"version"`
 }
 type updatePolicy struct {
+	Tracking      map[string]string    `json:"tracking,omitempty"`
 	StackID       string               `json:"stackId"`
 	Enabled       bool                 `json:"enabled"`
 	Maintenance   *imageupdates.Window `json:"maintenance"`
@@ -242,6 +243,10 @@ func (a *API) getUpdatePolicy(w http.ResponseWriter, r *http.Request) {
 				sort.Strings(p.Services)
 			}
 		}
+	}
+	var tracking []byte
+	if a.Pool.QueryRow(r.Context(), "SELECT tracking FROM stack_deployments WHERE stack_id=$1 AND status='succeeded' ORDER BY created_at DESC LIMIT 1", p.StackID).Scan(&tracking) == nil {
+		_ = json.Unmarshal(tracking, &p.Tracking)
 	}
 	respond(w, 200, p)
 }

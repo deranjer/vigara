@@ -316,13 +316,16 @@ func TestModelResolvesImagesAndBindsDigestInToken(t *testing.T) {
 	s := testSnapshot()
 	m, _ := stack.Validate(s)
 	r.runCommand = func(_ context.Context, _ string, args ...string) ([]byte, error) {
-		if !strings.Contains(strings.Join(args, " "), "config --format json --resolve-image-digests") {
+		if !strings.Contains(strings.Join(args, " "), "config --format json") {
 			t.Fatal(args)
+		}
+		if !strings.Contains(strings.Join(args, " "), "--resolve-image-digests") {
+			return []byte(`{"services":{"web":{"image":"nginx:stable"}}}`), nil
 		}
 		return []byte(`{"services":{"web":{"image":"` + testImage + `"}}}`), nil
 	}
 	p, err := r.model(context.Background(), s, r.Targets["demo"], m)
-	if err != nil || p.Images["web"] != testImage {
+	if err != nil || p.Images["web"] != testImage || p.Tracking["web"] != "nginx:stable" {
 		t.Fatalf("plan %+v: %v", p, err)
 	}
 	changed := map[string]string{"web": strings.Replace(testImage, "aaaa", "bbbb", 1)}

@@ -247,3 +247,36 @@ func TestUpdatePolicyPermissions(t *testing.T) {
 		}
 	}
 }
+
+func TestFailedAutomaticReleasePausesAndNotifiesOnce(t *testing.T) {
+	a, mux, _, agent, hub := imageFixture(t)
+	ctx := context.Background()
+	window := openImageWindow()
+	for _, r := range hub.checks {
+		if err := a.storeImageCheck(ctx, agent, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	response := imageCall(mux, "PUT", "/api/stacks/demo/update-policy", updatePolicy{Enabled: true, Maintenance: &window})
+	if response.Code != 200 {
+		t.Fatal(response.Body)
+	}
+	settings := imageSettings{Interval: 360, Maintenance: window}
+	if err := a.queueImageUpdate(ctx, "demo", settings); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Pool.Exec(ctx, "UPDATE stack_deployments SET status='failed',stage='apply',message='test failure' WHERE automatic"); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		a.scheduleImageUpdate(ctx, settings)
+	}
+	p, err := a.updatePolicy(ctx, "demo")
+	if err != nil || p.Paused == "" {
+		t.Fatal("failed update did not pause", p, err)
+	}
+	var count int
+	if err = a.Pool.QueryRow(ctx, "SELECT count(*) FROM alert_events WHERE payload->>'rule'='Automatic image update needs attention'").Scan(&count); err != nil || count != 1 {
+		t.Fatal("failure notification missing or duplicated", count, err)
+	}
+}

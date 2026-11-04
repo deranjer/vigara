@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/deranjer/vigara/internal/envcompat"
 	"log/slog"
 	"os"
 	"os/signal"

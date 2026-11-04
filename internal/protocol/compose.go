@@ -1,6 +1,7 @@
 package protocol
 
 const (
+	MethodComposeImagePlan     = "compose.images.plan"
 	MethodComposeValidate      = "compose.validate"
 	MethodComposeDeploy        = "compose.deploy"
 	MethodComposeStatus        = "compose.status"
@@ -14,7 +15,7 @@ const (
 )
 
 func init() {
-	for _, method := range []string{MethodComposeValidate, MethodComposeDeploy, MethodComposeStatus, MethodComposeTargets, MethodComposeCreate, MethodComposeRecipient, MethodComposeDiscover, MethodComposeImportPreview, MethodComposeImportPrepare, MethodComposeImportConfirm} {
+	for _, method := range []string{MethodComposeImagePlan, MethodComposeValidate, MethodComposeDeploy, MethodComposeStatus, MethodComposeTargets, MethodComposeCreate, MethodComposeRecipient, MethodComposeDiscover, MethodComposeImportPreview, MethodComposeImportPrepare, MethodComposeImportConfirm} {
 		channelMethodTiers[method] = DockerModeDeploy
 	}
 }

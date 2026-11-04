@@ -51,6 +51,7 @@ var version = "dev"
 var revision = ""
 
 func main() {
+	envcompat.ApplyAliases()
 	if len(os.Args) > 1 {
 		if os.Args[1] != "host-agent-bundle" {
 			os.Stderr.WriteString("Usage: vigara [host-agent-bundle OPTIONS]\n")
@@ -160,7 +161,7 @@ func main() {
 		logger.Error("invalid GitHub App configuration", "error", err)
 		os.Exit(1)
 	}
-	stackAPI := stacks.Register(stackMux, stacks.Config{GitHub: githubClient, PublicURL: os.Getenv("VIGIRA_PUBLIC_URL"), Repository: stackRepository, Targets: stackTargets, SOPS: os.Getenv("VIGIRA_SOPS_BINARY"), CentralAgeIdentity: os.Getenv("VIGIRA_COMPOSE_EDITOR_AGE_IDENTITY"), Pool: database.Pool, Hub: channelHub, Authz: authService, Audit: auditRecorder})
+	stackAPI := stacks.Register(stackMux, stacks.Config{Agents: channelHub.Agents, GitHub: githubClient, PublicURL: os.Getenv("VIGIRA_PUBLIC_URL"), Repository: stackRepository, Targets: stackTargets, SOPS: os.Getenv("VIGIRA_SOPS_BINARY"), CentralAgeIdentity: os.Getenv("VIGIRA_COMPOSE_EDITOR_AGE_IDENTITY"), Pool: database.Pool, Hub: channelHub, Authz: authService, Audit: auditRecorder})
 	adminMux := http.NewServeMux()
 	authService.RegisterAdmin(adminMux, auditRecorder)
 	androidBackupMux := http.NewServeMux()
@@ -226,6 +227,8 @@ func main() {
 	router.Handle("/api/containers", containersMux)
 	router.Handle("/api/containers/*", containersMux)
 	router.Handle("/api/docker/*", containersMux)
+	router.Handle("/api/image-updates", stackMux)
+	router.Handle("/api/image-updates/*", stackMux)
 	router.Handle("/api/stacks", stackMux)
 	router.Handle("/api/stacks/*", stackMux)
 	router.Handle("/api/stack-placements", stackMux)
@@ -256,9 +259,6 @@ func main() {
 	server := &http.Server{Addr: cfg.Address, Handler: router, ReadHeaderTimeout: 5 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if mcpHandler != nil {
-		go mcpHandler.RunCleanup(ctx)
-	}
 	retention := telemetry.RetentionConfig{RawAge: time.Duration(cfg.TelemetryRawRetentionHours) * time.Hour, RollupAge: time.Duration(cfg.TelemetryRollupRetentionDays) * 24 * time.Hour}
 	tasks := scheduledtasks.New(database.Pool, logger, []scheduledtasks.Definition{
 		{ID: "agent-bundles", Name: "Scan agent bundles", Description: "Download the newest compatible published agent bundles and apply cache retention.", Interval: 24 * time.Hour, Timeout: 30 * time.Minute, Available: agentHandler.ReleaseSyncEnabled(), Defaults: json.RawMessage(`{"purgeOld":true,"keepVersions":2}`),
@@ -297,6 +297,7 @@ func main() {
 		}
 	}()
 	go stackAPI.Run(ctx)
+	go stackAPI.RunImageUpdates(ctx)
 	go notifications.Run(ctx, database.Pool, destinations, logger)
 	logger.Info("starting Vigara API", "addr", cfg.Address)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

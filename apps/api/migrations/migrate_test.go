@@ -73,7 +73,7 @@ func TestApplyFreshDatabaseAndRestart(t *testing.T) {
 	if err := Apply(u); err != nil {
 		t.Fatal(err)
 	}
-	assertVersion(t, conn, 5, false)
+	assertVersion(t, conn, 6, false)
 	if _, err := conn.Exec(context.Background(), "INSERT INTO devices (display_name) VALUES ('keep across restart')"); err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestApplyFreshDatabaseAndRestart(t *testing.T) {
 	if err := conn.QueryRow(context.Background(), "SELECT count(*) FROM devices WHERE display_name = 'keep across restart'").Scan(&count); err != nil || count != 1 {
 		t.Fatalf("restart lost data: count=%d err=%v", count, err)
 	}
-	assertVersion(t, conn, 5, false)
+	assertVersion(t, conn, 6, false)
 }
 
 func TestInitialSchemaIsConsolidated(t *testing.T) {
@@ -92,7 +92,7 @@ func TestInitialSchemaIsConsolidated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 10 || entries[0].Name() != "000001_initial_schema.down.sql" || entries[1].Name() != "000001_initial_schema.up.sql" {
+	if len(entries) != 12 || entries[0].Name() != "000001_initial_schema.down.sql" || entries[1].Name() != "000001_initial_schema.up.sql" {
 		t.Fatalf("unexpected migration files: %v", entries)
 	}
 }
@@ -104,7 +104,7 @@ func TestInitialSchemaIncludesCurrentFeaturesAndSupportsReset(t *testing.T) {
 	}
 	ctx := context.Background()
 	var tables int
-	if err := conn.QueryRow(ctx, "SELECT count(*) FROM pg_tables WHERE schemaname=current_schema() AND tablename<>'schema_migrations'").Scan(&tables); err != nil || tables != 47 {
+	if err := conn.QueryRow(ctx, "SELECT count(*) FROM pg_tables WHERE schemaname=current_schema() AND tablename<>'schema_migrations'").Scan(&tables); err != nil || tables != 52 {
 		t.Fatalf("table count=%d err=%v", tables, err)
 	}
 	for _, table := range []string{"stack_github_app", "stack_github_app_setups", "managed_backup_profiles", "scheduled_tasks", "mcp_oauth_clients", "telemetry_metric_rollups"} {
@@ -122,6 +122,13 @@ func TestInitialSchemaIncludesCurrentFeaturesAndSupportsReset(t *testing.T) {
 		t.Fatalf("authentication default=%q err=%v", mode, err)
 	}
 	// Remove later tables before exercising the original schema reset.
+	imageDown, err := files.ReadFile("000006_image_updates.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = conn.Exec(ctx, string(imageDown)); err != nil {
+		t.Fatal(err)
+	}
 	updatesDown, err := files.ReadFile("000005_agent_updates.down.sql")
 	if err != nil {
 		t.Fatal(err)
@@ -154,42 +161,7 @@ func TestInitialSchemaIncludesCurrentFeaturesAndSupportsReset(t *testing.T) {
 	if err = Apply(u); err != nil {
 		t.Fatalf("reinitialize: %v", err)
 	}
-	assertVersion(t, conn, 5, false)
-}
-
-func TestGitHubAppUpgradePreservesExistingGitSettings(t *testing.T) {
-	u, conn := testDatabase(t)
-	previous := fstest.MapFS{}
-	entries, err := files.ReadDir(".")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, entry := range entries {
-		name := entry.Name()
-		if len(name) > 6 && name[:6] < "000023" && strings.HasSuffix(name, ".sql") {
-			data, err := files.ReadFile(name)
-			if err != nil {
-				t.Fatal(err)
-			}
-			previous[name] = &fstest.MapFile{Data: data}
-		}
-	}
-	if err = apply(previous, u); err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	if _, err = conn.Exec(ctx, "INSERT INTO stack_git_settings(singleton,remote,branch,version) VALUES(true,'git@example.com:stacks.git','production',7)"); err != nil {
-		t.Fatal(err)
-	}
-	if err = Apply(u); err != nil {
-		t.Fatal(err)
-	}
-	var remote, branch, mode string
-	var version int
-	err = conn.QueryRow(ctx, "SELECT remote,branch,version,auth_mode FROM stack_git_settings WHERE singleton=true").Scan(&remote, &branch, &version, &mode)
-	if err != nil || remote != "git@example.com:stacks.git" || branch != "production" || version != 7 || mode != "server" {
-		t.Fatalf("existing Git settings changed: %q %q %d %q %v", remote, branch, version, mode, err)
-	}
+	assertVersion(t, conn, 6, false)
 }
 
 func TestApplyConcurrentStarts(t *testing.T) {
@@ -208,7 +180,7 @@ func TestApplyConcurrentStarts(t *testing.T) {
 			t.Errorf("concurrent startup: %v", err)
 		}
 	}
-	assertVersion(t, conn, 5, false)
+	assertVersion(t, conn, 6, false)
 }
 
 func TestApplyRejectsFailedMigration(t *testing.T) {
@@ -259,7 +231,7 @@ func TestImportMigrationPreservesExistingGitSettings(t *testing.T) {
 	if err = Apply(u); err != nil {
 		t.Fatal(err)
 	}
-	assertVersion(t, conn, 5, false)
+	assertVersion(t, conn, 6, false)
 	var remote string
 	if err = conn.QueryRow(ctx, "SELECT remote FROM stack_git_settings WHERE singleton").Scan(&remote); err != nil || remote != "https://github.com/owner/existing.git" {
 		t.Fatal("upgrade lost Git setup", remote, err)
@@ -302,5 +274,5 @@ func TestSeriesFreshnessMigrationPreservesExistingRegistry(t *testing.T) {
 	if lastObserved.Before(started) || !legacy {
 		t.Fatalf("upgrade failed to preserve old series conservatively: %s legacy=%v", lastObserved, legacy)
 	}
-	assertVersion(t, conn, 5, false)
+	assertVersion(t, conn, 6, false)
 }

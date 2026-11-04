@@ -7,7 +7,7 @@ type Settings = { intervalMinutes: number; maintenance: Window; version: number 
 type Result = { name: string; image: string; status: string; message?: string; current?: string; available?: string; platform?: string }
 type Item = { agentId: string; device: string; containerId: string; stackId: string; result: Result; checkedAt: string; lastSuccessAt: string | null; lastSuccess: Result | null; ignored: boolean }
 type Host = { agentId: string; device: string; checkedAt: string | null; nextCheck: string; message: string }
-type Policy = { stackId: string; enabled: boolean; maintenance: Window | null; excludedServices: string[]; services: string[]; configuration: string; pausedReason: string; version: number }
+type Policy = { tracking?: Record<string, string>; stackId: string; enabled: boolean; maintenance: Window | null; excludedServices: string[]; services: string[]; configuration: string; pausedReason: string; version: number }
 const defaultWindow: Window = { days: [0], start: '03:00', minutes: 120, timezone: 'UTC' }
 const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 const when = (date: string | null) => date ? new Date(date).toLocaleString() : 'Never'
@@ -79,6 +79,7 @@ export function StackUpdatePolicy({ id }: { id: string }) {
     <Checkbox label="Enable automatic updates for this stack" checked={policy.enabled} disabled={busy} onChange={e => { setPolicy({ ...policy, enabled: e.currentTarget.checked }); setAcknowledged(false) }} />
     <Checkbox label="Override the global maintenance window" checked={policy.maintenance !== null} disabled={busy} onChange={e => { setPolicy({ ...policy, maintenance: e.currentTarget.checked ? global?.maintenance ?? defaultWindow : null }); setAcknowledged(false) }} />
     {policy.maintenance && <WindowFields value={policy.maintenance} disabled={busy} onChange={maintenance => { setPolicy({ ...policy, maintenance }); setAcknowledged(false) }} />}
+    <Stack gap="xs">{Object.entries(policy.tracking ?? {}).map(([service, ref]) => <Text size="sm" key={service}><Code>{service}</Code> tracks <Code>{ref}</Code>{ref.includes('@') ? ' (pinned)' : ''}</Text>)}</Stack>
     <Text size="sm" fw={600}>Effective window: {description(policy.maintenance ?? global?.maintenance ?? defaultWindow)}</Text>
     <MultiSelect label="Services excluded from automatic updates" description="Excluded and digest-pinned services retain their deployed images." data={policy.services} value={policy.excludedServices} disabled={busy} onChange={excludedServices => { setPolicy({ ...policy, excludedServices }); setAcknowledged(false) }} />
     {policy.enabled && <Checkbox label="I explicitly authorize automatic image deployments for this stack during the effective window, including any update already pending. Failed updates pause the policy; application data is not automatically rolled back." checked={acknowledged} onChange={e => setAcknowledged(e.currentTarget.checked)} disabled={busy} />}

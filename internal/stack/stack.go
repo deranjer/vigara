@@ -238,6 +238,7 @@ func Equal(a, b map[string]string) bool {
 }
 
 type Plan struct {
+	Tracking    map[string]string `json:"tracking,omitempty"`
 	Token       string            `json:"token"`
 	Services    []string          `json:"services"`
 	ProjectName string            `json:"projectName"`
