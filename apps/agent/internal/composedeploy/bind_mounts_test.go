@@ -116,15 +116,107 @@ func TestBindMountFailureCrossesChannelWithoutRawErrors(t *testing.T) {
 	}
 }
 
+func TestBindMountCreationAcrossComposeEncodings(t *testing.T) {
+	trueFlag, falseFlag := true, false
+	for _, tc := range []struct {
+		name, probe string
+		flag        *bool
+		wantError   bool
+	}{
+		{"legacy true", `{"services":{"create":{"volumes":[{"bind":{"create_host_path":true}}]},"require":{"volumes":[{"bind":{}}]}}}`, &trueFlag, false},
+		{"legacy omitted false", `{"services":{"create":{"volumes":[{"bind":{"create_host_path":true}}]},"require":{"volumes":[{"bind":{}}]}}}`, nil, true},
+		{"modern omitted true", `{"services":{"create":{"volumes":[{"bind":{}}]},"require":{"volumes":[{"bind":{"create_host_path":false}}]}}}`, nil, false},
+		{"modern false", `{"services":{"create":{"volumes":[{"bind":{}}]},"require":{"volumes":[{"bind":{"create_host_path":false}}]}}}`, &falseFlag, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := testRunner(t)
+			s := testSnapshot()
+			m, err := stack.Validate(s)
+			if err != nil {
+				t.Fatal(err)
+			}
+			probes := 0
+			r.runCommand = func(_ context.Context, dir string, args ...string) ([]byte, error) {
+				if strings.Contains(strings.Join(args, " "), "-p vigara-bind-encoding") {
+					probes++
+					return []byte(tc.probe), nil
+				}
+				bind := map[string]any{}
+				if tc.flag != nil {
+					bind["create_host_path"] = *tc.flag
+				}
+				return json.Marshal(map[string]any{"services": map[string]any{"cookira": map[string]any{
+					"image": testImage,
+					"volumes": []any{
+						map[string]any{"type": "bind", "source": filepath.Join(dir, "images"), "target": "/data/images", "bind": bind},
+						map[string]any{"type": "bind", "source": filepath.Join(dir, "files"), "target": "/data/files", "bind": bind},
+					},
+				}}})
+			}
+			for _, pinned := range []bool{false, true} {
+				var images map[string]string
+				if pinned {
+					images = map[string]string{"cookira": testImage}
+				}
+				_, err := r.modelWithImages(context.Background(), s, r.Targets["demo"], m, images)
+				if tc.wantError {
+					var bindErr *bindMountError
+					if !errors.As(err, &bindErr) || bindErr.Service != "cookira" || bindErr.Source != filepath.Join(r.Targets["demo"].Directory, "images") {
+						t.Fatalf("expected actionable missing bind error, pinned=%t: %v", pinned, err)
+					}
+				} else if err != nil {
+					t.Fatalf("pinned=%t: %v", pinned, err)
+				}
+			}
+			wantProbes := 0
+			if tc.flag == nil {
+				wantProbes = 2
+			}
+			if probes != wantProbes {
+				t.Fatalf("got %d probes, want %d (at most one per model)", probes, wantProbes)
+			}
+			for _, name := range []string{"images", "files"} {
+				if _, err := os.Lstat(filepath.Join(r.Targets["demo"].Directory, name)); !os.IsNotExist(err) {
+					t.Fatalf("validation created storage: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestBindCreationProbeRejectsUnknownOutputAndCleansUp(t *testing.T) {
+	for _, output := range []string{
+		`not json`, `{}`, `{"services":{"create":{"volumes":[{"bind":{}}]},"require":{"volumes":[{"bind":{}}]}}}`,
+		`{"services":{"create":{"volumes":[{"bind":{"create_host_path":false}}]},"require":{"volumes":[{"bind":{"create_host_path":true}}]}}}`,
+	} {
+		r := testRunner(t)
+		dir := t.TempDir()
+		r.runCommand = func(context.Context, string, ...string) ([]byte, error) { return []byte(output), nil }
+		if _, err := r.omittedBindCreation(context.Background(), dir); err != errBindCreationEncoding {
+			t.Fatalf("unrecognized output accepted: %v", err)
+		}
+		files, err := os.ReadDir(dir)
+		if err != nil || len(files) != 0 {
+			t.Fatalf("probe left files behind: %v, %v", files, err)
+		}
+	}
+}
+
 // Exercise actual Compose normalization without contacting a Docker daemon or
 // pulling an image. The model must preserve short syntax and explicit opt-in.
 func TestBindMountCreationWithInstalledCompose(t *testing.T) {
-	if _, err := exec.LookPath("docker"); err != nil {
+	program, prefix := "docker", []string{"compose"}
+	// Allow the same integration cases to exercise pinned standalone releases
+	// without replacing the developer's Docker CLI plugin.
+	if binary := os.Getenv("VIGARA_TEST_COMPOSE_BINARY"); binary != "" {
+		program, prefix = binary, nil
+	}
+	if _, err := exec.LookPath(program); err != nil {
 		t.Skip("Docker CLI is not installed")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := exec.CommandContext(ctx, "docker", "compose", "version").Run(); err != nil {
+	if err := exec.CommandContext(ctx, program, append(prefix, "version")...).Run(); err != nil {
 		t.Skip("Docker Compose is not installed")
 	}
 	for _, tc := range []struct {
@@ -151,7 +243,7 @@ func TestBindMountCreationWithInstalledCompose(t *testing.T) {
 						filtered = append(filtered, arg)
 					}
 				}
-				cmd := exec.CommandContext(ctx, "docker", filtered...)
+				cmd := exec.CommandContext(ctx, program, append(prefix, filtered[1:]...)...)
 				cmd.Dir = dir
 				return cmd.Output()
 			}

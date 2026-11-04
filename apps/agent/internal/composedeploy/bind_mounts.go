@@ -1,9 +1,88 @@
 package composedeploy
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+
+	"github.com/deranjer/vigara/internal/protocol"
 )
+
+type composeBindVolume struct {
+	Type, Source, Target string
+	Bind                 *struct {
+		CreateHostPath *bool `json:"create_host_path"`
+	} `json:"bind"`
+}
+
+var errBindCreationEncoding = &protocol.ChannelError{
+	Code:    protocol.ErrCodeInternal,
+	Message: "Could not determine this device's Compose bind directory creation settings. Check Docker Compose availability and retry.",
+}
+
+// Compose versions differ in which boolean is omitted from normalized JSON:
+// older versions omit false; newer versions omit true. Probe the installed
+// serializer with explicit values instead of guessing from a missing field.
+// This only runs `config` on fixed, non-secret inputs, never creates containers
+// or host directories, and is needed only for an omitted flag on a missing path.
+func (r *Runner) omittedBindCreation(ctx context.Context, dir string) (bool, error) {
+	f, err := os.CreateTemp(dir, ".vigara-bind-encoding-*.yaml")
+	if err != nil {
+		return false, errBindCreationEncoding
+	}
+	defer os.Remove(f.Name())
+	_, writeErr := f.WriteString(`services:
+  create:
+    image: busybox
+    volumes:
+      - type: bind
+        source: ./.vigara-bind-probe
+        target: /probe
+        bind:
+          create_host_path: true
+  require:
+    image: busybox
+    volumes:
+      - type: bind
+        source: ./.vigara-bind-probe
+        target: /probe
+        bind:
+          create_host_path: false
+`)
+	closeErr := f.Close()
+	if writeErr != nil || closeErr != nil {
+		return false, errBindCreationEncoding
+	}
+	b, err := r.command(ctx, dir, "compose", "-p", "vigara-bind-encoding", "--project-directory", dir, "-f", f.Name(), "config", "--format", "json")
+	if err != nil {
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
+		return false, errBindCreationEncoding
+	}
+	var model struct {
+		Services map[string]struct {
+			Volumes []composeBindVolume `json:"volumes"`
+		} `json:"services"`
+	}
+	if json.Unmarshal(b, &model) != nil {
+		return false, errBindCreationEncoding
+	}
+	on, off := model.Services["create"].Volumes, model.Services["require"].Volumes
+	if len(on) != 1 || len(off) != 1 || on[0].Bind == nil || off[0].Bind == nil {
+		return false, errBindCreationEncoding
+	}
+	trueFlag, falseFlag := on[0].Bind.CreateHostPath, off[0].Bind.CreateHostPath
+	switch {
+	case trueFlag == nil && falseFlag != nil && !*falseFlag:
+		return true, nil
+	case trueFlag != nil && *trueFlag && (falseFlag == nil || !*falseFlag):
+		return false, nil
+	default:
+		return false, errBindCreationEncoding
+	}
+}
 
 // Only resolved mount metadata and fixed reasons cross the channel, never the
 // underlying OS error or command output, which may contain unrelated secrets.
