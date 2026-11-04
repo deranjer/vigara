@@ -2,12 +2,15 @@ package config
 
 import (
 	"fmt"
-	"os"
 	"strconv"
+
+	"github.com/deranjer/vigara/apps/api/internal/mcpserver"
+	"github.com/deranjer/vigara/internal/envcompat"
 )
 
 // Config contains runtime settings shared by the API server.
 type Config struct {
+	MCPURL                       string
 	Address                      string
 	DatabaseURL                  string
 	SecureSessionCookie          bool
@@ -20,20 +23,26 @@ type Config struct {
 
 func Load() (Config, error) {
 	cfg := Config{
+		MCPURL:                       envcompat.Getenv("VIGARA_MCP_URL"),
 		Address:                      envOr("VIGIRA_ADDR", ":8080"),
 		DatabaseURL:                  envOr("VIGIRA_DATABASE_URL", "postgres://vigira:vigira@localhost:5432/vigira?sslmode=disable"),
-		TelemetryRawRetentionHours:   48,
-		TelemetryRollupRetentionDays: 90,
-		AndroidBackupRoot:            os.Getenv("VIGIRA_ANDROID_BACKUP_ROOT"),
+		TelemetryRawRetentionHours:   30 * 24,
+		TelemetryRollupRetentionDays: 365,
+		AndroidBackupRoot:            envcompat.Getenv("VIGARA_ANDROID_BACKUP_ROOT"),
 		AndroidBackupMaxFileBytes:    512 << 20,
 		AndroidBackupMaxTotalBytes:   100 << 30,
+	}
+	if cfg.MCPURL != "" {
+		if err := mcpserver.ValidateURL(cfg.MCPURL); err != nil {
+			return Config{}, fmt.Errorf("VIGARA_MCP_URL: %w", err)
+		}
 	}
 	secure, err := strconv.ParseBool(envOr("VIGIRA_COOKIE_SECURE", "false"))
 	if err != nil {
 		return Config{}, fmt.Errorf("VIGIRA_COOKIE_SECURE must be true or false: %w", err)
 	}
 	cfg.SecureSessionCookie = secure
-	if err := parseBoundedInt("VIGIRA_TELEMETRY_RAW_RETENTION_HOURS", &cfg.TelemetryRawRetentionHours, 25, 168); err != nil {
+	if err := parseBoundedInt("VIGIRA_TELEMETRY_RAW_RETENTION_HOURS", &cfg.TelemetryRawRetentionHours, 25, 30*24); err != nil {
 		return Config{}, err
 	}
 	if err := parseBoundedInt("VIGIRA_TELEMETRY_ROLLUP_RETENTION_DAYS", &cfg.TelemetryRollupRetentionDays, (cfg.TelemetryRawRetentionHours+23)/24, 365); err != nil {
@@ -49,14 +58,14 @@ func Load() (Config, error) {
 }
 
 func envOr(key, fallback string) string {
-	if value := os.Getenv(key); value != "" {
+	if value := envcompat.Getenv(key); value != "" {
 		return value
 	}
 	return fallback
 }
 
 func parseBoundedInt(key string, value *int, minimum, maximum int) error {
-	raw := os.Getenv(key)
+	raw := envcompat.Getenv(key)
 	if raw == "" {
 		return nil
 	}
@@ -69,7 +78,7 @@ func parseBoundedInt(key string, value *int, minimum, maximum int) error {
 }
 
 func parseBoundedInt64(key string, value *int64, minimum, maximum int64) error {
-	raw := os.Getenv(key)
+	raw := envcompat.Getenv(key)
 	if raw == "" {
 		return nil
 	}

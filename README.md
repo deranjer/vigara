@@ -1,4 +1,4 @@
-# Vigira
+# Vigara
 
 Self-hosted monitoring and backup for household devices. This repository contains the initial development scaffold; architecture and platform support are still being refined.
 
@@ -39,6 +39,14 @@ The initial deployment uses one Go process, embedded web assets, PostgreSQL, and
 
 For standalone recovery of Vigira's database, server configuration, agent credentials, and Restic file snapshots, see the [recovery runbook](docs/recovery.md).
 
+For bundled Restic, automatic device backup setup, editable paths, and web snapshot browsing/downloads, see [managed device backups](docs/managed-backups.md).
+
 For local Restic snapshot browsing, repository checks, alternate-destination restore, and retention planning, see the [snapshot recovery guide](docs/snapshot-recovery.md).
 
 For the native Android companion, its selected-file upload storage, and operator download API, see [Android companion setup](docs/android.md).
+
+Compose stack editing and deployment: [Git-backed stacks setup](docs/git-backed-stacks.md).
+
+Claude and ChatGPT monitoring tools: [MCP and OAuth setup](docs/mcp.md).
+
+Container image checks and opt-in managed-stack updates: [image update monitoring](docs/image-updates.md).

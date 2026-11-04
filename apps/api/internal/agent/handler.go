@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/deranjer/vigara/apps/api/internal/auth"
+	"github.com/deranjer/vigara/apps/api/internal/backups"
 	"github.com/deranjer/vigara/apps/api/internal/inventory"
 	"github.com/deranjer/vigara/internal/protocol"
 	"github.com/jackc/pgx/v5"
@@ -27,9 +28,10 @@ const maxRequestBytes = 1 << 20
 // Handler serves the device-facing API. Device credentials are random bearer
 // secrets; only their SHA-256 hashes are stored in PostgreSQL.
 type Handler struct {
-	pool       *pgxpool.Pool
-	auth       *auth.Service
-	releaseDir string
+	pool           *pgxpool.Pool
+	auth           *auth.Service
+	releaseDir     string
+	managedBackups *backups.Manager
 	// serverURLs are the validated, operator-approved URLs for agent bundles; the
 	// first is the default. allowInsecureHTTP records the explicit plain-HTTP opt-in.
 	serverURLs        []string
@@ -91,6 +93,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/agents/enrollment-tokens", h.createEnrollmentToken)
 	mux.HandleFunc("POST /api/agents/{agentID}/revoke", h.revoke)
 	mux.HandleFunc("POST /api/devices/discovery", h.discover)
+	mux.HandleFunc("DELETE /api/devices/{deviceID}", h.deleteDevice)
 }
 
 func (h *Handler) backupProgress(w http.ResponseWriter, r *http.Request) {
@@ -307,8 +310,10 @@ func (h *Handler) enroll(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	var tokenID string
+	var managedBackup []byte
+	var replacementID *string
 	var allowed []string
-	err = tx.QueryRow(r.Context(), `SELECT id::text, capabilities FROM agent_enrollment_tokens WHERE token_hash=$1 AND used_at IS NULL AND expires_at > now() FOR UPDATE`, hash(req.Token)).Scan(&tokenID, &allowed)
+	err = tx.QueryRow(r.Context(), `SELECT id::text, capabilities, replacement_agent_id::text, managed_backup FROM agent_enrollment_tokens WHERE token_hash=$1 AND used_at IS NULL AND expires_at > now() FOR UPDATE`, hash(req.Token)).Scan(&tokenID, &allowed, &replacementID, &managedBackup)
 	if errors.Is(err, pgx.ErrNoRows) {
 		http.Error(w, "invalid or expired enrollment token", http.StatusUnauthorized)
 		return
@@ -328,18 +333,60 @@ func (h *Handler) enroll(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var deviceID, agentID string
-	err = tx.QueryRow(r.Context(), `SELECT gen_random_uuid()::text`).Scan(&agentID)
-	if err == nil {
-		deviceID, err = inventory.ResolveDevice(r.Context(), tx, inventory.Observation{DisplayName: req.DisplayName, Identifiers: req.Identifiers, Provenance: inventory.SourceProvenance("agent", agentID)})
+	if replacementID != nil {
+		agentID = *replacementID
+		var platform, architecture, deviceName string
+		err = tx.QueryRow(r.Context(), "SELECT i.device_id::text,i.platform,i.architecture,d.display_name FROM agent_identities i JOIN devices d ON d.id=i.device_id WHERE i.id=$1 AND i.revoked_at IS NULL FOR UPDATE OF i,d", agentID).Scan(&deviceID, &platform, &architecture, &deviceName)
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.Error(w, "agent is no longer available for reinstallation", http.StatusConflict)
+			return
+		}
+		if err != nil {
+			http.Error(w, "could not reinstall agent", 500)
+			return
+		}
+		if capability.Platform != platform || capability.Architecture != architecture {
+			http.Error(w, "reinstall bundle belongs to a different device platform", http.StatusConflict)
+			return
+		}
+		resolved, resolveErr := inventory.ResolveDevice(r.Context(), tx, inventory.Observation{DisplayName: deviceName, Identifiers: req.Identifiers, Provenance: inventory.SourceProvenance("agent", agentID), SourceType: "agent", SourceID: agentID})
+		if resolveErr != nil || resolved != deviceID {
+			http.Error(w, "device identifiers conflict with the selected device", http.StatusConflict)
+			return
+		}
+		_, err = tx.Exec(r.Context(), "UPDATE agent_identities SET credential_hash=$2,protocol_version=$3,agent_version=$4,capabilities=$5 WHERE id=$1", agentID, credentialHash, capability.ProtocolVersion, capability.AgentVersion, capabilitiesJSON)
+	} else {
+		_, err = tx.Exec(r.Context(), "SELECT pg_advisory_xact_lock(hashtextextended(lower($1),0))", req.DisplayName)
+		var exists bool
+		if err == nil {
+			err = tx.QueryRow(r.Context(), "SELECT EXISTS(SELECT 1 FROM devices WHERE lower(btrim(display_name))=lower($1))", req.DisplayName).Scan(&exists)
+		}
+		if err == nil && exists {
+			http.Error(w, "device name already exists; use Reinstall agent from device info", http.StatusConflict)
+			return
+		}
+		if err == nil {
+			err = tx.QueryRow(r.Context(), "SELECT gen_random_uuid()::text").Scan(&agentID)
+		}
+		if err == nil {
+			deviceID, err = inventory.ResolveDevice(r.Context(), tx, inventory.Observation{DisplayName: req.DisplayName, Identifiers: req.Identifiers, Provenance: inventory.SourceProvenance("agent", agentID)})
+		}
+		if err == nil {
+			_, err = tx.Exec(r.Context(), "INSERT INTO agent_identities(id,device_id,credential_hash,protocol_version,platform,architecture,agent_version,capabilities,allowed_capabilities) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)", agentID, deviceID, credentialHash, capability.ProtocolVersion, capability.Platform, capability.Architecture, capability.AgentVersion, capabilitiesJSON, allowed)
+		}
+		if err == nil {
+			err = inventory.AttachSource(r.Context(), tx, deviceID, "agent", agentID, inventory.SourceProvenance("agent", agentID))
+		}
+	}
+	if err == nil && len(managedBackup) > 0 {
+		if !h.managedBackups.Available() {
+			http.Error(w, "managed backup key unavailable", 503)
+			return
+		}
+		err = h.managedBackups.Install(r.Context(), tx, agentID, deviceID, managedBackup)
 	}
 	if err == nil {
-		_, err = tx.Exec(r.Context(), `INSERT INTO agent_identities(id,device_id,credential_hash,protocol_version,platform,architecture,agent_version,capabilities,allowed_capabilities) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, agentID, deviceID, credentialHash, capability.ProtocolVersion, capability.Platform, capability.Architecture, capability.AgentVersion, capabilitiesJSON, allowed)
-	}
-	if err == nil {
-		err = inventory.AttachSource(r.Context(), tx, deviceID, "agent", agentID, inventory.SourceProvenance("agent", agentID))
-	}
-	if err == nil {
-		_, err = tx.Exec(r.Context(), `UPDATE agent_enrollment_tokens SET used_at=now() WHERE id=$1`, tokenID)
+		_, err = tx.Exec(r.Context(), `UPDATE agent_enrollment_tokens SET used_at=now()  ,managed_backup=NULL WHERE id=$1`, tokenID)
 	}
 	if err == nil {
 		_, err = tx.Exec(r.Context(), `UPDATE agent_download_sessions SET status='enrolled' WHERE id=$1 AND status='waiting' AND expires_at>now()`, tokenID)
@@ -401,7 +448,21 @@ func (h *Handler) poll(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not update agent status", http.StatusInternalServerError)
 		return
 	}
-	job, leaseErr := leaseBackupJob(r.Context(), h.pool, agentID)
+	var desired *protocol.ManagedBackup
+	ready := true
+	if req.SupportsManagedBackups && allowedSet["restic.backup"] && h.managedBackups.Available() {
+		var e error
+		desired, ready, e = h.managedBackups.Poll(r.Context(), agentID, req.ManagedBackupStatus)
+		if e != nil {
+			http.Error(w, "could not synchronize backups", 503)
+			return
+		}
+	}
+	var job *protocol.Job
+	var leaseErr error
+	if ready {
+		job, leaseErr = leaseBackupJob(r.Context(), h.pool, agentID, req.SupportsManagedBackups)
+	}
 	if leaseErr != nil {
 		http.Error(w, "could not coordinate backup job", http.StatusInternalServerError)
 		return
@@ -411,7 +472,7 @@ func (h *Handler) poll(w http.ResponseWriter, r *http.Request) {
 		job.Deadline = time.Now().UTC().Add(backupExecutionLimit)
 	}
 	configuration := &protocol.AgentConfiguration{Version: "backup-v1", GeneratedAt: time.Now().UTC(), Modules: []protocol.ModuleConfiguration{{ModuleID: "restic.backup", ModuleVersion: "1.0.0", Enabled: true}}}
-	writeJSON(w, protocol.AgentResponse{ProtocolVersion: protocol.CurrentVersion, ServerTime: time.Now().UTC(), PollAfterSeconds: 30, Configuration: configuration, Job: job, BackupProgressEnabled: req.SupportsBackupProgress})
+	writeJSON(w, protocol.AgentResponse{ProtocolVersion: protocol.CurrentVersion, ServerTime: time.Now().UTC(), PollAfterSeconds: 30, Configuration: configuration, Job: job, BackupProgressEnabled: req.SupportsBackupProgress, ManagedBackup: desired})
 }
 
 func (h *Handler) reports(w http.ResponseWriter, r *http.Request) {

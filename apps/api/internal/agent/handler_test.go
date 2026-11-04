@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -53,7 +54,15 @@ func agentTestService(t *testing.T) (*pgxpool.Pool, *auth.Service) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	for _, name := range []string{"000001_initial_schema.up.sql", "000002_local_auth.up.sql", "000003_agent_enrollment.up.sql", "000004_inventory.up.sql", "000009_backup_policies.up.sql", "000010_backup_coordination.up.sql", "000011_backup_progress.up.sql", "000014_agent_download_sessions.up.sql"} {
+	entries, err := os.ReadDir("../../migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".up.sql") {
+			continue
+		}
 		migration, err := os.ReadFile("../../migrations/" + name)
 		if err != nil {
 			t.Fatal(err)

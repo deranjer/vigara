@@ -23,7 +23,7 @@ func renderDiscord(message Message) string {
 	occurred := timestamp(message.OccurredAt)
 
 	lines := []string{
-		"Vigira device alert",
+		"Vigara device alert",
 		"Transition: " + fallback(transition),
 		"Event: " + fallback(eventID),
 		"Occurred: " + occurred,
@@ -36,7 +36,7 @@ func renderDiscord(message Message) string {
 
 func renderGotify(message Message) (title, content string) {
 	transition := cleanField(message.Transition, 80)
-	title = truncateUTF8("Vigira: "+fallback(escapeMarkdown(transition)), 128)
+	title = truncateUTF8("Vigara: "+fallback(escapeMarkdown(transition)), 128)
 	lines := []string{
 		"Transition: " + fallback(escapeMarkdown(transition)),
 		"Event: " + fallback(escapeMarkdown(cleanField(message.EventID, 240))),

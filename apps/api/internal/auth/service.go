@@ -176,10 +176,27 @@ func (s *Service) Login(ctx context.Context, username, password string) (Session
 	if err := userID.Scan(row.ID); err != nil {
 		return Session{}, fmt.Errorf("parse user id: %w", err)
 	}
-	if err := s.queries.CreateSession(ctx, db.CreateSessionParams{
+	// Serialize session issuance with password changes. A password verified before
+	// a concurrent change must not create a fresh session after old sessions are revoked.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Session{}, fmt.Errorf("begin login session: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	var currentHash string
+	if err = tx.QueryRow(ctx, `SELECT password_hash,username,display_name,role FROM users WHERE id=$1::uuid FOR SHARE`, row.ID).Scan(&currentHash, &row.Username, &row.DisplayName, &row.Role); err != nil {
+		return Session{}, fmt.Errorf("validate login account: %w", err)
+	}
+	if currentHash != row.PasswordHash {
+		return Session{}, ErrInvalidCredentials
+	}
+	if err := s.queries.WithTx(tx).CreateSession(ctx, db.CreateSessionParams{
 		UserID: userID, TokenHash: tokenHash, ExpiresAt: pgtype.Timestamptz{Time: expiresAt, Valid: true},
 	}); err != nil {
 		return Session{}, fmt.Errorf("create login session: %w", err)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return Session{}, fmt.Errorf("commit login session: %w", err)
 	}
 	return Session{
 		User:  User{ID: row.ID, Username: row.Username, DisplayName: row.DisplayName, Role: row.Role},
@@ -208,13 +225,19 @@ func (s *Service) Logout(ctx context.Context, token string) error {
 	return nil
 }
 
-// SessionMiddleware resolves the local session for the current-user endpoint.
+// SessionMiddleware resolves the local session for account endpoints and checks
+// the origin of password-change requests before they reach the API handler.
 func (s *Service) SessionMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/auth/me" {
+		if r.URL.Path != "/api/auth/me" && r.URL.Path != "/api/auth/password" {
 			next.ServeHTTP(w, r)
 			return
 		}
+		if r.URL.Path == "/api/auth/password" && !SameOrigin(r) {
+			http.Error(w, "request origin rejected", http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
 		state := sessionContext{}
 		if cookie, err := r.Cookie(SessionCookieName); err == nil {
 			state.user, state.err = s.Authenticate(r.Context(), cookie.Value)

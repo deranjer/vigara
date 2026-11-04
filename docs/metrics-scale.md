@@ -102,9 +102,9 @@ drops them during cleanup. For example, set this variable to the disposable
 `vigira_test` database before running the command-package Go tests.
 Synthetic `first_post_ingest_read` is the first observed read after inserts;
 the server and operating-system caches are not cleared, so it is not a true
-storage-cold measurement. Warm results are seven repeated reads. Retention
-duration measures the current bounded worker pass (up to ten batches of 500
-raw snapshots); the default synthetic cases remain below that cap.
+storage-cold measurement. Warm results are seven repeated reads. The checked-in retention timings used the former worker cap of ten batches of 500
+raw snapshots. The current worker drains all eligible work within its context
+deadline; the default synthetic cases remain below the former cap.
 
 The short generated time series deliberately keeps the run bounded. It measures
 the cost of current code paths and rough per-row relation growth, but it does
@@ -138,3 +138,13 @@ observed series cardinality by hourly buckets over 90 days. These linear
 estimates have wide uncertainty because actual metric labels, JSON payloads,
 PostgreSQL storage settings, and host cache/resources vary. This run is a local
 baseline, not a production capacity test or a reason to change database choice.
+
+## Current retention policy
+
+The runtime defaults are now 720 hours of raw history and 365 days total history,
+with hourly summaries after the raw window. The checked-in 48h/90d figures above
+describe the old policy and are not capacity evidence for the longer defaults.
+The existing short synthetic matrix still exercises shorter configurations; use
+representative retained data with audit mode before making capacity claims.
+See [telemetry retention](telemetry.md#retention-and-intake-limits) for sizing
+and storage-health logs.

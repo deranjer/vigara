@@ -50,8 +50,10 @@ var containerRef = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 
 // Client talks to one explicitly configured Docker endpoint.
 type Client struct {
-	base string
-	http *http.Client
+	manifestMu    sync.Mutex
+	manifestCache map[string]cachedImageManifest
+	base          string
+	http          *http.Client
 	// dial opens a raw connection to the Docker endpoint for requests that upgrade to a stream.
 	dial func(ctx context.Context) (net.Conn, error)
 }
@@ -98,7 +100,9 @@ type APIError struct {
 
 // Is lets callers keep testing errors.Is(err, ErrNotFound) for a 404 while still
 // seeing Docker's explanation, which for a missing image says why it could not be pulled.
-func (e *APIError) Is(target error) bool { return target == ErrNotFound && e.Status == http.StatusNotFound }
+func (e *APIError) Is(target error) bool {
+	return target == ErrNotFound && e.Status == http.StatusNotFound
+}
 
 func (e *APIError) Error() string {
 	if e.Message != "" {

@@ -33,14 +33,15 @@ type TelemetrySnapshotBatch struct {
 }
 
 type HostSummary struct {
-	OS              string `json:"os"`
-	OSVersion       string `json:"osVersion,omitempty"`
-	Architecture    string `json:"architecture"`
-	AgentVersion    string `json:"agentVersion"`
-	CPUModel        string `json:"cpuModel,omitempty"`
-	LogicalCPUs     int    `json:"logicalCpus,omitempty"`
-	TotalMemoryByte uint64 `json:"totalMemoryBytes,omitempty"`
-	UptimeSeconds   uint64 `json:"uptimeSeconds,omitempty"`
+	HardwareInventory *HardwareInventory `json:"hardwareInventory,omitempty"`
+	OS                string             `json:"os"`
+	OSVersion         string             `json:"osVersion,omitempty"`
+	Architecture      string             `json:"architecture"`
+	AgentVersion      string             `json:"agentVersion"`
+	CPUModel          string             `json:"cpuModel,omitempty"`
+	LogicalCPUs       int                `json:"logicalCpus,omitempty"`
+	TotalMemoryByte   uint64             `json:"totalMemoryBytes,omitempty"`
+	UptimeSeconds     uint64             `json:"uptimeSeconds,omitempty"`
 }
 
 type TelemetryMetric struct {

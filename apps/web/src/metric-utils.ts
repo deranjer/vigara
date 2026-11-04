@@ -8,7 +8,21 @@ export function convertRate(value: number, displayUnit: RateUnit | 'bytes' | 'bi
   return displayUnit.endsWith('b/s') ? (value * 8) / factor[displayUnit] : value / factor[displayUnit]
 }
 
+export function formatDuration(seconds: number): string {
+  if (!Number.isFinite(seconds)) return 'Unavailable'
+  let remaining = Math.max(0, Math.floor(seconds))
+  const parts: string[] = []
+  for (const [size, name] of [[86400, 'day'], [3600, 'hour'], [60, 'minute'], [1, 'second']] as const) {
+    const amount = Math.floor(remaining / size)
+    remaining %= size
+    if (amount > 0 || (size === 1 && parts.length === 0)) parts.push(`${amount} ${name}${amount === 1 ? '' : 's'}`)
+    if (parts.length === 3) break
+  }
+  return parts.join(' ')
+}
+
 export function formatMetric(value: number, unit: string, rateUnit: RateUnit | 'bytes' | 'bits' = 'bytes'): string {
+  if (unit === 's') return formatDuration(value)
   if (unit === 'By/s' || unit === 'bytes/s') {
     if (rateUnit !== 'bytes' && rateUnit !== 'bits') return `${new Intl.NumberFormat(undefined, { maximumSignificantDigits: 4 }).format(convertRate(value, rateUnit))} ${rateUnit}`
     const amount = convertRate(value, rateUnit)

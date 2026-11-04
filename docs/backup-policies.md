@@ -1,6 +1,8 @@
 # Backup policies
 
-Backup policies describe desired work for an enrolled agent and one operator-managed Restic profile. The API stores the repository destination, source paths, exclusions, retention choices, schedule, and missed-run and disconnected-device behavior. It never stores Restic credentials and never sends arbitrary paths, executable names, or environment values to an agent.
+For automatic setup and editable server-managed paths, see [Managed device backups](managed-backups.md). The local-profile workflow below remains supported.
+
+Backup policies describe desired work for an enrolled agent and one operator-managed Restic profile. The API stores the repository destination, source paths, exclusions, retention choices, schedule, and missed-run and disconnected-device behavior. Local-profile policies do not store Restic credentials or send paths, executable names, or environment values to an agent. The opt-in managed workflow stores encrypted secrets separately and synchronizes validated paths.
 
 The policy's `profileId` must match a local `resticProfiles` entry on the agent. The authenticated API checks that the selected agent belongs to the selected device, is active, and was enrolled with the `restic.backup` capability. The server cannot inspect the agent's private profile, so a policy without unsupported exclusions is reported as `awaiting_local_profile`; this status does not claim that a backup can run. The profile-template endpoint returns repository and source paths without credentials. An operator must apply it to the private agent state file and configure `RESTIC_PASSWORD` locally.
 

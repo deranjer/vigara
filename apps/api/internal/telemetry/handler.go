@@ -152,6 +152,9 @@ func validate(s protocol.TelemetrySnapshot, agentID string, now time.Time) error
 	if len(s.Metrics) > 512 || len(s.Capabilities) > 128 || len(s.Errors) > 128 {
 		return errors.New("snapshot exceeds item limits")
 	}
+	if err := s.Host.HardwareInventory.Validate(now); err != nil {
+		return err
+	}
 	if len(s.DockerContainers) > 32 {
 		return errors.New("too many Docker containers")
 	}

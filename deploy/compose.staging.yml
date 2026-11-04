@@ -25,7 +25,9 @@ services:
       - "${VIGIRA_PORT:-8080}:8080"
     volumes:
       - android-backups:/var/lib/vigira/android-backups
+      - stack-git:/var/lib/vigira/stacks.git
 
 volumes:
   postgres-data:
   android-backups:
+  stack-git:

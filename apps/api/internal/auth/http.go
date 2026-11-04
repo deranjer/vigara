@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/deranjer/vigara/apps/api/internal/audit"
 )
 
 const SessionCookieName = "vigira_session"
@@ -51,7 +52,12 @@ type LogoutOutput struct {
 	SetCookie http.Cookie `header:"Set-Cookie"`
 }
 
-func RegisterAPI(api huma.API, service *Service, secureCookie bool) {
+func RegisterAPI(api huma.API, service *Service, secureCookie bool, recorders ...*audit.Recorder) {
+	var recorder *audit.Recorder
+	if len(recorders) > 0 {
+		recorder = recorders[0]
+	}
+	registerPasswordChange(api, service, secureCookie, recorder)
 	huma.Register(api, huma.Operation{
 		OperationID: "getSetupStatus", Method: http.MethodGet, Path: "/api/setup/status",
 		Summary: "Check whether initial setup is required", Tags: []string{"Setup"},

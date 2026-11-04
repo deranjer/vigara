@@ -19,20 +19,24 @@ import (
 	webassets "github.com/deranjer/vigara/apps/api"
 	"github.com/deranjer/vigara/apps/api/internal/agent"
 	"github.com/deranjer/vigara/apps/api/internal/alerts"
-	"github.com/deranjer/vigara/apps/api/internal/audit"
-	"github.com/deranjer/vigara/apps/api/internal/channel"
-	"github.com/deranjer/vigara/apps/api/internal/containers"
 	"github.com/deranjer/vigara/apps/api/internal/androidbackup"
+	"github.com/deranjer/vigara/apps/api/internal/audit"
 	"github.com/deranjer/vigara/apps/api/internal/auth"
 	"github.com/deranjer/vigara/apps/api/internal/backups"
+	"github.com/deranjer/vigara/apps/api/internal/channel"
 	"github.com/deranjer/vigara/apps/api/internal/config"
+	"github.com/deranjer/vigara/apps/api/internal/containers"
 	"github.com/deranjer/vigara/apps/api/internal/database"
 	"github.com/deranjer/vigara/apps/api/internal/db"
+	"github.com/deranjer/vigara/apps/api/internal/githubapp"
 	"github.com/deranjer/vigara/apps/api/internal/inventoryview"
+	"github.com/deranjer/vigara/apps/api/internal/mcpserver"
 	"github.com/deranjer/vigara/apps/api/internal/notifications"
 	"github.com/deranjer/vigara/apps/api/internal/notifytransport"
+	"github.com/deranjer/vigara/apps/api/internal/stacks"
 	"github.com/deranjer/vigara/apps/api/internal/telemetry"
 	"github.com/deranjer/vigara/apps/api/migrations"
+	"github.com/deranjer/vigara/internal/envcompat"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -46,6 +50,7 @@ var version = "dev"
 var revision = ""
 
 func main() {
+	envcompat.ApplyAliases()
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	cfg, err := config.Load()
 	if err != nil {
@@ -93,8 +98,15 @@ func main() {
 	alerts.NewHandler(database.Pool, authService).Register(alertsMux)
 	backupMux := http.NewServeMux()
 	backups.NewHandler(database.Pool, authService).Register(backupMux)
+	managedBackups, err := backups.NewManager(database.Pool, os.Getenv("VIGARA_BACKUP_MASTER_KEY"), os.Getenv("VIGARA_RESTIC_EXECUTABLE"))
+	if err != nil {
+		logger.Error("invalid managed backup configuration", "error", err)
+		os.Exit(1)
+	}
+	managedBackups.Register(backupMux, authService)
 	agentMux := http.NewServeMux()
 	agentHandler := agent.NewHandler(database.Pool, authService)
+	agentHandler.ConfigureManagedBackups(managedBackups)
 	agentHandler.ConfigureDownloads("", os.Getenv("VIGIRA_AGENT_RELEASE_DIR"))
 	allowInsecureAgentHTTP := os.Getenv("VIGIRA_ALLOW_INSECURE_AGENT_HTTP") == "true"
 	for _, rejected := range agentHandler.ConfigureServerURLs(os.Getenv("VIGIRA_PUBLIC_URL"), splitList(os.Getenv("VIGIRA_PUBLIC_URLS")), allowInsecureAgentHTTP) {
@@ -109,7 +121,7 @@ func main() {
 	channelMux := http.NewServeMux()
 	channelHub.RegisterAPI(channelMux, authService)
 	containersMux := http.NewServeMux()
-	containers.RegisterAPI(containersMux, containers.Config{Hub: channelHub, Authz: authService, Audit: auditRecorder, Names: func(ctx context.Context) (map[string]string, error) {
+	containerConfig := containers.Config{Hub: channelHub, Authz: authService, Audit: auditRecorder, Names: func(ctx context.Context) (map[string]string, error) {
 		rows, err := database.Pool.Query(ctx, `SELECT ai.id::text, d.display_name FROM agent_identities ai JOIN devices d ON d.id = ai.device_id WHERE ai.revoked_at IS NULL`)
 		if err != nil {
 			return nil, err
@@ -124,7 +136,20 @@ func main() {
 			names[id] = name
 		}
 		return names, rows.Err()
-	}})
+	}}
+	containers.RegisterAPI(containersMux, containerConfig)
+	stackRepository, stackTargets, err := stacks.FromEnv()
+	if err != nil {
+		logger.Error("invalid stack configuration")
+		os.Exit(1)
+	}
+	stackMux := http.NewServeMux()
+	githubClient, err := githubapp.New(envcompat.Getenv("VIGARA_GITHUB_APP_MASTER_KEY"))
+	if err != nil {
+		logger.Error("invalid GitHub App configuration", "error", err)
+		os.Exit(1)
+	}
+	stackAPI := stacks.Register(stackMux, stacks.Config{Agents: channelHub.Agents, GitHub: githubClient, PublicURL: envcompat.Getenv("VIGARA_PUBLIC_URL"), Repository: stackRepository, Targets: stackTargets, SOPS: os.Getenv("VIGIRA_SOPS_BINARY"), CentralAgeIdentity: os.Getenv("VIGIRA_COMPOSE_EDITOR_AGE_IDENTITY"), Pool: database.Pool, Hub: channelHub, Authz: authService, Audit: auditRecorder})
 	adminMux := http.NewServeMux()
 	authService.RegisterAdmin(adminMux, auditRecorder)
 	androidBackupMux := http.NewServeMux()
@@ -151,11 +176,37 @@ func main() {
 	router.Use(auth.NewAttemptLimiter().Middleware)
 	router.Use(authService.SessionMiddleware)
 	router.Use(authService.WriteGuard)
+	router.Get("/api/mcp/status", func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := authService.UserFromRequest(r); !ok {
+			http.Error(w, "login required", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_ = json.NewEncoder(w).Encode(map[string]bool{"enabled": cfg.MCPURL != ""})
+	})
+	var mcpHandler *mcpserver.Handler
+	if cfg.MCPURL != "" {
+		mcpHandler, err = mcpserver.New(database.Pool, authService, auditRecorder, cfg.MCPURL)
+		if err != nil {
+			logger.Error("invalid MCP configuration", "error", err)
+			os.Exit(1)
+		}
+		mcpMux := http.NewServeMux()
+		mcpHandler.ConfigureManagement(stackAPI.Config, containerConfig)
+		mcpHandler.Register(mcpMux)
+		router.Handle("/mcp", mcpMux)
+		router.Handle("/oauth/*", mcpMux)
+		router.Handle("/.well-known/oauth-protected-resource", mcpMux)
+		router.Handle("/.well-known/oauth-protected-resource/mcp", mcpMux)
+		router.Handle("/.well-known/oauth-authorization-server", mcpMux)
+		logger.Info("MCP enabled", "url", strings.TrimSuffix(cfg.MCPURL, "/")+"/mcp")
+	}
 	router.Get("/api/version", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"version": version, "revision": revision})
 	})
-	api := humachi.New(router, huma.DefaultConfig("Vigira API", "0.1.0"))
+	api := humachi.New(router, huma.DefaultConfig("Vigara API", "0.1.0"))
 	huma.Register(api, huma.Operation{
 		OperationID: "healthCheck", Method: http.MethodGet, Path: "/healthz", Summary: "Check service health",
 	}, func(context.Context, *struct{}) (*healthOutput, error) {
@@ -169,6 +220,12 @@ func main() {
 	router.Handle("/api/containers", containersMux)
 	router.Handle("/api/containers/*", containersMux)
 	router.Handle("/api/docker/*", containersMux)
+	router.Handle("/api/image-updates", stackMux)
+	router.Handle("/api/image-updates/*", stackMux)
+	router.Handle("/api/stacks", stackMux)
+	router.Handle("/api/stacks/*", stackMux)
+	router.Handle("/api/stack-placements", stackMux)
+	router.Handle("/api/stack-placements/*", stackMux)
 	router.Handle("/api/users", adminMux)
 	router.Handle("/api/users/*", adminMux)
 	router.Handle("/api/audit", adminMux)
@@ -185,7 +242,7 @@ func main() {
 	router.Handle("/api/agent-downloads/*", agentMux)
 	router.Handle("/api/devices/*", agentMux)
 	router.Handle("/api/inventory/*", inventoryMux)
-	auth.RegisterAPI(api, authService, cfg.SecureSessionCookie)
+	auth.RegisterAPI(api, authService, cfg.SecureSessionCookie, auditRecorder)
 	staticFS, err := fs.Sub(webassets.FS, "web")
 	if err != nil {
 		logger.Error("web assets unavailable", "error", err)
@@ -195,6 +252,9 @@ func main() {
 	server := &http.Server{Addr: cfg.Address, Handler: router, ReadHeaderTimeout: 5 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if mcpHandler != nil {
+		go mcpHandler.RunCleanup(ctx)
+	}
 	retention := telemetry.RetentionConfig{RawAge: time.Duration(cfg.TelemetryRawRetentionHours) * time.Hour, RollupAge: time.Duration(cfg.TelemetryRollupRetentionDays) * 24 * time.Hour}
 	go telemetry.RunRetentionWorker(ctx, telemetryStore, retention, logger)
 	go func() {
@@ -205,10 +265,12 @@ func main() {
 			logger.Error("server shutdown failed", "error", err)
 		}
 	}()
+	go stackAPI.Run(ctx)
+	go stackAPI.RunImageUpdates(ctx)
 	go notifications.Run(ctx, database.Pool, destinations, logger)
 	go alerts.Run(ctx, database.Pool, logger)
 	go backups.RunScheduler(ctx, database.Pool, logger)
-	logger.Info("starting Vigira API", "addr", cfg.Address)
+	logger.Info("starting Vigara API", "addr", cfg.Address)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("server failed", "error", err)
 		os.Exit(1)

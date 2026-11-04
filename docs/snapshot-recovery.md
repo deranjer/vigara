@@ -1,5 +1,9 @@
 # Local Restic snapshot recovery
 
+For authenticated web snapshot browsing and downloads from server-accessible
+repositories, see [Managed device backups](managed-backups.md). This guide covers
+the separate local recovery CLI.
+
 `vigira-restic` is a local operator command for inspecting and recovering file snapshots from the agent's configured local Restic profiles. It uses the same private agent config as `vigira-agent` (`--config PATH`, `VIGIRA_AGENT_CONFIG`, or the normal per-user config file). A profile must be enabled and configured locally. The server cannot supply a repository, source path, credential, executable, or restore destination to this command.
 
 Build it with `go build -o vigira-restic ./apps/agent/cmd/vigira-restic`. Select a profile explicitly for every operation:

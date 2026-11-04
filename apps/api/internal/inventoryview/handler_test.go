@@ -361,3 +361,63 @@ func TestCustomHistoryReportsHourlySourceAndExcludesPartialBuckets(t *testing.T)
 		t.Fatalf("partial hour must stay empty and report hourly resolution: %+v", partial)
 	}
 }
+
+func TestYearHistoryPreservesWeightedSummariesAndSupportsZoom(t *testing.T) {
+	pool := inventoryTestPool(t)
+	ctx := context.Background()
+	service := auth.NewService(pool, db.New(pool))
+	session, err := service.CreateFirstUser(ctx, "year-admin", "Year Admin", "correct horse battery", "correct horse battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var device, agent string
+	if err := pool.QueryRow(ctx, `INSERT INTO devices(display_name) VALUES('year history') RETURNING id::text`).Scan(&device); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO agent_identities(device_id,credential_hash,protocol_version) VALUES($1,decode('eeff','hex'),'v1') RETURNING id::text`, device).Scan(&agent); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Now().UTC().Add(-200 * 24 * time.Hour).Truncate(3 * time.Hour)
+	if _, err := pool.Exec(ctx, `INSERT INTO telemetry_metric_rollups(agent_id,metric_name,bucket_start,sample_count,sum_value,min_value,max_value)
+		VALUES($1,'cpu_used_percent',$2,1,10,5,15),($1,'cpu_used_percent',$2+interval '1 hour',3,90,20,40)`, agent, base); err != nil {
+		t.Fatal(err)
+	}
+	names := []string{"cpu_used_percent", "memory_total_bytes", "memory_available_bytes", "uptime_seconds", "filesystem_free_bytes"}
+	for _, name := range names {
+		if _, err := pool.Exec(ctx, `INSERT INTO telemetry_metric_series(agent_id,metric_name) VALUES($1,$2)`, agent, name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mux := http.NewServeMux()
+	NewHandler(pool, service).Register(mux)
+	query := func(params url.Values, status int) History {
+		t.Helper()
+		r := httptest.NewRequest(http.MethodGet, "/api/inventory/devices/"+device+"/history?"+params.Encode(), nil)
+		r.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: session.Token})
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, r)
+		if w.Code != status {
+			t.Fatalf("history status=%d body=%s", w.Code, w.Body)
+		}
+		var history History
+		if status == 200 {
+			if err := json.Unmarshal(w.Body.Bytes(), &history); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return history
+	}
+	history := query(url.Values{"range": {"365d"}, "metrics": names}, 200)
+	if history.ResolutionSeconds != 10800 || len(history.Series) != 1 || len(history.Series[0].Points) != 1 {
+		t.Fatalf("unexpected year chart: %+v", history)
+	}
+	p := history.Series[0].Points[0]
+	if *p.Value != 25 || *p.Min != 5 || *p.Max != 40 || p.Samples != 4 {
+		t.Fatalf("lost weighted average or extrema: %+v", p)
+	}
+	zoom := query(url.Values{"start": {base.Format(time.RFC3339)}, "end": {base.Add(2 * time.Hour).Format(time.RFC3339)}, "metric": {"cpu_used_percent"}}, 200)
+	if zoom.ResolutionSeconds != 3600 || len(zoom.Series) != 1 || len(zoom.Series[0].Points) != 2 {
+		t.Fatalf("zoom did not restore stored hours: %+v", zoom)
+	}
+	query(url.Values{"start": {base.Add(-166 * 24 * time.Hour).Format(time.RFC3339)}, "end": {base.Add(200 * 24 * time.Hour).Format(time.RFC3339)}, "metric": {"cpu_used_percent"}}, 400)
+}

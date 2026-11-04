@@ -1,6 +1,7 @@
 package inventoryview
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -180,13 +181,16 @@ func (h *Handler) history(w http.ResponseWriter, r *http.Request) {
 	if !h.authorized(w, r) {
 		return
 	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	r = r.WithContext(ctx)
 	rangeName := r.URL.Query().Get("range")
-	ranges := map[string]time.Duration{"1h": time.Hour, "6h": 6 * time.Hour, "24h": 24 * time.Hour, "7d": 7 * 24 * time.Hour, "30d": 30 * 24 * time.Hour}
+	ranges := map[string]time.Duration{"1h": time.Hour, "6h": 6 * time.Hour, "24h": 24 * time.Hour, "7d": 7 * 24 * time.Hour, "30d": 30 * 24 * time.Hour, "90d": 90 * 24 * time.Hour, "365d": 365 * 24 * time.Hour}
 	startRaw, endRaw := r.URL.Query().Get("start"), r.URL.Query().Get("end")
 	custom := startRaw != "" || endRaw != ""
 	duration, ok := ranges[rangeName]
 	if !ok && !custom {
-		http.Error(w, "range must be 1h, 6h, 24h, 7d, or 30d", 400)
+		http.Error(w, "range must be 1h, 6h, 24h, 7d, 30d, 90d, or 365d", 400)
 		return
 	}
 	windowEnd := time.Now().UTC()
@@ -205,8 +209,8 @@ func (h *Handler) history(w http.ResponseWriter, r *http.Request) {
 		}
 		windowStart, windowEnd = windowStart.UTC(), windowEnd.UTC()
 		duration = windowEnd.Sub(windowStart)
-		if duration <= 0 || duration > 30*24*time.Hour || windowEnd.After(time.Now().UTC().Add(time.Minute)) {
-			http.Error(w, "custom interval must be positive, at most 30 days, and end no more than one minute in the future", 400)
+		if duration <= 0 || duration > 365*24*time.Hour || windowEnd.After(time.Now().UTC().Add(time.Minute)) {
+			http.Error(w, "custom interval must be positive, at most 365 days, and end no more than one minute in the future", 400)
 			return
 		}
 		rangeName = "custom"
@@ -285,14 +289,23 @@ func (h *Handler) history(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	binSeconds := int64(60)
+	// The registry bounds cardinality without scanning the raw JSON history.
+	// Reserve one point per series for a partial bucket at either edge.
+	var seriesCount int64
+	if err := h.pool.QueryRow(r.Context(), `SELECT count(*) FROM (SELECT DISTINCT s.metric_name,s.labels
+		FROM telemetry_metric_series s JOIN agent_identities i ON i.id=s.agent_id
+		WHERE i.device_id=$1 AND i.revoked_at IS NULL AND s.metric_name=ANY($2::text[])) s`, deviceID, metricNames).Scan(&seriesCount); err != nil {
+		http.Error(w, "could not load history", 500)
+		return
+	}
+	if seriesCount < int64(len(metricNames)) {
+		seriesCount = int64(len(metricNames))
+	}
+	binSeconds := historyBinSeconds(duration, seriesCount)
 	var hasRollup bool
 	if err := h.pool.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM telemetry_metric_rollups r JOIN agent_identities i ON i.id=r.agent_id WHERE i.device_id=$1 AND i.revoked_at IS NULL AND r.bucket_start < $3 AND r.bucket_start + interval '1 hour' > $2 AND r.metric_name=ANY($4::text[]))`, deviceID, windowStart, windowEnd, metricNames).Scan(&hasRollup); err != nil {
 		http.Error(w, "could not load history", 500)
 		return
-	}
-	if duration > 24*time.Hour {
-		binSeconds = 3600
 	}
 	binOrigin := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 	if custom && binSeconds == 60 {
@@ -355,13 +368,37 @@ func (h *Handler) history(w http.ResponseWriter, r *http.Request) {
 		resolution = "one-minute samples and retained hourly summaries; partial summary hours are excluded"
 	}
 	effectiveResolution := binSeconds
-	if hasRollup {
+	if hasRollup && effectiveResolution < 3600 {
 		effectiveResolution = 3600
 	}
 	if binSeconds == 3600 {
 		resolution = "hourly summaries; partial hours are excluded and exact sub-hour detail is unavailable"
 	}
+	if binSeconds > 3600 {
+		resolution = strconv.FormatInt(binSeconds/3600, 10) + "-hour chart summaries from retained hourly data; zoom in for finer detail"
+	}
 	writeJSON(w, History{Range: rangeName, WindowStart: windowStart, WindowEnd: windowEnd, Metrics: metrics, Series: out, ResolutionSeconds: effectiveResolution, Resolution: resolution})
+}
+
+// Storage keeps hourly detail for a year. Wide charts may combine hours to
+// stay within the existing response limit; weighted sums and min/max survive.
+func historyBinSeconds(duration time.Duration, series int64) int64 {
+	if duration <= 24*time.Hour {
+		return 60
+	}
+	if series < 1 {
+		series = 1
+	}
+	if series > 64 {
+		series = 64
+	}
+	pointsPerSeries := int64(20000)/series - 2
+	seconds := int64((duration + time.Second - 1) / time.Second)
+	hours := (seconds + pointsPerSeries*3600 - 1) / (pointsPerSeries * 3600)
+	if hours < 1 {
+		hours = 1
+	}
+	return hours * 3600
 }
 
 var uuidRE = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)

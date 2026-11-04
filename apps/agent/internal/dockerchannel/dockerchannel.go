@@ -20,6 +20,14 @@ import (
 
 // Register adds the Docker read methods to the channel client.
 func Register(c *channel.Client, api *dockerapi.Client) {
+	c.Calls[protocol.MethodDockerImageCheck] = func(ctx context.Context, raw json.RawMessage) (any, error) {
+		var params protocol.DockerImageCheckParams
+		if err := decode(raw, &params); err != nil {
+			return nil, err
+		}
+		result, err := api.ImageCheck(ctx, params)
+		return result, mapError(err)
+	}
 	c.Calls[protocol.MethodDockerList] = func(ctx context.Context, _ json.RawMessage) (any, error) {
 		result, err := api.List(ctx)
 		return result, mapError(err)

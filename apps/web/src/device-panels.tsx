@@ -1,7 +1,9 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { Alert, Badge, Button, Card, Checkbox, Group, Loader, MultiSelect, SimpleGrid, Stack, Text, TextInput, Title } from '@mantine/core'
-import { type Device, summaryMetric } from './devices'
-import { formatMetric } from './metric-utils'
+import { Alert, Badge, Button, Card, Checkbox, Group, Loader, MultiSelect, Modal, Progress, SimpleGrid, Stack, Text, TextInput, Title } from '@mantine/core'
+import { IconBrandWindowsFilled, IconBrandAppleFilled, IconBrandDebian, IconBrandRedhat, IconBrandUbuntu, IconDeviceDesktopQuestion, IconTerminal2 } from '@tabler/icons-react'
+import { type Device } from './devices'
+import { driveUsage, operatingSystem, type HardwareComponent } from './device-info-utils'
+import { formatDuration, formatMetric } from './metric-utils'
 
 type Awake = { weekdays: string[]; start: string; end: string; timezone: string }
 type Availability = { awake: Awake | null; expectedAwake: boolean; maintenanceActive: boolean; maintenance: { id: string; startsAt: string; endsAt: string }[] }
@@ -14,27 +16,70 @@ async function read<T>(path: string): Promise<T> {
 }
 const date = (value?: string | null) => value ? new Date(value).toLocaleString() : 'Not reported'
 
-export function DeviceInfo({ device }: { device: Device }) {
+function OSLogo({ os }: { os: string }) {
+  const value = os.toLowerCase()
+  const kind = operatingSystem(value)
+  if (kind === 'windows') return <IconBrandWindowsFilled size={28} color="#0078d4" aria-label="Windows" />
+  if (kind === 'linux') {
+    if (/\b(ubuntu|kubuntu|xubuntu|lubuntu|edubuntu)\b/.test(value)) return <IconBrandUbuntu size={28} color="#e95420" aria-label="Ubuntu" />
+    if (/\bdebian\b/.test(value)) return <IconBrandDebian size={28} color="#a80030" aria-label="Debian" />
+    if (/\b(red hat|redhat|rhel)\b/.test(value)) return <IconBrandRedhat size={28} color="#ee0000" aria-label="Red Hat" />
+    return <IconTerminal2 size={28} aria-label="Linux" />
+  }
+  if (kind === 'macos') return <IconBrandAppleFilled size={28} aria-label="macOS" />
+  return <IconDeviceDesktopQuestion size={28} aria-label="Unknown operating system" />
+}
+
+function HardwareDetails({ title, status, items }: { title: string; status?: string; items?: HardwareComponent[] }) {
+  return <Card withBorder padding="lg"><Group justify="space-between" mb="md"><Title order={4}>{title}</Title><Badge variant="light" color={status === 'collected' ? 'teal' : 'gray'}>{status === 'collected' ? 'Reported' : status === 'unsupported' ? 'Unsupported' : 'Not available'}</Badge></Group>
+    {items?.length ? <Stack gap="md">{items.map((item, index) => <div key={index}>
+      <Text fw={500}>{[item.manufacturer, item.model || item.name].filter(Boolean).join(' · ') || `${title} ${index + 1}`}</Text>
+      {item.slot && <Text size="sm" c="dimmed">Slot: {item.slot}</Text>}
+      {!!item.capacityBytes && <Text size="sm">{formatMetric(item.capacityBytes, 'By')}{item.speedMTs ? ` · ${item.speedMTs} MT/s` : ''}</Text>}
+      {item.version && <Text size="sm" c="dimmed">{title === 'Graphics' ? 'Driver' : 'Version'}: {item.version}</Text>}
+    </div>)}</Stack> : <Text size="sm" c="dimmed">{status === 'unsupported' ? 'Collection is not supported on this platform yet.' : 'The agent has not reported these details. Hardware access or system tools may be unavailable.'}</Text>}
+  </Card>
+}
+
+export function DeviceInfo({ device, onReinstall }: { device: Device; onReinstall: () => void }) {
   const host = device.latest?.host
+  const drives = driveUsage(device.latest?.metrics)
+  const hardware = host?.hardwareInventory
+  const environment = hardware?.environment
+  const isVM = environment?.kind === 'virtual-machine'
+  const hideMemoryModules = isVM && !hardware?.memoryModules?.length
+  const hideMotherboard = isVM && !hardware?.motherboard
+  const os = host?.os || device.platform || 'Unknown'
   const fields = [
     ['Processor', host?.cpuModel || 'Not reported'],
-    ['Logical CPUs', host?.logicalCpus ? String(host.logicalCpus) : 'Not reported'],
-    ['Installed memory', host?.totalMemoryBytes ? formatMetric(host.totalMemoryBytes, 'By') : 'Not reported'],
-    ['Total disk space', summaryMetric(device, 'filesystem_total_bytes')],
-    ['Operating system', [host?.os || device.platform, host?.osVersion].filter(Boolean).join(' ') || 'Not reported'],
+    [isVM ? 'Virtual CPUs' : 'Logical CPUs', host?.logicalCpus ? String(host.logicalCpus) : 'Not reported'],
+    [isVM ? 'Guest-visible memory' : 'Installed memory', host?.totalMemoryBytes ? formatMetric(host.totalMemoryBytes, 'By') : 'Not reported'],
+    ...(isVM ? [['Environment', ['Virtual machine', environment.hypervisor, environment.platform].filter(Boolean).join(' · ')]] : []),
+    ...(hardware?.system?.manufacturer ? [['System manufacturer (reported)', hardware.system.manufacturer]] : []),
+    ...(hardware?.system?.model ? [['System model (reported)', hardware.system.model]] : []),
     ['Architecture', host?.architecture || device.architecture || 'Not reported'],
     ['Agent version', host?.agentVersion || device.agentVersion || 'Not reported'],
-    ['Uptime at observation', host?.uptimeSeconds === undefined ? 'Not reported' : `${Math.floor(host.uptimeSeconds / 86400)} days, ${Math.floor(host.uptimeSeconds / 3600) % 24} hours`],
+    ['Uptime at observation', host?.uptimeSeconds === undefined ? 'Not reported' : formatDuration(host.uptimeSeconds)],
   ]
   return <Stack>
-    <Card withBorder padding="lg"><Title order={3} mb="xs">Hardware and system</Title><Text size="sm" c="dimmed" mb="lg">{device.telemetryObservedAt ? `Reported ${date(device.telemetryObservedAt)}. These details describe the latest agent snapshot.` : 'No hardware snapshot has been reported for this device.'}</Text><SimpleGrid cols={{base: 1, sm: 2, lg: 3}}>{fields.map(([label, value]) => <div key={label}><Text size="xs" c="dimmed">{label}</Text><Text fw={500}>{value}</Text></div>)}</SimpleGrid></Card>
+    <Card withBorder padding="lg"><Title order={3} mb="xs">Hardware and system</Title><Text size="sm" c="dimmed" mb="lg">{device.telemetryObservedAt ? `Reported ${date(device.telemetryObservedAt)}. These details describe the latest agent snapshot.` : 'No hardware snapshot has been reported for this device.'}</Text><SimpleGrid cols={{base: 1, sm: 2, lg: 3}}><Group gap="sm" wrap="nowrap"><div><Text size="xs" c="dimmed">Operating system</Text><Text fw={500}>{[os, host?.osVersion].filter(Boolean).join(' ')}</Text></div><OSLogo os={[os, host?.osVersion].filter(Boolean).join(' ')} /></Group>{fields.map(([label, value]) => <div key={label}><Text size="xs" c="dimmed">{label}</Text><Text fw={500}>{value}</Text></div>)}</SimpleGrid></Card>
+    <Card withBorder padding="lg"><Group justify="space-between" mb="xs"><Title order={3}>Disk space</Title><Badge variant="light">{drives.length} {drives.length === 1 ? 'drive' : 'drives'}</Badge></Group><Text size="sm" c="dimmed" mb="lg">Used and free space for each reported filesystem. Each bar represents that drive’s total capacity.</Text>
+      {drives.length ? <Stack gap="lg">{drives.map(drive => <div key={drive.key}>
+        <Group justify="space-between" mb={6}><Group gap="xs"><Text fw={600}>{drive.mount}</Text>{drive.filesystem && <Badge color="gray" variant="light" size="sm">{drive.filesystem}</Badge>}</Group><Text size="sm">{drive.used === null ? 'Usage unavailable' : `${formatMetric(drive.used, 'By')} used`} / {formatMetric(drive.total, 'By')} total</Text></Group>
+        {drive.used === null ? <Text size="sm" c="dimmed">Free space was not reported for this drive.</Text> : <><Progress.Root size={22} radius="sm"><Progress.Section value={drive.used / drive.total * 100} color={drive.used / drive.total >= .9 ? 'red' : drive.used / drive.total >= .8 ? 'orange' : 'blue'} aria-label={`${drive.mount} used space`} /><Progress.Section value={(drive.free ?? 0) / drive.total * 100} color="gray.3" aria-label={`${drive.mount} free space`} /></Progress.Root><Group justify="space-between" mt={5}><Text size="xs" c="dimmed">{(drive.used / drive.total * 100).toFixed(1)}% used</Text><Text size="xs" c="dimmed">{formatMetric(drive.free ?? 0, 'By')} free</Text></Group></>}
+      </div>)}</Stack> : <Text size="sm" c="dimmed">No drive capacity has been reported yet.</Text>}
+    </Card>
+    <div><Title order={3} mb="xs">Hardware inventory</Title><Text size="sm" c="dimmed" mb="md">{hardware?.observedAt ? `Collected ${date(hardware.observedAt)}. Refreshed hourly by the agent.` : 'Details will appear after an updated agent reports hardware inventory.'}</Text>
+      {isVM && <Text size="sm" c="dimmed" mb="md">These details describe hardware exposed to the guest. Reported motherboard and memory module entries may describe virtual components. Guest-visible CPU and memory values may differ from host configuration.</Text>}
+      {(hideMemoryModules || hideMotherboard) && <Text size="sm" c="dimmed" mb="md">Physical {hideMotherboard && hideMemoryModules ? 'motherboard and DIMM details aren’t' : hideMotherboard ? 'motherboard details aren’t' : 'DIMM details aren’t'} exposed to this guest.</Text>}
+      <SimpleGrid cols={{base: 1, md: 2}}><HardwareDetails title="Graphics" status={hardware?.gpuStatus} items={hardware?.gpus} />{!hideMemoryModules && <HardwareDetails title={isVM ? 'Memory modules (guest-reported)' : 'Memory modules'} status={hardware?.memoryStatus} items={hardware?.memoryModules} />}{!hideMotherboard && <HardwareDetails title={isVM ? 'Motherboard (guest-reported)' : 'Motherboard'} status={hardware?.boardStatus} items={hardware?.motherboard ? [hardware.motherboard] : []} />}<HardwareDetails title="Firmware / BIOS" status={hardware?.firmwareStatus} items={hardware?.firmware ? [hardware.firmware] : []} /></SimpleGrid></div>
     <Card withBorder padding="lg"><Title order={3} mb="md">Device identity and capabilities</Title><Text size="sm">Device ID: {device.id}</Text><Text size="sm">Agent ID: {device.agentId || 'No enrolled agent'}</Text><Text size="sm" mb="md">Last check-in: {date(device.lastSeenAt)}</Text><Group gap="xs">{device.capabilities.length ? device.capabilities.map((capability) => <Badge key={capability} variant="light">{capability}</Badge>) : <Text size="sm" c="dimmed">No agent capabilities reported.</Text>}</Group></Card>
+    {device.agentId && <Card withBorder padding="lg"><Title order={3} mb="xs">Agent installation</Title><Text c="dimmed" size="sm" mb="md">Repair or reinstall the agent on this device while keeping its information and history. The Windows agent runs as a background service and has no tray icon.</Text><Button variant="light" onClick={onReinstall}>Reinstall agent</Button></Card>}
     {!!device.collectionErrors?.length && <Alert color="red" title="Collection issues">{device.collectionErrors.map((item, index) => <Text size="sm" key={index}>{item.capability}: {item.message}</Text>)}</Alert>}
-    <Text size="sm" c="dimmed">GPU, memory module, motherboard and firmware details are not collected yet.</Text>
   </Stack>
 }
 
-export function DeviceSettings({ device, onSaved }: { device: Device; onSaved: () => void }) {
+export function DeviceSettings({ device, onSaved, onDeleted }: { device: Device; onSaved: () => void; onDeleted: () => void }) {
   const [value, setValue] = useState<Availability | null>(null)
   const [enabled, setEnabled] = useState(false)
   const [days, setDays] = useState<string[]>(weekdays)
@@ -64,7 +109,7 @@ export function DeviceSettings({ device, onSaved }: { device: Device; onSaved: (
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not save settings.') }
     finally { setBusy(false) }
   }
-  return <Card withBorder padding="lg"><Title order={3} mb="xs">Availability settings</Title><Text c="dimmed" size="sm" mb="lg">Set when this device is expected to be awake. Outside this schedule, stale check-ins do not create new availability alerts. Overnight intervals are supported.</Text>
+  return <Stack><Card withBorder padding="lg"><Title order={3} mb="xs">Availability settings</Title><Text c="dimmed" size="sm" mb="lg">Set when this device is expected to be awake. Outside this schedule, stale check-ins do not create new availability alerts. Overnight intervals are supported.</Text>
     {error && <Alert color="red" mb="md">{error}{!value && <Button size="xs" ml="sm" onClick={() => setAttempt((n) => n + 1)}>Retry</Button>}</Alert>}
     {saved && <Alert color="green" mb="md">Availability settings saved.</Alert>}
     {!value && !error ? <Loader size="sm" /> : <form onSubmit={(event) => void save(event)}><fieldset className="settings-fields" disabled={!value || busy}><Stack>
@@ -73,6 +118,39 @@ export function DeviceSettings({ device, onSaved }: { device: Device; onSaved: (
       <Text size="xs" c="dimmed">Disabling the schedule means the device is expected awake at all times.</Text><Button type="submit" loading={busy} style={{alignSelf:'flex-start'}}>Save availability</Button>
     </Stack></fieldset></form>}
     <Title order={4} mt="xl" mb="xs">Maintenance windows</Title>{value?.maintenance?.length ? value.maintenance.map((window) => <Text size="sm" key={window.id}>{date(window.startsAt)} – {date(window.endsAt)}</Text>) : <Text size="sm" c="dimmed">{value ? 'No current or upcoming maintenance windows.' : 'Unavailable until settings load.'}</Text>}
+  </Card><DeleteDevice key={device.id} device={device} onDeleted={onDeleted} /></Stack>
+}
+
+
+function DeleteDevice({ device, onDeleted }: { device: Device; onDeleted: () => void }) {
+  const [opened, setOpened] = useState(false)
+  const [confirmation, setConfirmation] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const close = () => { if (!busy) { setOpened(false); setConfirmation(''); setError('') } }
+  async function remove(event: FormEvent) {
+    event.preventDefault()
+    if (confirmation !== device.name || busy) return
+    setBusy(true); setError('')
+    try {
+      const response = await fetch(`/api/devices/${encodeURIComponent(device.id)}`, { method: 'DELETE', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: confirmation }) })
+      if (!response.ok) throw new Error((await response.text()).trim().slice(0, 400) || 'Could not delete device.')
+      onDeleted()
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not delete device.'); setBusy(false) }
+  }
+  return <Card withBorder padding="lg">
+    <Title order={3} c="red" mb="xs">Delete device</Title>
+    <Text size="sm" c="dimmed" mb="md">Permanently remove this device and its saved information and history. This cannot be undone.</Text>
+    <Button color="red" variant="light" onClick={() => setOpened(true)}>Delete device</Button>
+    <Modal opened={opened} onClose={close} title={`Delete ${device.name}?`} closeOnClickOutside={!busy} closeOnEscape={!busy} withCloseButton={!busy}>
+      <form onSubmit={(event) => void remove(event)}><Stack>
+        <Alert color="red" title="This cannot be undone">The device information, monitoring history, backup policies and job history, and stack deployment records will be permanently deleted. You cannot get this information back.</Alert>
+        <Text size="sm">Its agent credentials will stop working. This does not uninstall the agent, stop containers, delete Git repositories, or remove backup files from their storage. Adding the device again starts a new record.</Text>
+        <TextInput data-autofocus label="Type the device name to confirm" description={device.name} value={confirmation} onChange={(event) => setConfirmation(event.currentTarget.value)} disabled={busy} autoComplete="off" spellCheck={false} />
+        {error && <Alert color="red">{error}</Alert>}
+        <Group justify="flex-end"><Button variant="default" onClick={close} disabled={busy}>Cancel</Button><Button type="submit" color="red" loading={busy} disabled={confirmation !== device.name}>Permanently delete device</Button></Group>
+      </Stack></form>
+    </Modal>
   </Card>
 }
 
@@ -98,6 +176,5 @@ export function MonitoringOverview({ devices, refresh, onOpen }: { devices: Devi
       })}{firing.length > 10 && <Button variant="subtle" onClick={() => setExpanded(!expanded)}>{expanded ? 'Show fewer alerts' : `Show all ${firing.length} alerts`}</Button>}</Stack>}
       {incidents?.length === 500 && <Text size="xs" c="dimmed" mt="sm">Showing incidents from the latest 500 records returned by the server.</Text>}
     </Card>
-    <Card withBorder padding="lg"><Title order={3} mb="md">Device health issues</Title><Text size="xs" c="dimmed" mb="md">Inventory status and collection errors are shown separately from rule-based alerts. Availability schedules can explain stale check-ins.</Text>{issues.length ? <Stack gap="sm">{issues.map((device) => <Group key={device.id} justify="space-between" wrap="wrap"><div><Text fw={600}>{device.name}</Text><Text size="sm" c="dimmed">{device.status === 'stale' ? `Stale check-in · last seen ${date(device.lastSeenAt)}` : device.status === 'failed' ? 'Device needs attention' : 'Collection errors reported'}</Text>{device.collectionErrors?.map((issue, index) => <Text key={index} size="xs" c="red">{issue.capability}: {issue.message}</Text>)}</div><Button size="xs" variant="light" onClick={() => onOpen(device.id)}>Open device</Button></Group>)}</Stack> : <Text size="sm" c="dimmed">No stale devices or collection failures.</Text>}</Card>
   </Stack>
 }

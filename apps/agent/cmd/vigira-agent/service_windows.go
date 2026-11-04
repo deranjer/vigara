@@ -19,7 +19,7 @@ func runAsService(run func(context.Context) error) error {
 		defer cancel()
 		return run(ctx)
 	}
-	return svc.Run("VigiraAgent", serviceRunner{run: run})
+	return svc.Run("VigaraAgent", serviceRunner{run: run})
 }
 
 type serviceRunner struct{ run func(context.Context) error }

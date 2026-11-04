@@ -27,8 +27,8 @@ tasks:
     cmds:
       - task: install
       - pnpm --filter @vigira/web build
-      - go build -o .cache/vigira ./apps/api/cmd/vigira
-      - go build -o .cache/vigira-agent ./apps/agent/cmd/vigira-agent
+      - go build -o .cache/vigara ./apps/api/cmd/vigira
+      - go build -o .cache/vigara-agent ./apps/agent/cmd/vigira-agent
   check:
     desc: Run Go and web checks
     cmds:

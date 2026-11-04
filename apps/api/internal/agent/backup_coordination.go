@@ -19,12 +19,26 @@ const backupExecutionLimit = 7 * 24 * time.Hour
 
 // leaseBackupJob atomically claims one due job. Exact destination strings share
 // a server-side mutex; Restic's own lock remains the final guard for aliases.
-func leaseBackupJob(ctx context.Context, pool *pgxpool.Pool, agentID string) (*protocol.Job, error) {
+func leaseBackupJob(ctx context.Context, pool *pgxpool.Pool, agentID string, supportsManaged ...bool) (*protocol.Job, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
+	// Serialize configuration edits with leasing. A managed profile must be
+	// acknowledged before work using its paths can be issued.
+	var lockedID string
+	if err = tx.QueryRow(ctx, `SELECT id::text FROM agent_identities WHERE id=$1 FOR UPDATE`, agentID).Scan(&lockedID); err != nil {
+		return nil, err
+	}
+	managedSupported := len(supportsManaged) > 0 && supportsManaged[0]
+	var notReady bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM managed_backup_profiles WHERE agent_id=$1 AND (revision<>applied_revision OR error_code<>'' OR NOT $2))`, agentID, managedSupported).Scan(&notReady); err != nil {
+		return nil, err
+	}
+	if notReady {
+		return nil, nil
+	}
 	// Expiry is uncertainty, never permission to replay an execution.
 	if _, err = tx.Exec(ctx, `UPDATE backup_job_attempts a SET outcome_unknown=true,finished_at=now() FROM backup_jobs j WHERE a.job_id=j.id AND a.finished_at IS NULL AND a.lease_expires_at<=now() AND j.status='leased'`); err != nil {
 		return nil, err

@@ -1,0 +1,25 @@
+# Container image updates
+
+**Docker Stacks → Image updates** monitors all containers discovered on Docker-enabled agents, including external Compose projects and standalone containers. Monitoring never enables deployments. External containers are notification-only.
+
+## Checks and notifications
+
+Checks follow the configured image reference: `latest`, `stable`, `17`, and `1.2.3` each track that exact tag. Vigara does not enumerate versions, upgrade major versions, or infer release ordering. A tag can move backward, so the result says **Image changed**, not “newer version.” Digest-pinned references are reported as pinned. Local images without a registry reference report an unavailable check.
+
+The agent needs the Docker CLI (`docker manifest inspect`) and registry access. It uses the agent service account's Docker credentials and credential helpers, including for private registries. Install/configure these on the device. No registry credentials are sent to the server. Checks fetch manifest metadata, never image layers, and compare the running container's image configuration digest to the registry's matching OS, architecture and variant. A local pull alone does not make a running container current. Changes to other platforms do not report an image change on this device.
+
+The default check interval is six hours, configurable globally from 15 minutes to seven days. Checks run independently of maintenance windows, with deterministic device jitter and increasing retry delays on incomplete checks. Large inventories continue from a durable cursor. The inventory API is bounded to 2,000 containers per device; truncation is reported as incomplete. **Check all now** and per-device **Check now** queue asynchronous checks. The page refreshes results every 15 seconds. Offline or unsupported agents show incomplete checks, and prior results may be stale. Failed checks retain their last successful observation. **Ignore** skips future checks and notifications for that container; it does not change the stack's deployment exclusions.
+
+Changed images create durable alerts and use the existing notification destinations and retry system. Each container and available image configuration digest generates one notification, including changes detected on the first check. Repeated polling or a server restart does not repeat that notification. Notification delivery must be configured separately, as for other Vigara alerts.
+
+## Explicit automatic update opt-in
+
+Only administrators can enroll **Vigara-managed stacks**, using the stack's **Image updates** tab. The policy is disabled by default. A successful deployment using the updated agent must exist before enrollment. Source image references are retained with deployment records because Vigara launches containers using immutable image digests.
+
+The opt-in form displays the effective window and requires an explicit authorization checkbox before saving an enabled policy. Enabling during an open window can apply an already-pending update in that window. Policies can inherit the global window or override its weekdays, start time, duration and IANA timezone. The initial global window is Sunday at 03:00 UTC for 120 minutes; configure it for your household. Windows may cross midnight. Missing spring-forward start times are skipped; repeated fall-back times share one window identity. Offline devices wait for a future window; missed intervals are not replayed.
+
+Each policy records the successfully deployed configuration and service set approved at opt-in. New services and configuration changes require a successful manual deployment and renewed policy approval. Excluded services and digest-pinned services retain their deployed image references. Automatic jobs never deploy newly saved Git configuration. The scheduler captures exact available platform-manifest digests, runs device preflight, and submits the resulting immutable image set through the existing durable deployment queue. At most one automatic update attempt is scheduled per stack and window.
+
+Policy versions and window eligibility are checked again before dispatch. Disabling or editing a policy cancels queued automatic jobs; it does not interrupt an already-dispatched Compose operation. Other active or uncertain deployments block automatic scheduling. Deployment history and audit events record automatic releases. Failed or uncertain automatic deployments pause the policy until an administrator inspects the outcome and saves the policy again. Saving does not clear uncertain deployment locks; reconcile those through deployment history.
+
+Compose readiness has its existing meaning: services must be running or healthy according to their configured health checks. There is no automatic rollback of application data or database migrations. Keep backups for stateful services.
