@@ -43,10 +43,16 @@ from pathlib import Path
 state=Path(sys.argv[sys.argv.index('--config')+1])
 if os.getenv('EXPECT_USER') and os.getenv('AGENT_RUN_AS') != os.getenv('EXPECT_USER'):
  sys.exit('Enrollment used the wrong state owner')
+if 'configure-shell' in sys.argv:
+ data=json.loads(state.read_text()) if state.exists() else {}
+ data['shellEnabled']=sys.argv[-1]=='true'
+ state.write_text(json.dumps(data))
 if 'enroll' in sys.argv:
  if os.getenv('FAIL_ENROLL'): sys.exit(1)
  if os.getenv('EXPECT_FRESH') and state.exists(): sys.exit('Old state reached enrollment')
- state.write_text(json.dumps({'agentId':'new-agent','credential':'new-credential','serverUrl':'https://new.invalid'}))
+ data=json.loads(state.read_text()) if state.exists() else {}
+ data.update({'agentId':'new-agent','credential':'new-credential','serverUrl':'https://new.invalid'})
+ state.write_text(json.dumps(data))
 '''
         (self.bundle / 'vigara-agent').write_text(agent)
         self.command('sudo', '''#!/usr/bin/env python3
@@ -102,6 +108,25 @@ if args[0] in ('start','enable'):
 
     def assert_saved(self):
         self.assertEqual(json.loads((self.state / 'agent.json').read_text()), self.saved)
+
+    def test_fresh_shell_configuration_does_not_skip_enrollment(self):
+        (self.state / 'agent.json').unlink()
+        self.bootstrap['shell'] = True
+        self.write_bootstrap()
+        result = self.install('--non-interactive')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        state = json.loads((self.state / 'agent.json').read_text())
+        self.assertEqual(state['agentId'], 'new-agent')
+        self.assertTrue(state['shellEnabled'])
+        self.assertFalse((self.bundle / 'bootstrap.json').exists())
+
+    def test_shell_can_be_disabled_without_changing_saved_enrollment(self):
+        self.bootstrap['shell'] = False
+        self.write_bootstrap()
+        result = self.install('--non-interactive')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        state = json.loads((self.state / 'agent.json').read_text())
+        self.assertEqual(state, dict(self.saved, shellEnabled=False))
 
     def test_default_preserves_identity_and_settings(self):
         result = self.install('--non-interactive')

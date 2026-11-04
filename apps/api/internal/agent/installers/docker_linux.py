@@ -1,5 +1,6 @@
 """Apply only explicitly selected Docker settings to the Linux agent service."""
 import grp
+import pwd
 import json
 from pathlib import Path
 import re
@@ -14,6 +15,21 @@ import shlex
 
 def load_settings(bootstrap):
     settings = bootstrap.get('docker')
+    if (bootstrap.get('reinstall') and isinstance(settings, dict)
+            and settings.get('mode') == 'deploy' and not settings.get('stackOwner')):
+        owner = ''
+        for file in ('/etc/vigara-agent/compose.env', '/etc/vigara-agent/docker.env'):
+            path = Path(file)
+            if not path.exists():
+                continue
+            for line in path.read_text().splitlines():
+                if line.startswith('VIGIRA_COMPOSE_OWNER='):
+                    values = shlex.split(line.split('=', 1)[1], comments=True)
+                    if len(values) != 1:
+                        raise ValueError('Invalid existing Compose owner; set it explicitly in the reinstall bundle.')
+                    owner = values[0]
+        if owner:
+            settings = dict(settings, stackOwner=owner)
     if (bootstrap.get('reinstall') and isinstance(settings, dict)
             and settings.get('mode') == 'deploy' and not settings.get('managedRoot')):
         # These are the installer's EnvironmentFiles, in service precedence order.
@@ -51,6 +67,17 @@ def validate(settings):
                 or not ipaddress.ip_address(url.hostname).is_loopback or not url.port):
             raise ValueError('Docker HTTP requires a loopback IP and port.')
     if settings['mode'] == 'deploy':
+        owner = settings.get('stackOwner', '')
+        if owner:
+            if not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,63})?', owner):
+                raise ValueError('Invalid stack owner. Use a local user or UID, optionally followed by :group or :GID.')
+            parts = owner.split(':')
+            try:
+                pwd.getpwuid(int(parts[0])) if parts[0].isdigit() else pwd.getpwnam(parts[0])
+                if len(parts) == 2:
+                    grp.getgrgid(int(parts[1])) if parts[1].isdigit() else grp.getgrnam(parts[1])
+            except (KeyError, OverflowError):
+                raise ValueError('The selected stack owner or group does not exist on this device.')
         root = settings.get('managedRoot') or '/var/lib/vigara-agent/compose-stacks'
         if not re.fullmatch(r'/[a-zA-Z0-9_./ -]+', root) or '..' in root or not root.strip('/ '):
             raise ValueError('Invalid managed Compose root.')
@@ -60,6 +87,8 @@ def validate(settings):
         settings = dict(settings, managedRoot=root.rstrip('/'))
     elif settings.get('managedRoot'):
         raise ValueError('A Compose root requires deploy access.')
+    elif settings.get('stackOwner'):
+        raise ValueError('A stack owner requires deploy access.')
     return settings
 
 
@@ -93,6 +122,18 @@ def prepare(settings, agent_user):
     service_user = 'root' if mode == 'deploy' else agent_user
     if mode == 'deploy':
         run('docker', 'compose', 'version')
+        if settings.get('stackOwner'):
+            parts = settings['stackOwner'].split(':')
+            account = pwd.getpwuid(int(parts[0])) if parts[0].isdigit() else pwd.getpwnam(parts[0])
+            # Keep the agent's private state directory private. A selected owner
+            # must already be able to traverse the existing Compose root/parent.
+            accessible = Path(settings['managedRoot'])
+            while not accessible.exists():
+                accessible = accessible.parent
+            try:
+                run('sudo', '-u', account.pw_name, 'test', '-x', str(accessible))
+            except subprocess.CalledProcessError:
+                raise ValueError('The stack owner cannot access the Compose directory. Choose an accessible directory, such as /home/USER/stacks; agent state permissions were not changed.')
     if host.startswith('unix://') and service_user != 'root':
         info = Path(host[7:]).stat()
         if info.st_gid == 0 or not info.st_mode & stat.S_IWGRP:
@@ -114,6 +155,8 @@ def apply(settings, agent_user):
         root = settings['managedRoot']
         run('sudo', 'mkdir', '-p', '--', root)
         env += f'VIGIRA_COMPOSE_MANAGED_ROOT="{root}"\n'
+        if settings.get('stackOwner'):
+            env += f'VIGIRA_COMPOSE_OWNER={settings["stackOwner"]}\n'
         # Stack file operations need host access, limited to the selected root.
         dropin += f'User=root\nGroup=root\nProtectHome=read-only\nReadWritePaths="{root}"\n'
     run('sudo', 'install', '-d', '-m', '0755', '/etc/vigara-agent', '/etc/systemd/system/vigara-agent.service.d')

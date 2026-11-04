@@ -10,6 +10,14 @@ Start all stacks and Stop all stacks cover every deployed or imported stack acro
 
 Runtime chips refresh every ten seconds. Red means observed containers are not all running, or containers are missing from the currently deployed configuration. Offline observations are gray, and incomplete inventories cannot show an all-running green chip. The separate deployment chip continues to describe the last deployment attempt.
 
+Opening a stack also shows Start/Stop controls and live container cards above the
+editor. Cards include state, health, image, service, exit code, restart count,
+out-of-memory status and the full Docker error when reported. Container details
+and Logs open the existing container views; unsaved editor changes are stored
+as a draft before navigating. Missing services and the latest failed deployment
+are visible without opening a separate tab. Runtime refreshes do not replace
+editor contents or deploy changes.
+
 ## Portable repository layout
 
 The [Profiles and assignments editor](stack-profiles.md) implements authoring, Git persistence, initial device binding and exclusive epoch-1 assignment deployment. The agent checks the supported resource prerequisites before preview and apply. Fenced replacement, replicas, startup ordering and automatic resource provisioning remain pending. Direct deployments of stacks without an enabled assignment do not consume profile requirements.

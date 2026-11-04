@@ -22,6 +22,7 @@ import (
 	"github.com/deranjer/vigara/apps/agent/internal/composedeploy"
 	"github.com/deranjer/vigara/apps/agent/internal/dockerapi"
 	"github.com/deranjer/vigara/apps/agent/internal/dockerchannel"
+	"github.com/deranjer/vigara/apps/agent/internal/hostshell"
 	"github.com/deranjer/vigara/apps/agent/internal/mountfiles"
 	agentruntime "github.com/deranjer/vigara/apps/agent/internal/runtime"
 	"github.com/deranjer/vigara/apps/agent/internal/selfupdate"
@@ -48,6 +49,16 @@ func execute(args []string, logger *slog.Logger) error {
 		return fmt.Errorf("usage: vigara-agent [--config PATH] enroll --server URL | run | compose-discover --root PATH")
 	}
 	switch rest[0] {
+	case "configure-shell":
+		if len(rest) != 2 || (rest[1] != "true" && rest[1] != "false") {
+			return errors.New("configure-shell requires true or false")
+		}
+		state, err := agentruntime.Load(statePath)
+		if err != nil {
+			return err
+		}
+		state.ShellEnabled = rest[1] == "true"
+		return agentruntime.Save(statePath, state)
 	case "configure-updater":
 		return selfupdate.Configure(statePath)
 	case "update-client":
@@ -178,6 +189,7 @@ func runAgent(client *agentruntime.Client, logger *slog.Logger) error {
 		logger.Info("agent service started", "agentId", client.State.AgentID)
 		live := agentchannel.NewClient(client.State.ServerURL, client.State.Credential, agentruntime.AgentVersion, client.State.AllowInsecurePrivateHTTP, client.Capabilities, logger)
 		registerDocker(live, logger)
+		hostshell.Register(live)
 		guardUpdates(live)
 		go live.Run(ctx)
 		return client.Run(ctx)
@@ -210,7 +222,7 @@ func registerDocker(live *agentchannel.Client, logger *slog.Logger) {
 			managedRoot = "/var/lib/vigira-agent/compose-stacks"
 		}
 		if validTargets {
-			composedeploy.Register(live, &composedeploy.Runner{ManagedRoot: managedRoot, Targets: targets, DockerHost: strings.TrimSpace(os.Getenv("VIGIRA_DOCKER_HOST")), SOPS: os.Getenv("VIGIRA_SOPS_BINARY"), Identity: os.Getenv("VIGIRA_COMPOSE_AGE_IDENTITY")})
+			composedeploy.Register(live, &composedeploy.Runner{ManagedRoot: managedRoot, StackOwner: strings.TrimSpace(os.Getenv("VIGIRA_COMPOSE_OWNER")), Targets: targets, DockerHost: strings.TrimSpace(os.Getenv("VIGIRA_DOCKER_HOST")), SOPS: os.Getenv("VIGIRA_SOPS_BINARY"), Identity: os.Getenv("VIGIRA_COMPOSE_AGE_IDENTITY")})
 		}
 	}
 	dockerchannel.Register(live, api)

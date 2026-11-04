@@ -8,6 +8,7 @@ import { isComposeFile } from './compose-editor-utils'
 import { SecretEditor } from './secret-editor'
 import { StackDiff } from './stack-diff'
 import { StackLoading } from './stack-loading'
+import { StackRuntime } from './stack-runtime'
 
 const ComposeEditor = lazy(() => import('./compose-editor'))
 
@@ -37,11 +38,11 @@ function starter(id: string, projectName: string): Files {
 
 export function Stacks({ route, role, onNavigate }: { route: Route; role: string; onNavigate: (route: Route) => void }) {
  if (role !== 'admin') return <Alert title="Stack access requires an administrator">Sign in as an administrator to manage Compose stacks.</Alert>
- if (route.id) return <StackEditor key={route.id} id={route.id} projectName={route.id} onBack={() => onNavigate(routeOf('stacks'))} />
+ if (route.id) return <StackEditor key={route.id} id={route.id} projectName={route.id} role={role} onNavigate={onNavigate} onBack={() => onNavigate(routeOf('stacks'))} />
  return <StackList role={role} onOpen={(id) => onNavigate(routeOf('stacks',id))} />
 }
 
-function StackEditor({ id, projectName, onBack }: { id: string; projectName: string; onBack: () => void }) {
+function StackEditor({ id, projectName, onBack, role, onNavigate }: { id: string; projectName: string; onBack: () => void; role: string; onNavigate: (route: Route) => void }) {
   const [detail, setDetail] = useState<Detail | null>(null)
   const [files, setFiles] = useState<Files>({})
   const [draft, setDraft] = useState<Draft>({ base: '', files: null, version: 0 })
@@ -125,6 +126,8 @@ function StackEditor({ id, projectName, onBack }: { id: string; projectName: str
     {notice && <Alert color="blue" withCloseButton onClose={() => setNotice('')}>{notice}</Alert>}
     <Group gap="xs"><Badge variant="light">Saved: {short(detail.snapshot.commit)}</Badge><Badge color="gray" variant="light">Last deployed: {deployed ? short(deployed.commit) : 'Never'}</Badge>{dirty && <Badge color="yellow">Draft changes</Badge>}{deployed && deployed.digest !== detail.digest && <Badge color="orange">Saved changes waiting to deploy</Badge>}</Group>
     {!detail.assigned && <Alert color="yellow">Configure an approved device and project folder for this stack before saving or deploying.</Alert>}
+    {jobs[0]?.status === 'failed' && <Alert color="red" title="Last deployment failed">{jobs[0].stage} · {jobs[0].message || 'Open Deployments for the device result.'}</Alert>}
+    <StackRuntime id={id} role={role} deploymentStatus={jobs[0] ? `${jobs[0].id}:${jobs[0].status}` : ''} onNavigate={(route) => { if (unpersisted) { void action(async () => { await persistDraft(); onNavigate(route) }) } else onNavigate(route) }} />
     <Tabs value={tab} onChange={(value) => { setTab(value); if (value === 'history') void action(async () => setHistory(await request<Revision[]>(`${base(id)}/history`))) }}>
       <Tabs.List mb="lg"><Tabs.Tab value="files">Compose files</Tabs.Tab><Tabs.Tab value="diff">Draft diff</Tabs.Tab><Tabs.Tab value="environment">Environment</Tabs.Tab><Tabs.Tab value="history">Revision history</Tabs.Tab><Tabs.Tab value="deployments">Deployments</Tabs.Tab><Tabs.Tab value="updates">Image updates</Tabs.Tab></Tabs.List>
       <Tabs.Panel value="files"><Stack>

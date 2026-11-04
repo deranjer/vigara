@@ -73,16 +73,37 @@ func parseSize(value string) uint16 {
 // messages carry control (a resize in, and a final end message out). Opening and
 // closing a terminal are both audited, with sizes and counts but never content.
 func (a *api) exec(w http.ResponseWriter, r *http.Request) {
+	a.terminal(w, r, false)
+}
+
+func (a *api) hostExec(w http.ResponseWriter, r *http.Request) {
+	if !uuidPattern.MatchString(r.PathValue("agent")) {
+		http.NotFound(w, r)
+		return
+	}
+	a.terminal(w, r, true)
+}
+
+func (a *api) terminal(w http.ResponseWriter, r *http.Request, host bool) {
+	if host {
+		r.SetPathValue("id", r.PathValue("agent"))
+	}
 	agentID, containerID, ok := target(w, r)
 	if !ok {
 		return
 	}
-	user, ok := a.Authz.Authorize(w, r, auth.PermContainersRead)
+	readPermission, execPermission := auth.PermContainersRead, auth.PermContainersExec
+	action, targetKind, method := "container.exec", "container", protocol.MethodDockerExec
+	if host {
+		readPermission, execPermission = auth.PermDevicesRead, auth.PermDevicesExec
+		action, targetKind, method = "device.exec", "agent", protocol.MethodHostExec
+	}
+	user, ok := a.Authz.Authorize(w, r, readPermission)
 	if !ok {
 		return
 	}
-	openEvent := audit.Event{ActorID: user.ID, ActorName: user.Username, Action: "container.exec.open", TargetKind: "container", TargetID: containerID, AgentID: agentID}
-	if !user.Can(auth.PermContainersExec) {
+	openEvent := audit.Event{ActorID: user.ID, ActorName: user.Username, Action: action + ".open", TargetKind: targetKind, TargetID: containerID, AgentID: agentID}
+	if !user.Can(execPermission) {
 		openEvent.Outcome = audit.OutcomeDenied
 		a.record(r.Context(), openEvent)
 		http.Error(w, "your role does not allow opening terminals", http.StatusForbidden)
@@ -90,7 +111,21 @@ func (a *api) exec(w http.ResponseWriter, r *http.Request) {
 	}
 	query := r.URL.Query()
 	params := protocol.DockerExecParams{ID: containerID, Shell: query.Get("shell"), User: query.Get("user"), Cols: parseSize(query.Get("cols")), Rows: parseSize(query.Get("rows"))}
-	if err := params.Normalize(); err != nil {
+	var normalizeErr error
+	var streamParams any = &params
+	if host {
+		hp := &protocol.HostExecParams{Shell: params.Shell, Cols: params.Cols, Rows: params.Rows}
+		normalizeErr = hp.Normalize()
+		params.Shell, params.User = hp.Shell, ""
+		streamParams = hp
+		if query.Get("user") != "" {
+			http.Error(w, "device shells run as the agent service account", http.StatusBadRequest)
+			return
+		}
+	} else {
+		normalizeErr = params.Normalize()
+	}
+	if err := normalizeErr; err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -147,12 +182,15 @@ func (a *api) exec(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	stream, err := a.Hub.OpenStream(ctx, agentID, protocol.MethodDockerExec, params)
+	stream, err := a.Hub.OpenStream(ctx, agentID, method, streamParams)
 	if err != nil {
 		_, message := describe(err)
 		var channelErr *protocol.ChannelError
 		if errors.As(err, &channelErr) && channelErr.Code == protocol.ErrCodeTierInsufficient {
 			message = "Terminals are not enabled for this host. Enable them on the host (VIGIRA_DOCKER_MODE=exec) and allow them in the device's enrollment."
+			if host {
+				message = channelErr.Message
+			}
 		}
 		record(openEvent, audit.OutcomeFailure, map[string]any{"reason": reasonStartFailed, "code": errorCode(err)})
 		finish(endMessage{End: true, Code: errorCode(err), Message: message})
@@ -263,7 +301,7 @@ relay:
 		}
 	}
 
-	record(audit.Event{ActorID: user.ID, ActorName: user.Username, Action: "container.exec.close", TargetKind: "container", TargetID: containerID, AgentID: agentID}, audit.OutcomeSuccess,
+	record(audit.Event{ActorID: user.ID, ActorName: user.Username, Action: action + ".close", TargetKind: targetKind, TargetID: containerID, AgentID: agentID}, audit.OutcomeSuccess,
 		map[string]any{"reason": reason, "durationSeconds": int(time.Since(started).Seconds()), "bytesIn": bytesIn.Load(), "bytesOut": bytesOut.Load()})
 	// Stop the shell and free the slot before the closing handshake, which can wait on the browser.
 	stream.Close()
@@ -273,4 +311,3 @@ relay:
 		finish(end)
 	}
 }
-

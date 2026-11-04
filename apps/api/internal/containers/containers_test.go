@@ -24,6 +24,7 @@ const (
 	agentOffline = "33333333-3333-4333-8333-333333333333"
 	agentManage  = "44444444-4444-4444-8444-444444444444"
 	agentExec    = "55555555-5555-4555-8555-555555555555"
+	agentShell   = "66666666-6666-4666-8666-666666666666"
 )
 
 // fakeAuthz maps the "role" cookie to a user, enforcing the real permission table.
@@ -76,7 +77,7 @@ var execIdle, execMax time.Duration
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	capabilities := map[string][]string{agentDocker: {}, agentPlain: {}, agentManage: {"docker.manage"}, agentExec: {"docker.manage", "docker.exec"}}
+	capabilities := map[string][]string{agentShell: {protocol.CapabilityHostExec}, agentDocker: {}, agentPlain: {}, agentManage: {"docker.manage"}, agentExec: {"docker.manage", "docker.exec"}}
 	hub := channel.NewHub(channel.Options{
 		AuthenticateAgent: func(r *http.Request) (string, error) {
 			id := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")

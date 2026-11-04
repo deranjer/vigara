@@ -129,6 +129,10 @@ try {
       & $exe --config $statePath enable-managed-backups
       if ($LASTEXITCODE -ne 0) { throw 'Could not enable managed backups.' }
     }
+    if (($bootstrap.PSObject.Properties.Name -contains 'shell') -and $null -ne $bootstrap.shell) {
+      & $exe --config $statePath configure-shell $bootstrap.shell.ToString().ToLowerInvariant()
+      if ($LASTEXITCODE -ne 0) { throw 'Could not configure device shell access.' }
+    }
     $bootstrap.token | & $exe --config $statePath enroll --server $bootstrap.serverUrl --name $bootstrap.name @extraArgs
     if ($LASTEXITCODE -ne 0) { throw 'Enrollment failed. Keep agent.json. If no credentials were saved, obtain a new reinstall bundle.' }
     if (-not (Test-Path -LiteralPath $statePath)) { throw 'Enrollment did not save agent.json.' }
@@ -138,6 +142,10 @@ try {
   if ($bootstrap -and ($bootstrap.PSObject.Properties.Name -contains 'managedBackups') -and $bootstrap.managedBackups) {
     & $exe --config $statePath enable-managed-backups
     if ($LASTEXITCODE -ne 0) { throw 'Could not enable managed backups.' }
+  }
+  if ($bootstrap -and ($bootstrap.PSObject.Properties.Name -contains 'shell') -and $null -ne $bootstrap.shell) {
+    & $exe --config $statePath configure-shell $bootstrap.shell.ToString().ToLowerInvariant()
+    if ($LASTEXITCODE -ne 0) { throw 'Could not configure device shell access.' }
   }
   if (-not $service) {
     New-Service -Name VigaraAgent -DisplayName 'Vigara Agent' -BinaryPathName $binaryPath -StartupType Automatic | Out-Null

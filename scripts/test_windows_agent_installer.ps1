@@ -39,7 +39,7 @@ if ($Scenario -eq 'managed') {
   } finally { Pop-Location }
   [IO.File]::WriteAllText((Join-Path $bundle 'restic.exe'),'synthetic restic, never run')
   [IO.File]::WriteAllText((Join-Path $bundle 'restic.LICENSE'),'synthetic license')
-  [IO.File]::WriteAllText((Join-Path $bundle 'bootstrap.json'),'{"managedBackups":true,"reinstall":false}')
+  [IO.File]::WriteAllText((Join-Path $bundle 'bootstrap.json'),'{"managedBackups":true,"shell":true,"reinstall":false}')
 }
 if ($Scenario -eq 'wrong-agent') { [IO.File]::WriteAllText((Join-Path $bundle 'bootstrap.json'),'{"reinstall":true,"agentId":"different-agent"}') }
 if ($Scenario -in @('docker','reset-docker')) {
@@ -161,6 +161,7 @@ if ($Scenario -eq 'docker') {
 if ($Scenario -eq 'managed') {
   $state=Get-Content -Raw -LiteralPath (Join-Path $currentDir 'agent.json') | ConvertFrom-Json
   if (-not $state.managedBackups -or $state.agentId -ne 'synthetic-agent' -or $state.credential -ne 'synthetic-credential') {throw 'Managed opt-in did not preserve enrollment'}
+  if (-not $state.shellEnabled) { throw 'Installer did not enable device shell access' }
   if (-not (Test-Path -LiteralPath (Join-Path $env:ProgramFiles 'Vigara\restic.exe'))) {throw 'Restic was not installed'}
 } elseif ([IO.File]::ReadAllText((Join-Path $currentDir 'agent.json')) -ne $saved) {throw 'Enrollment changed during migration'}
 if ($Scenario -notin @('fresh','managed','docker','updater') -and [IO.File]::ReadAllText((Join-Path $legacyDir 'agent.json')) -ne $saved) {throw 'Legacy credentials were modified'}

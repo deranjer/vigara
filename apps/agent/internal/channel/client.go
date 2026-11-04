@@ -285,6 +285,10 @@ func (s *session) reject(ctx context.Context, frame protocol.ChannelFrame, code,
 
 func (s *session) start(ctx context.Context, frame protocol.ChannelFrame) {
 	c := s.client
+	if err := protocol.CheckHostExec(frame.Method, c.capabilities()); err != nil {
+		s.reject(ctx, frame, protocol.ErrCodeTierInsufficient, err.Error())
+		return
+	}
 	tier, known := c.methodTier(frame.Method)
 	if !known {
 		s.reject(ctx, frame, protocol.ErrCodeUnknownMethod, "unknown method")

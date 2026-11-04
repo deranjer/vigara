@@ -2,6 +2,7 @@ package auth
 
 // Roles, from least to most privileged.
 const (
+	PermDevicesExec Permission = "devices.exec"
 	PermDevicesRead Permission = "devices.read"
 	PermBackupsRead Permission = "backups.read"
 	PermAlertsRead  Permission = "alerts.read"
@@ -28,8 +29,8 @@ const (
 
 var rolePermissions = map[string]map[Permission]bool{
 	RoleViewer:   {PermDevicesRead: true, PermBackupsRead: true, PermAlertsRead: true, PermContainersRead: true},
-	RoleOperator: {PermDevicesRead: true, PermBackupsRead: true, PermAlertsRead: true, PermContainersRead: true, PermContainersManage: true, PermContainersExec: true},
-	RoleAdmin: {PermDevicesRead: true, PermBackupsRead: true, PermAlertsRead: true, PermContainersRead: true, PermContainersManage: true, PermContainersExec: true, PermStacksDeploy: true,
+	RoleOperator: {PermDevicesExec: true, PermDevicesRead: true, PermBackupsRead: true, PermAlertsRead: true, PermContainersRead: true, PermContainersManage: true, PermContainersExec: true},
+	RoleAdmin: {PermDevicesExec: true, PermDevicesRead: true, PermBackupsRead: true, PermAlertsRead: true, PermContainersRead: true, PermContainersManage: true, PermContainersExec: true, PermStacksDeploy: true,
 		PermSecretsReveal: true, PermHostsManage: true, PermUsersManage: true, PermAuditRead: true, PermTasksManage: true},
 }
 

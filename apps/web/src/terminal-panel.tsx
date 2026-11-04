@@ -4,10 +4,10 @@ import { Terminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 import { Alert, Badge, Button, Group, Select, Stack, Text, TextInput } from '@mantine/core'
 import { streamUrl } from './container-utils'
-import { describeTerminalEnd, idleMinutes, isValidExecUser, parseTerminalEnd, resizeMessage, shells, splitInput, terminalBlocker, terminalPath } from './terminal-utils'
+import { describeTerminalEnd, deviceTerminalPath, idleMinutes, isValidExecUser, parseTerminalEnd, resizeMessage, shells, splitInput, terminalBlocker, terminalPath } from './terminal-utils'
 
 type Status = 'idle' | 'connecting' | 'live' | 'ended' | 'failed'
-type Props = { hostId: string; reference: string; name: string; running: boolean | null; role: string; hostTier?: string }
+type Props = { hostId: string; reference: string; name: string; running: boolean | null; role: string; hostTier?: string; device?: { platform: string; capabilities: string[] } }
 
 const badges: Record<Status, { color: string; label: string }> = {
   idle: { color: 'gray', label: 'Not connected' }, connecting: { color: 'blue', label: 'Connecting…' }, live: { color: 'green', label: 'Connected' },
@@ -19,8 +19,8 @@ const inputPiece = 256 * 1024
 
 type Live = { socket: WebSocket; terminal: Terminal; observer: ResizeObserver }
 
-/** An interactive shell inside the container, drawn with xterm.js over the server's terminal WebSocket. */
-export function TerminalPanel({ hostId, reference, name, running, role, hostTier }: Props) {
+/** An interactive container or device shell over the server's terminal WebSocket. */
+export function TerminalPanel({ hostId, reference, name, running, role, hostTier, device }: Props) {
   const [shell, setShell] = useState<string | null>('auto')
   const [user, setUser] = useState('')
   const [status, setStatus] = useState<Status>('idle')
@@ -58,13 +58,15 @@ export function TerminalPanel({ hostId, reference, name, running, role, hostTier
     terminal.open(element)
     fit.fit()
 
-    const socket = new WebSocket(streamUrl(terminalPath(hostId, reference, { shell: shell ?? 'auto', user, cols: terminal.cols, rows: terminal.rows }), window.location))
+    const options = { shell: shell ?? 'auto', user, cols: terminal.cols, rows: terminal.rows }
+    const path = device ? deviceTerminalPath(hostId, options) : terminalPath(hostId, reference, options)
+    const socket = new WebSocket(streamUrl(path, window.location))
     socket.binaryType = 'arraybuffer'
     const encoder = new TextEncoder()
     let ended = false
     const send = (bytes: Uint8Array) => { if (socket.readyState === WebSocket.OPEN) for (const piece of splitInput(bytes, inputPiece)) socket.send(piece as Uint8Array<ArrayBuffer>) }
 
-    socket.onopen = () => { setStatus('live'); terminal.focus() }
+    socket.onopen = () => { setStatus('live'); fit.fit(); socket.send(resizeMessage(terminal.cols, terminal.rows)); terminal.focus() }
     socket.onmessage = (event) => {
       if (event.data instanceof ArrayBuffer) { terminal.write(new Uint8Array(event.data)); return }
       if (typeof event.data !== 'string') return
@@ -86,22 +88,27 @@ export function TerminalPanel({ hostId, reference, name, running, role, hostTier
     const observer = new ResizeObserver(() => { try { fit.fit() } catch { /* The element may be hidden while the tab changes. */ } })
     observer.observe(element)
     live.current = { socket, terminal, observer }
-  }, [close, hostId, reference, shell, user])
+  }, [close, hostId, reference, shell, user, device])
 
-  const blocker = terminalBlocker(role, hostTier, running)
+  const blocker = device
+    ? role !== 'operator' && role !== 'admin' ? 'Your account cannot open device shells.'
+      : !hostId ? 'This device has no enrolled agent.'
+      : device.platform !== 'linux' && device.platform !== 'windows' ? 'Device shells are available for Linux and Windows.'
+      : !device.capabilities.includes('host.exec') ? 'Device shells are not enabled. Open Device info → Reinstall agent and enable device shell access.' : null
+    : terminalBlocker(role, hostTier, running)
   if (blocker) return <Alert color="gray" title="Terminal unavailable">{blocker}</Alert>
 
   const badge = badges[status]
   const active = status === 'connecting' || status === 'live'
   const userError = isValidExecUser(user) ? undefined : 'Use a user name or number, optionally followed by :group.'
   return <Stack gap="sm">
-    <Alert color="yellow" title="This opens a shell inside the container">
-      Anything you type runs with that container's privileges, and a shell in a container is often root. Opening and closing a terminal is recorded in the audit log (never what you type or see).
+    <Alert color="yellow" title={device ? 'This opens a shell on the device' : 'This opens a shell inside the container'}>
+      {device ? 'Commands run directly on this device as the agent service account, which may be root or LocalSystem. ' : "Anything you type runs with that container's privileges, and a shell in a container is often root. "}Opening and closing a terminal is recorded in the audit log (never what you type or see).
       The session closes after {idleMinutes} minutes without typing, and when you leave this tab.
     </Alert>
     <Group gap="sm" align="flex-end">
-      <Select label="Shell" value={shell} onChange={setShell} data={[...shells]} allowDeselect={false} disabled={active} w={300} />
-      <TextInput label="Run as" placeholder="Container default" value={user} onChange={(event) => setUser(event.currentTarget.value)} disabled={active} error={userError} w={180} />
+      <Select label="Shell" value={shell} onChange={setShell} data={device?.platform === 'windows' ? [{ value: 'auto', label: 'PowerShell (pwsh if available)' }, { value: 'powershell', label: 'PowerShell' }] : [...shells]} allowDeselect={false} disabled={active} w={300} />
+      {!device && <TextInput label="Run as" placeholder="Container default" value={user} onChange={(event) => setUser(event.currentTarget.value)} disabled={active} error={userError} w={180} />}
       {active ? <Button color="red" variant="light" onClick={() => { close(); setStatus('idle'); setMessage('') }}>Disconnect</Button>
         : <Button disabled={Boolean(userError)} onClick={connect}>{status === 'idle' ? 'Open terminal' : 'Reconnect'}</Button>}
       <Badge color={badge.color} variant="light" mb={6}>{badge.label}</Badge>

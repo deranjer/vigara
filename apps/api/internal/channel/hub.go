@@ -195,6 +195,17 @@ func (h *Hub) conn(agentID string) (*agentConn, error) {
 }
 
 func (h *Hub) authorizeMethod(c *agentConn, method string) error {
+	if method == protocol.MethodHostExec {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		caps, err := h.opts.Capabilities(ctx, c.id)
+		if err != nil {
+			return err
+		}
+		if err := protocol.CheckHostExec(method, caps); err != nil {
+			return err
+		}
+	}
 	tier, known := h.opts.MethodTier(method)
 	if !known {
 		return &protocol.ChannelError{Code: protocol.ErrCodeUnknownMethod, Message: "unknown method " + method}

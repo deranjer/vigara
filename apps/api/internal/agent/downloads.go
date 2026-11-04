@@ -93,6 +93,7 @@ type releaseManifest struct {
 var supportedDownloads = map[string]string{"windows-amd64": "vigara-agent-windows-amd64.exe", "linux-amd64": "vigara-agent-linux-amd64", "linux-arm64": "vigara-agent-linux-arm64"}
 
 var selectableFeatures = map[string]bool{
+	protocol.CapabilityHostExec:     true,
 	"restic.backup":                 true,
 	protocol.CapabilityDockerManage: true,
 	protocol.CapabilityDockerExec:   true,
@@ -213,6 +214,7 @@ func (h *Handler) downloadAvailability(w http.ResponseWriter, r *http.Request) {
 
 type agentDownloadRequest struct {
 	Docker    *dockerSetup          `json:"docker,omitempty"`
+	Shell     *bool                 `json:"shell,omitempty"`
 	Backup    *backups.ManagedInput `json:"backup,omitempty"`
 	DeviceID  string                `json:"deviceId,omitempty"`
 	Target    string                `json:"target"`
@@ -332,6 +334,18 @@ func (h *Handler) writeAgentDownload(w http.ResponseWriter, r *http.Request, req
 	}
 	var resticLicense []byte
 	req.Features = req.Docker.enrollmentFeatures(req.Features)
+	if req.Shell != nil {
+		features := []string{}
+		for _, feature := range req.Features {
+			if feature != protocol.CapabilityHostExec {
+				features = append(features, feature)
+			}
+		}
+		if *req.Shell {
+			features = append(features, protocol.CapabilityHostExec)
+		}
+		req.Features = features
+	}
 	var bundledRestic []byte
 	managedEnabled := false
 	for _, feature := range req.Features {
@@ -377,7 +391,7 @@ func (h *Handler) writeAgentDownload(w http.ResponseWriter, r *http.Request, req
 	_, updatePlan, _ := h.updateArtifact(req.Target)
 	artifactSum := sha256.Sum256(artifact)
 	selfUpdates := updatePlan != nil && updatePlan.SHA256 == hex.EncodeToString(artifactSum[:])
-	bootstrap, _ := json.Marshal(map[string]any{"serverUrl": serverURL, "insecureHttp": !serverurl.IsSecure(serverURL), "token": token, "name": req.Name, "sessionId": sessionID, "reinstall": replacementID != nil, "agentId": replacementID, "managedBackups": managedEnabled, "docker": req.Docker, "selfUpdates": selfUpdates})
+	bootstrap, _ := json.Marshal(map[string]any{"serverUrl": serverURL, "insecureHttp": !serverurl.IsSecure(serverURL), "token": token, "name": req.Name, "sessionId": sessionID, "reinstall": replacementID != nil, "agentId": replacementID, "managedBackups": managedEnabled, "shell": req.Shell, "docker": req.Docker, "selfUpdates": selfUpdates})
 	binaryName := "vigara-agent"
 	if strings.HasPrefix(req.Target, "windows-") {
 		binaryName = "vigara-agent.exe"
