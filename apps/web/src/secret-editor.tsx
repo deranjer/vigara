@@ -15,7 +15,7 @@ type Props = {
 // Plaintext lives only in this short-lived form. It never enters the stack
 // draft, query cache, Monaco model, local/session storage or URL.
 export function SecretEditor({ id, files, busy, persistDraft, onBusy, onEncrypted }: Props) {
-  const [path, setPath] = useState('secrets/runtime.env.sops')
+  const [path, setPath] = useState(() => Object.keys(files).find((file) => file.endsWith('.age') || file.endsWith('.sops')) || 'secrets/runtime.env.age')
   const [value, setValue] = useState('')
   const [editing, setEditing] = useState(false)
   const [source, setSource] = useState<Source | null>(null)
@@ -103,6 +103,7 @@ export function SecretEditor({ id, files, busy, persistDraft, onBusy, onEncrypte
       if (generation.current !== current) return
       const result = await post<Encrypted>('', { path, source: exact, value: plaintext }, abort.signal)
       if (generation.current !== current) return
+      setPath(result.path)
       onEncrypted(result)
     } catch (cause) {
       if (generation.current === current) setError(cause instanceof Error ? cause.message : 'Environment encryption failed.')
@@ -112,7 +113,10 @@ export function SecretEditor({ id, files, busy, persistDraft, onBusy, onEncrypte
   return <Card withBorder padding="lg"><Stack>
     <Title order={3}>Encrypted environment</Title>
     <Text size="sm" c="dimmed">Values are hidden. Reveal and edit explicitly decrypts the exact saved draft on the server and records an audit event. This works while the device is offline. Encrypting adds ciphertext to your draft; save the revision when ready.</Text>
+    <Text size="sm" c="dimmed">New stacks set up age encryption automatically on first use; their device must be online and updated for setup. They reuse this installation’s recovery key. After first encryption, download a copy and save it securely outside this server.</Text>
+    <Button component="a" href="/api/stacks/imports/recovery" download variant="subtle" disabled={busy || !Object.keys(files).some((file) => file.endsWith('.age'))}>Download recovery key</Button>
     <TextInput label="Encrypted file path" value={path} disabled={busy} onChange={(event) => { hide(); setPath(event.currentTarget.value) }} autoComplete="off" />
+    <Group gap="xs">{Object.keys(files).filter((file) => file.endsWith('.age') || file.endsWith('.sops')).map((file) => <Button key={file} size="compact-xs" variant={file === path ? 'light' : 'subtle'} disabled={busy} onClick={() => { hide(); setPath(file) }}>{file}</Button>)}</Group>
     {error && <Alert color="red">{error}</Alert>}
     {editing ? <>
       <Textarea label={source ? 'Revealed dotenv contents' : 'Replacement dotenv contents'} value={value} onChange={(event) => setValue(event.currentTarget.value)} rows={20} resize="vertical" styles={{ input: { height: 'clamp(320px, 50vh, 640px)', minHeight: 240, fontFamily: 'var(--mantine-font-family-monospace)', lineHeight: 1.5 } }} spellCheck={false} autoComplete="off" autoCorrect="off" autoCapitalize="off" data-1p-ignore data-lpignore="true" />

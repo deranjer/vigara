@@ -3,13 +3,11 @@ import { Button, Group, Stack, Text, useComputedColorScheme } from '@mantine/cor
 import * as monaco from 'monaco-editor/esm/vs/editor/editor.api'
 import 'monaco-editor/esm/vs/editor/editor.all'
 import 'monaco-editor/esm/vs/basic-languages/yaml/yaml.contribution'
-import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker'
-import YamlWorker from 'monaco-yaml/yaml.worker?worker'
+import './monaco-workers'
 import { configureMonacoYaml } from 'monaco-yaml'
 import composeSchema from './compose-spec.json'
 import { indentation } from './compose-editor-utils'
 
-self.MonacoEnvironment = { getWorker: (_id, label) => label === 'yaml' ? new YamlWorker() : new EditorWorker() }
 const yaml = configureMonacoYaml(monaco, { enableSchemaRequest: false })
 
 type Props = {

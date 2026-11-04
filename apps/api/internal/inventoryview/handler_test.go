@@ -71,6 +71,9 @@ func TestInventoryAndHistoryAreAuthenticatedBoundedAndPreserveGaps(t *testing.T)
 		}
 		if item.name == "healthy" {
 			healthy = deviceID
+			if _, err = pool.Exec(ctx, `INSERT INTO agent_telemetry_delivery(agent_id,last_attempt_at,last_status_code,queue_reported_at,queued_snapshots,oldest_queued_at) VALUES($1,now(),429,now(),51,now()-interval '1 hour')`, agentID); err != nil {
+				t.Fatal(err)
+			}
 		}
 		payload := fmt.Sprintf(`{"observedAt":%q,"host":{"os":"linux"},"errors":%s,"metrics":[{"name":"memory_total_bytes","value":0,"unit":"By"}]}`, item.seen.Format(time.RFC3339Nano), item.errors)
 		if _, err = pool.Exec(ctx, `INSERT INTO agent_telemetry_latest(agent_id,report_id,observed_at,payload,received_at) VALUES($1,$2,$3,$4::jsonb,$3)`, agentID, item.report, item.seen, payload); err != nil {
@@ -137,6 +140,14 @@ func TestInventoryAndHistoryAreAuthenticatedBoundedAndPreserveGaps(t *testing.T)
 	}
 	for _, device := range page.Devices {
 		if device.Name == "healthy" {
+			var delivery struct {
+				Queued int `json:"queuedSnapshots"`
+				Code   int `json:"lastStatusCode"`
+				Limit  int `json:"limitPerMinute"`
+			}
+			if err = json.Unmarshal(device.TelemetryDelivery, &delivery); err != nil || delivery.Queued != 51 || delivery.Code != 429 || delivery.Limit != 10 {
+				t.Fatalf("delivery metadata not exposed: %s %v", device.TelemetryDelivery, err)
+			}
 			var latest struct {
 				Metrics []struct {
 					Value float64 `json:"value"`
@@ -303,7 +314,7 @@ func inventoryTestPool(t *testing.T) *pgxpool.Pool {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	for _, name := range []string{"000001_initial_schema.up.sql", "000002_local_auth.up.sql", "000003_agent_enrollment.up.sql", "000004_inventory.up.sql", "000005_telemetry.up.sql", "000006_telemetry_retention.up.sql"} {
+	for _, name := range []string{"000001_initial_schema.up.sql", "000003_telemetry_series_freshness.up.sql", "000004_telemetry_delivery.up.sql"} {
 		migration, readErr := os.ReadFile(filepath.Join("..", "..", "migrations", name))
 		if readErr != nil {
 			t.Fatal(readErr)

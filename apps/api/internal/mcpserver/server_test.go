@@ -101,6 +101,7 @@ func TestCSRFBoundToCookieOriginTargetAndSignature(t *testing.T) {
 		{"cookie missing", target, csrf, "", nil, false},
 		{"form missing", target, "", "", cookie, false},
 		{"cross origin", target, csrf, "https://evil.example", cookie, false},
+		{"opaque origin", target, csrf, "null", cookie, false},
 		{"changed client", "/oauth/authorize?client_id=client-b", csrf, "", cookie, false},
 		{"forged cookie", target, "forged", "", &http.Cookie{Name: csrfCookie, Value: "forged"}, false},
 	} {
@@ -119,6 +120,75 @@ func TestCSRFBoundToCookieOriginTargetAndSignature(t *testing.T) {
 				t.Errorf("CSRF accepted=%v", got)
 			}
 		})
+	}
+}
+
+func TestOAuthPagesPreserveOriginForFormSubmission(t *testing.T) {
+	h, _ := testHandler(t)
+	r := httptest.NewRequest("GET", "https://vigara.example/oauth/authorize?client_id=client-a", nil)
+	w := httptest.NewRecorder()
+	h.consentPage(w, r, authorization{Client: client{Name: "MCP client"}, Redirect: "https://client.example/callback", Scopes: supportedScopes}, "")
+	if got := w.Header().Get("Referrer-Policy"); got != "same-origin" {
+		t.Fatalf("consent referrer policy %q can suppress the Origin on a form POST", got)
+	}
+	if !strings.Contains(w.Body.String(), `<form method="post">`) {
+		t.Fatal("missing same-origin consent form")
+	}
+	if !strings.Contains(w.Header().Get("Content-Security-Policy"), "form-action 'self'") {
+		t.Fatal("form target must remain same origin")
+	}
+	// Connection revocation uses the same renderer and needs the same policy.
+	w = httptest.NewRecorder()
+	renderPage(w, map[string]any{"Title": "Connected applications"})
+	if got := w.Header().Get("Referrer-Policy"); got != "same-origin" {
+		t.Fatalf("connections referrer policy = %q", got)
+	}
+}
+
+func TestConsentPolicyAllowsOnlyRegisteredCallbackOrigin(t *testing.T) {
+	h, _ := testHandler(t)
+	for _, callback := range []string{
+		"https://chatgpt.com/connector_platform_oauth_redirect",
+		"https://client.example:8443/callback?state=example",
+		"http://127.0.0.1:3456/callback",
+		"http://[::1]:3456/callback",
+	} {
+		t.Run(callback, func(t *testing.T) {
+			r := httptest.NewRequest("GET", "https://vigara.example/oauth/authorize", nil)
+			w := httptest.NewRecorder()
+			h.consentPage(w, r, authorization{Redirect: callback}, "")
+			u, _ := url.Parse(callback)
+			want := "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' " + u.Scheme + "://" + u.Host + "; frame-ancestors 'none'; base-uri 'none'"
+			if got := w.Header().Get("Content-Security-Policy"); got != want {
+				t.Fatalf("callback redirect blocked or policy broadened:\ngot %s\nwant %s", got, want)
+			}
+			if w.Header().Get("Referrer-Policy") != "same-origin" {
+				t.Fatal("lost origin-preserving referrer policy")
+			}
+		})
+	}
+	// Other OAuth pages do not redirect a form to an external client.
+	w := httptest.NewRecorder()
+	renderPage(w, map[string]any{"Title": "Connected applications"})
+	if got := w.Header().Get("Content-Security-Policy"); !strings.Contains(got, "form-action 'self';") {
+		t.Fatalf("connections form policy: %s", got)
+	}
+}
+
+func TestConsentPolicyRejectsSourceAndDirectiveInjection(t *testing.T) {
+	for _, callback := range []string{
+		"", "javascript:alert(1)", "https://*.example/callback", "https://client.example;script-src/callback",
+		"https://client.example,evil.example/callback", "https://user:pass@client.example/callback", "http://client.example/callback",
+		"https://client.example/\r\nContent-Security-Policy:default-src *",
+	} {
+		if got := consentFormAction(callback); got != "'self'" {
+			t.Errorf("unsafe callback %q produced %q", callback, got)
+		}
+	}
+	// Callback paths and queries may legally contain CSP-looking text. None of
+	// it belongs in a source expression; only the validated origin is emitted.
+	if got := consentFormAction("https://client.example/callback;script-src?next=https://evil.example&policy=*"); got != "'self' https://client.example" {
+		t.Fatalf("callback path/query leaked into CSP: %s", got)
 	}
 }
 

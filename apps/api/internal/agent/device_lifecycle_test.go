@@ -21,6 +21,11 @@ import (
 )
 
 func TestReinstallBundleKeepsIdentityAndRotatesOnlyOnUse(t *testing.T) {
+	t.Run("preserve settings", func(t *testing.T) { testReinstallBundle(t, false) })
+	t.Run("configure Docker", func(t *testing.T) { testReinstallBundle(t, true) })
+}
+
+func testReinstallBundle(t *testing.T, configureDocker bool) {
 	pool, sessions := agentTestService(t)
 	ctx := context.Background()
 	admin, err := sessions.CreateFirstUser(ctx, "reinstall-admin", "Admin", "correct horse battery staple", "correct horse battery staple")
@@ -83,6 +88,9 @@ func TestReinstallBundleKeepsIdentityAndRotatesOnlyOnUse(t *testing.T) {
 		t.Fatalf("duplicate=%d %s", duplicate.Code, duplicate.Body.String())
 	}
 	request := `{"deviceId":"` + deviceID + `","name":"ignored label","target":"linux-amd64","features":[]}`
+	if configureDocker {
+		request = strings.TrimSuffix(request, "}") + `,"docker":{"mode":"manage","host":"unix:///var/run/docker.sock"}}`
+	}
 	bundle := call("POST", "/api/agent-downloads", request, admin.Token)
 	if bundle.Code != 200 {
 		t.Fatalf("bundle=%d %s", bundle.Code, bundle.Body.String())
@@ -134,6 +142,15 @@ func TestReinstallBundleKeepsIdentityAndRotatesOnlyOnUse(t *testing.T) {
 	if !bytes.Equal(oldHash, hash(identity.credential)) {
 		t.Fatal("download rotated credentials before installation")
 	}
+	var allowedBefore []string
+	if err = pool.QueryRow(ctx, "SELECT allowed_capabilities FROM agent_identities WHERE id=$1", identity.agentID).Scan(&allowedBefore); err != nil {
+		t.Fatal(err)
+	}
+	for _, feature := range allowedBefore {
+		if feature == "docker.manage" {
+			t.Fatal("download changed the Docker permission ceiling before installation")
+		}
+	}
 	enroll := func(token, platform string) *httptest.ResponseRecorder {
 		body, _ := json.Marshal(EnrollmentRequest{Token: token, DisplayName: "ignored label", Capability: protocol.CapabilityReport{ProtocolVersion: protocol.CurrentVersion, Platform: platform, Architecture: "amd64", AgentVersion: "test", Capabilities: []string{"restic.backup"}}})
 		return call("POST", "/api/agent/enroll", string(body), "")
@@ -154,6 +171,18 @@ func TestReinstallBundleKeepsIdentityAndRotatesOnlyOnUse(t *testing.T) {
 	}
 	if result.AgentID != identity.agentID || result.Credential == identity.credential {
 		t.Fatal("reinstall did not preserve identity and replace credential")
+	}
+	var allowedAfter []string
+	if err = pool.QueryRow(ctx, "SELECT allowed_capabilities FROM agent_identities WHERE id=$1", identity.agentID).Scan(&allowedAfter); err != nil {
+		t.Fatal(err)
+	}
+	gotDocker, keptBackup := false, false
+	for _, feature := range allowedAfter {
+		gotDocker = gotDocker || feature == "docker.manage"
+		keptBackup = keptBackup || feature == "restic.backup"
+	}
+	if gotDocker != configureDocker || !keptBackup {
+		t.Fatalf("unexpected permissions after reinstall: %v", allowedAfter)
 	}
 	if w := enroll(token, "linux"); w.Code != 401 {
 		t.Fatalf("replayed token=%d", w.Code)

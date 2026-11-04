@@ -4,6 +4,7 @@ import { IconBrandWindowsFilled, IconBrandAppleFilled, IconBrandDebian, IconBran
 import { type Device } from './devices'
 import { driveUsage, operatingSystem, type HardwareComponent } from './device-info-utils'
 import { formatDuration, formatMetric } from './metric-utils'
+import { AgentUpdate } from './agent-update'
 
 type Awake = { weekdays: string[]; start: string; end: string; timezone: string }
 type Availability = { awake: Awake | null; expectedAwake: boolean; maintenanceActive: boolean; maintenance: { id: string; startsAt: string; endsAt: string }[] }
@@ -75,6 +76,7 @@ export function DeviceInfo({ device, onReinstall }: { device: Device; onReinstal
       <SimpleGrid cols={{base: 1, md: 2}}><HardwareDetails title="Graphics" status={hardware?.gpuStatus} items={hardware?.gpus} />{!hideMemoryModules && <HardwareDetails title={isVM ? 'Memory modules (guest-reported)' : 'Memory modules'} status={hardware?.memoryStatus} items={hardware?.memoryModules} />}{!hideMotherboard && <HardwareDetails title={isVM ? 'Motherboard (guest-reported)' : 'Motherboard'} status={hardware?.boardStatus} items={hardware?.motherboard ? [hardware.motherboard] : []} />}<HardwareDetails title="Firmware / BIOS" status={hardware?.firmwareStatus} items={hardware?.firmware ? [hardware.firmware] : []} /></SimpleGrid></div>
     <Card withBorder padding="lg"><Title order={3} mb="md">Device identity and capabilities</Title><Text size="sm">Device ID: {device.id}</Text><Text size="sm">Agent ID: {device.agentId || 'No enrolled agent'}</Text><Text size="sm" mb="md">Last check-in: {date(device.lastSeenAt)}</Text><Group gap="xs">{device.capabilities.length ? device.capabilities.map((capability) => <Badge key={capability} variant="light">{capability}</Badge>) : <Text size="sm" c="dimmed">No agent capabilities reported.</Text>}</Group></Card>
     {device.agentId && <Card withBorder padding="lg"><Title order={3} mb="xs">Agent installation</Title><Text c="dimmed" size="sm" mb="md">Repair or reinstall the agent on this device while keeping its information and history. The Windows agent runs as a background service and has no tray icon.</Text><Button variant="light" onClick={onReinstall}>Reinstall agent</Button></Card>}
+    {device.agentId && (device.platform === 'windows' || device.platform === 'linux') && <AgentUpdate key={device.id} deviceId={device.id} />}
     {!!device.collectionErrors?.length && <Alert color="red" title="Collection issues">{device.collectionErrors.map((item, index) => <Text size="sm" key={index}>{item.capability}: {item.message}</Text>)}</Alert>}
   </Stack>
 }

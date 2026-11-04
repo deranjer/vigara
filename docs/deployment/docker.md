@@ -2,7 +2,332 @@
 
 The container runs the Vigira API and serves the web UI embedded in the same process. PostgreSQL is a separate service. On startup, the server applies pending migrations embedded in its binary before accepting requests. No migration container or mounted SQL files are required.
 
-The server preserves the `schema_migrations` history used by previous CLI/container deployments and serializes simultaneous migration attempts with a database lock. If a migration fails or the database is marked dirty, startup stops without resetting that state. Inspect and repair the failure before restarting; do not force the version forward without checking the database. The configured database user needs permission to apply the schema changes, including creating the `pgcrypto` extension on a fresh database.
+The bundled schema is consolidated into `000001_initial_schema` for a fresh installation, including native GitHub App authentication. Existing databases from the previous migration history must be recreated for this release; this is not an in-place upgrade. The server records schema version 1 in `schema_migrations` and serializes simultaneous initialization attempts with a database lock. If a migration fails or the database is marked dirty, startup stops without resetting that state. Inspect and repair the failure before restarting; do not force the version forward without checking the database. The configured database user needs permission to apply the schema changes, including creating the `pgcrypto` extension on a fresh database.
+
+## Interactive Linux setup
+
+For a new server deployment, run from your cloned repository:
+
+```sh
+bash deploy/setup.sh
+```
+
+The script checks Docker access and Compose support, asks for an image,
+project name and shared Compose root, and offers Caddy Docker Proxy labels or a published IPv4
+port. For Caddy it asks for the hostname, shared network and proxy container name.
+A running proxy is reused after checking its network attachment. A stopped proxy
+can be started with your approval. If the named container does not exist, the
+script asks permission to deploy a new Caddy Docker Proxy stack alongside Vigara.
+DNS and inbound TCP ports 80/443 must route to this server; the script cannot
+change your DNS provider, router or firewall.
+For direct access, it defaults to loopback port 8080 and asks whether a separate
+HTTPS proxy will serve it, enabling secure cookies when appropriate.
+
+It generates a database password and backup master key, writes private files
+under `<compose-root>/<project>/`, and validates Compose before asking
+whether to pull images and start. No credentials are printed. If that deployment
+directory or the selected project's containers or volumes already exist, the
+script offers a destructive fresh start. Declining preserves the deployment.
+For upgrades, continue using the existing deployment's `compose.sh`; this is
+an initial installer, not an adoption or migration tool.
+
+### Connect a GitHub stack repository
+
+Setup generates a GitHub App encryption key alongside the backup key, saves it
+in the private deployment `.env`, and forwards it to the API container. Keep this
+file and its keys across restarts and upgrades. The Git cache uses persistent
+storage in both the named-volume and bind-mount layouts.
+
+Once the server is running, sign in at the HTTPS address selected during setup,
+then open **Compose stacks → Git settings → GitHub App → Connect with GitHub**.
+GitHub creates the App and lets you select the repository. Saves push directly
+to your chosen branch; deployment is a separate action. See the
+[GitHub App setup guide](../git-backed-stacks.md#native-github-app-registration).
+If the HTTPS address was left blank, set `VIGIRA_PUBLIC_URL` in the existing
+`.env` and recreate the app container before connecting GitHub. No key needs to
+be regenerated.
+
+### Start over after a previous installation
+
+Run `bash deploy/setup.sh` and select the previous project name and Compose root.
+The installer lists the selected project's container IDs and volume names and
+warns that deleting volumes permanently destroys the database, users, enrollment
+credentials, and other stored data. It defaults to **no**. To reset, explicitly
+answer **yes**, then type **`PURGE <project>`** exactly, such as `PURGE vigara`.
+An empty answer, incorrect confirmation, or ended input never authorizes deletion.
+
+The reset force-removes the inventoried project containers, including running
+ones, then deletes its labeled volumes. There is no undo for volume deletion;
+make a backup first. Agents need enrolling again after deleting their server
+database. Unrelated projects and shared networks/proxies remain in place.
+
+An existing installer deployment directory moves to a sibling named
+`<project>.before-reset.<random-suffix>` before the new configuration is generated.
+This retains the old `.env`, Compose configuration, and bind-mounted data inside
+that directory; the new installation gets fresh credentials and storage. Archived
+data continues to consume disk space. Keep it private, and retain the matching
+old configuration if you need to recover it. External bind paths are never erased.
+Unrecognized directories, symlink deployment directories, and an unlabelled
+database volume with a conflicting name require manual resolution.
+
+If the selected proxy container is missing but its separate `<project>-caddy`
+stack still has containers or a deployment directory, resetting that stack requires its own approval and
+`PURGE <project>-caddy` confirmation. Deleting proxy volumes loses its saved TLS
+certificates and state. A running or stopped existing proxy is reused through the
+normal prompts. Reset requires a local Unix Docker context; any deletion failure
+stops installation, potentially leaving a partially removed project to inspect.
+If only proxy volumes remain, use the keep/purge/cancel choice described below;
+keeping them does not require a destructive project reset.
+
+### Choose persistent storage and container names
+
+The installer asks whether to use bind-mounted data directories instead of
+Docker named volumes. Answer **no** (the default) to keep named volumes, or
+**yes** to use bind mounts. The next prompt asks for a bind data root:
+leave it blank or enter `.` to keep data beside the generated Compose files,
+or enter an absolute path such as `/mnt/data` to store data separately.
+With `/mnt/data`, the default Vigara project uses
+`/mnt/data/vigara/data/postgres`, `/mnt/data/vigara/data/android-backups`,
+and `/mnt/data/vigara/data/agent-releases`. A new Caddy proxy uses
+`/mnt/data/vigara-caddy/data/caddy` and `/mnt/data/vigara-caddy/data/config`.
+Compose files and credentials stay in the selected Compose root.
+
+The default `.` layout is:
+
+| Stack | Bind-mounted host directory | Container path |
+| --- | --- | --- |
+| Vigara | `<root>/<project>/data/postgres` | `/var/lib/postgresql/data` |
+| Vigara, direct-port setup | `<root>/<project>/data/android-backups` | `/var/lib/vigira/android-backups` |
+| Vigara | `<root>/<project>/data/agent-releases` | `/var/lib/vigira/agent-releases` |
+| Vigara | `<root>/<project>/data/stack-git` | `/var/lib/vigira/stacks.git` |
+| New Caddy proxy | `<root>/<project>-caddy/data/caddy` | `/data` |
+| New Caddy proxy | `<root>/<project>-caddy/data/config` | `/config` |
+
+Bind storage requires a local Unix Docker context and a Compose root without
+commas. Absolute bind roots support letters, numbers, spaces, dots, underscores
+and hyphens. The installer creates the root and required subdirectories with
+private permissions and generates explicit bind mounts with `create_host_path: true`;
+Compose can also create a missing source directory during later startup.
+Existing nonempty external data directories are refused to avoid attaching old
+database data to newly generated credentials. Symlink project/data directories
+are refused. External bind data remains in place during a project reset;
+choose a fresh data root for a fresh database or recover using its original configuration.
+Only empty existing mount directories are reused. No existing data is deleted and
+no named data volumes are declared in those generated deployments. The choice
+also applies to a newly deployed Caddy proxy. Keeping existing Caddy volumes
+overrides this choice for the proxy only, so its certificates and configuration
+remain mounted. A reused proxy keeps its existing storage configuration.
+
+The repository's proxy example uses named volumes by default. In bind mode,
+setup converts the generated `<compose-root>/<project>-caddy/compose.yml` so
+`/data` and `/config` use the proxy's data directories. Manage that generated
+stack through its `compose.sh` helper. Reusing existing named Caddy volumes is
+an explicit exception: those stay mounted to preserve saved certificates.
+
+PostgreSQL initializes ownership and permissions on its fresh database
+directory. The direct-port setup also generates `prepare-storage.sh` to give
+the API upload/cache directories to the API's UID/GID 10001 before startup. This
+uses the already pulled PostgreSQL image as a short-lived root helper, changing
+only that directory's owner without recursive chmod/chown. The helper mounts
+over the image's declared data volume, avoiding an anonymous Docker volume.
+If you defer startup, run the printed permission-preparation command after
+pulling images and before starting Vigara. Android uploads remain disabled
+until their separate server setting is configured.
+
+If the `agent-bundles` scheduled task reports that it cannot write its release
+cache, check that the mounted cache is writable by UID/GID `10001:10001`.
+For installer-generated bind storage, run `bash ./prepare-storage.sh` from the
+deployment directory, then retry the task in **Admin → Scheduled tasks**.
+This prepares the selected cache directory without changing ownership recursively.
+Read-only mounts and network storage permissions can also prevent writes.
+
+### Host agent Compose root
+
+After startup and a successful readiness check, setup offers to register this
+server as a Docker host for Compose stack deployments. Accepting installs the
+Linux host agent through the existing agent installer, grants Docker manage,
+exec and deploy capabilities, and configures the selected shared Compose root.
+The deployment service runs as root and can control the local Docker host;
+setup asks before installing it. Linux amd64/arm64, systemd, Python 3, sudo and
+a local Docker Unix socket are required.
+
+Enrollment uses a verified agent release and a single-use token valid for
+30 minutes, prepared through a local command inside the running server container.
+It does not require creating the first administrator account beforehand. The
+agent connects through the configured HTTPS address, or the direct server
+address for a private-network deployment. Public plain-HTTP addresses are refused.
+The token stays in a private temporary bundle and is removed after installation.
+
+Declining or deferring startup leaves `register-host.sh` in the deployment
+directory. Run `bash ./register-host.sh` to verify readiness and enroll later.
+Enrollment failure leaves the server running; failed agent installation retains
+its private bundle and prints the installation command to retry. Existing agent
+enrollments are preserved: use **Device info → Reinstall agent** to enable Docker
+deployment for an already registered host.
+
+Setup saves the selected Compose root as `VIGIRA_COMPOSE_MANAGED_ROOT` in the
+generated `.env` and in a separate private `agent.env`. This root controls where
+the host agent deploys managed stacks; it is distinct from the bind data root.
+The agent is a separate service, so the server's `.env` alone cannot configure it.
+For an agent enrolled manually on the same host, run the generated
+`configure-agent.sh` helper. It installs only `agent.env` at
+`/etc/vigara-agent/compose.env`, adds an `EnvironmentFile` service override,
+reloads systemd, and restarts the agent if it is running. It uses sudo and does
+not change Docker capability permissions or copy database credentials or the
+backup master key into the agent. The printed command includes the correct
+deployment path; there is no need to retype the root setting.
+
+The generated app/database containers are explicitly named `<project>-app`
+and `<project>-postgres`: `vigara-app` and `vigara-postgres` by default. The
+Caddy name remains the name selected in its prompt, defaulting to `caddy-proxy`.
+The installer rejects conflicting app/database names and a proxy name that
+collides with them. Compose service names and database storage identities are
+unchanged. These are single-instance services; explicit container names cannot
+be used with Compose service scaling.
+
+This is an initial-install storage choice. It does not migrate existing volumes
+or data. Preserve the database, certificates, `.env` and backup master key when
+moving or upgrading an existing installation. Use normal PostgreSQL backup and
+restore procedures for database recovery.
+
+### Optional Caddy bootstrap
+
+When you approve a new proxy, the installer checks that TCP ports 80 and 443 are
+free, including Docker-published ports. Existing proxy containers or a deployment
+directory require the separately confirmed fresh-start reset described above. It requires `ss`
+(normally supplied by `iproute2`), `curl`, and a local Unix Docker socket. Remote
+Docker contexts are rejected for automatic proxy deployment.
+
+If proxy volumes remain from a previous deployment, setup lists them and offers
+**keep** (the default), **purge**, or **cancel**. Keeping reuses the expected
+`<project>-caddy_caddy-data` and `<project>-caddy_caddy-config` named volumes.
+Purging requires typing `PURGE <project>-caddy` and permanently deletes only
+those two volumes that already exist; Caddy starts with fresh storage and must
+obtain certificates again. Other volumes, projects, bind directories and the
+Vigara database are preserved. A conflicting volume owned by another project
+is rejected.
+
+No volume is deleted while generating configuration. An approved purge runs
+after the proxy image is pulled and before proxy startup. If startup is deferred,
+run the printed `purge-volumes.sh` command before the proxy's `up` command.
+The helper rechecks ownership and refuses to delete any target referenced by a
+running or stopped container. It never forces removal or prunes Docker volumes.
+
+With the default project name, the proxy files are written under
+`<compose-root>/vigara-caddy/` and Vigara under `<compose-root>/vigara/`. The proxy
+uses the separate `vigara-caddy` Compose project, the chosen container name, and
+the published `lucaslorentz/caddy-docker-proxy:alpine` release image by default;
+you can choose a pinned image in the prompt. Persistent volumes retain `/data`
+(certificates and ACME state) and `/config`. Preserve those volumes on upgrades.
+
+The proxy gets access to the Docker socket to discover labels across the host.
+This is privileged Docker access even though the socket mount is marked
+read-only. Review the deployment prompt before approving. The installer does
+not replace an existing proxy container or change its Caddyfile.
+
+After configuration validation and the final startup approval, setup pulls the
+proxy image, creates the shared network if missing, starts Caddy, then pulls and
+starts Vigara. If you defer startup, it prints the commands in that order.
+Failures retain both generated configurations for inspection and retry.
+
+### Verify HTTPS and MCP
+
+The generated `check.sh` verifies the health endpoint with normal TLS certificate
+validation and retries for up to approximately two minutes. With MCP enabled,
+it also checks public OAuth resource/issuer metadata and an unauthenticated
+`/mcp` request returning HTTP 401. A failed check returns a nonzero status and
+does not report setup as ready. The checks run from this server; cloud access
+and a live ChatGPT/Claude OAuth connection must still be verified separately.
+
+If HTTPS is not ready, check A and AAAA records, router forwarding/firewall rules
+for TCP 80/443, and the proxy/app logs. An incorrect AAAA record can prevent
+certificate issuance or connections even when the A record is correct. Retry
+verification without rerunning the installer or regenerating credentials:
+
+```sh
+bash ~/dockers/compose-stacks/vigara-caddy/compose.sh logs --tail 100
+bash ~/dockers/compose-stacks/vigara/compose.sh logs --tail 100
+bash ~/dockers/compose-stacks/vigara/check.sh
+```
+
+Substitute your selected root and project. For an existing externally managed
+proxy, use its own log commands. Direct access without MCP can run without curl,
+but the installer explicitly reports that readiness was not verified.
+
+### Deployment files and later management
+
+The shared root defaults to `~/dockers/compose-stacks`, so the default Vigara
+deployment lives in `~/dockers/compose-stacks/vigara/`, outside the cloned source
+repository. You can choose another absolute path, including paths with spaces.
+Other stacks can live alongside Vigara in their own subdirectories. Existing
+stack directories are left in place. The installer refuses a root within the
+Vigara source checkout.
+
+When configuring the host agent for new managed stacks, set its
+`VIGIRA_COMPOSE_MANAGED_ROOT` to this same absolute root and grant the agent
+write access through both filesystem permissions and its service sandbox. This
+is an **agent** setting, not an API server setting. The installer prints the
+selected value; agent installation/enrollment remains a separate step. Existing
+stacks still require explicit target configuration; choosing a root does not
+automatically adopt or relocate them.
+
+After setup, use the generated helper from any working directory (substitute
+your chosen root and project):
+
+```sh
+bash ~/dockers/compose-stacks/vigara/compose.sh ps
+bash ~/dockers/compose-stacks/vigara/compose.sh logs --tail 100
+```
+
+The helper keeps the project name, environment file and Compose file together.
+It clears exported `VIGIRA_*`, `VIGIRA_*`, `POSTGRES_*` and `COMPOSE_*` variables
+so the generated `.env` remains authoritative. Edit that file for later changes.
+Back it up securely; losing or replacing the backup master key can make managed
+backup credentials unrecoverable. Keep the generated Compose file too.
+
+Installations previously created under `deploy/production/` can keep using their
+existing helper. This installer does not migrate them or change their storage.
+
+The installer also offers MCP access for ChatGPT and Claude. Approved connection
+permissions and the current account role control monitoring, container management
+and Compose stack changes. Backup access remains read-only. For Caddy,
+it uses the selected HTTPS hostname. Direct-port deployments need an existing
+HTTPS proxy and its public origin. MCP remains disabled unless you opt in.
+After startup, open **Account settings → Claude and ChatGPT** for the connection
+URL, OAuth instructions for each client, and application revocation.
+
+If a pull fails for a private image, authenticate with `docker login ghcr.io`,
+then retry `compose.sh pull` and `compose.sh up -d --wait --wait-timeout 120`.
+If startup fails, configuration is retained for inspection and retry. HTTPS and
+MCP checks follow startup as described above. Complete the first administrator
+setup after opening the site.
+Host-agent enrollment and management of existing Compose stacks are separate
+steps. This script does not configure agent downloads or optional Android storage.
+
+## Environment variable names
+
+Use `VIGIRA_*` in deployment environment files. Before upgrading an existing
+Compose deployment, rename these host-side inputs if present:
+
+| Previous name | Current name |
+| --- | --- |
+| `VIGIRA_IMAGE` | `VIGIRA_IMAGE` |
+| `VIGIRA_PORT` | `VIGIRA_PORT` |
+| `VIGIRA_DOMAIN` | `VIGIRA_DOMAIN` |
+| `VIGIRA_PROXY_NETWORK` | `VIGIRA_PROXY_NETWORK` |
+| `VIGIRA_PUBLIC_URL` | `VIGIRA_PUBLIC_URL` |
+| `VIGIRA_AGENT_RELEASE_HOST_DIR` | `VIGIRA_AGENT_RELEASE_HOST_DIR` |
+
+Compose reads these inputs before the application starts, so the application's
+legacy aliases cannot translate them. Old image, port and network inputs would
+otherwise silently use defaults; old domain and download inputs fail validation.
+Run `docker compose --env-file YOUR_ENV_FILE -f YOUR_COMPOSE_FILE config --quiet`
+after updating the names, and review your configured image, port and network.
+
+The application separately supports legacy `VIGIRA_*` settings; explicitly set
+`VIGIRA_*` application settings take precedence, including empty values.
+Keep existing database names, volume names and filesystem paths when upgrading;
+the environment prefix change does not require renaming stored data.
 
 ## Image releases
 
@@ -55,7 +380,100 @@ When replacing an existing deployment, preserve its actual database volume or bi
 
 Android uploads are disabled when `VIGIRA_ANDROID_BACKUP_ROOT` is empty. To enable them, set it in `deploy/.env.staging` to `/var/lib/vigira/android-backups`. The Compose setup mounts that path from the persistent `android-backups` volume, and the container user can write there. Protect and back up this volume alongside PostgreSQL; the uploaded files are stored unencrypted. See [Android storage details](../android.md#enable-server-storage).
 
-## Optional agent downloads
+## Automatic agent release downloads
+
+GitHub Actions builds agents for Windows x64, Linux x64 and Linux ARM64, plus
+the pinned Restic executable for each target and its license. It publishes these
+assets and `manifest.json` to the public GitHub prerelease
+`agents-sha-<full-source-commit>`. That prerelease is not marked as the latest
+product release. Only complete drafts are published; reruns preserve an already
+published release. Enrollment tokens and device-specific settings are never
+uploaded to GitHub.
+
+The container publishing workflow waits for those assets before publishing the
+server image. The image embeds the same source revision as a bootstrap fallback.
+With `VIGIRA_AGENT_RELEASE_TAG=auto` (the image default), the scheduled bundle
+scan runs at startup and every 24 hours, selecting the newest published releases
+whose protocol major version and pinned Restic version match this server.
+Bundles are enabled only after a complete release passes source revision,
+protocol, filename, size, SHA-256 and pinned Restic checks.
+
+Assets are staged privately, then published into the cache as a complete set.
+The API retries failures every minute without blocking server startup. A verified
+selected cache is reused on offline restarts, even if the original server-commit
+fallback has aged out of retention. **Add device** shows download/verification
+progress or the last error and refreshes while waiting. The server still creates
+each one-use enrollment ZIP privately when requested.
+
+In **Admin → Scheduled tasks**, use **Run now** to scan immediately, inspect the
+last result and next run, and configure bundle retention. By default purging is
+enabled and only the newest **two compatible bundle versions** are retained.
+Each version contains the complete set of supported platforms and Restic files.
+Set the count to 1–20, or disable purging to keep downloaded history. Purging is
+confined to release-tag directories in the agent cache; it does not remove
+device backups or unrelated files. An explicit release pin is honored by scans.
+
+Current Compose examples persist the cache at `/var/lib/vigira/agent-releases`.
+The installer supports either a named cache volume or
+`<compose-root>/<project>/data/agent-releases` in bind mode, including UID 10001
+ownership preparation. It sets `VIGIRA_PUBLIC_URL` from the Caddy hostname; the
+direct-port path prompts for an agent-facing HTTPS origin (or lets you configure
+it later).
+
+### Upgrade an existing deployment
+
+After this workflow has published the new image and assets, pull and recreate
+your existing app using its existing helper. Keep the database and credentials:
+
+```sh
+bash ~/dockers/compose-stacks/vigara/compose.sh pull app
+bash ~/dockers/compose-stacks/vigara/compose.sh up -d --wait app
+```
+
+Set `VIGIRA_PUBLIC_URL` in your `.env` and ensure the app forwards it. Add a
+persistent cache mount to avoid downloading assets again on container recreation:
+
+```yaml
+services:
+  app:
+    environment:
+      VIGIRA_PUBLIC_URL: ${VIGIRA_PUBLIC_URL}
+      VIGIRA_AGENT_RELEASE_TAG: auto
+      VIGIRA_AGENT_RELEASE_CACHE: /var/lib/vigira/agent-releases
+    volumes:
+      - agent-releases:/var/lib/vigira/agent-releases
+volumes:
+  agent-releases:
+```
+
+For bind storage, replace that volume mount with
+`./data/agent-releases:/var/lib/vigira/agent-releases` and create the directory
+owned by the API container's UID/GID 10001. Existing installations without a
+cache mount can still fetch assets into the container filesystem; recreation
+will discard that cache.
+
+`VIGIRA_AGENT_RELEASE_TAG=off` disables fetching. An explicit
+`agents-sha-<40-character-commit>` pins another compatible release. An explicit
+`VIGIRA_AGENT_RELEASE_DIR` keeps the manual, operator-provisioned directory and
+takes precedence over automatic downloads; clear it to switch to fetching.
+Outbound HTTPS access to GitHub and its `githubusercontent.com` asset hosts is
+required on a cold cache. Private GitHub repositories are not supported by the
+anonymous fetcher; use the manual path below for those deployments.
+
+See [scheduled server tasks](../scheduled-tasks.md) for startup behavior, task
+status persistence, administrative controls and the built-in maintenance registry.
+
+For local Docker builds, pass `--build-arg VIGIRA_REVISION="$(git rev-parse HEAD)"`
+to select an already published same-commit release. Standalone binaries can set
+the release tag and a service-writable `VIGIRA_AGENT_RELEASE_CACHE` explicitly.
+
+Operators can use **Actions → Publish agent release assets → Run workflow** on
+`main` to publish missing assets for that commit. The normal container workflow
+already runs it automatically. Publishing requires the workflow's
+`contents: write` GitHub token permission. Do not overwrite published same-commit
+assets; fix the source and publish a new commit instead.
+
+## Manual agent downloads
 
 Agent bundle downloads require release files and a public HTTPS URL. Build the bundles on an operator machine and copy the output directory to the staging host. From the repository root, the bundle command is:
 
@@ -79,3 +497,18 @@ curl http://localhost:8080/healthz
 ```
 
 The host should put the app behind its HTTPS reverse proxy and set `VIGIRA_COOKIE_SECURE=true` in `deploy/.env.staging` when serving HTTPS. Use a URL-safe password in `POSTGRES_PASSWORD` because the database URL is assembled in Compose. Back up the `postgres-data` volume before testing upgrades or removing the stack. `docker compose down -v` deletes that database volume.
+
+## Import the installer-created stacks
+
+Once Git is connected, open **Compose stacks → Import existing** and select this
+server's enrolled Docker device. Review and import Vigara and Caddy separately.
+They must reside in their original subfolders under the agent's configured shared
+Compose root. Update an existing agent to the release containing import support;
+updating the API alone does not add the host-side import methods.
+
+Download the offered recovery key and store it securely outside this server.
+Import encrypts environment files, records the existing deployment and saves to
+Git without restarting containers. Deploying a saved revision remains an explicit
+later action. Back up bind-mounted configuration/data separately, including the
+Caddyfile. See [Compose import](../compose-adoption.md) for boundaries and key
+backup locations.

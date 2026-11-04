@@ -32,6 +32,7 @@ type Input struct {
 	Sensitivity      string `yaml:"sensitivity" json:"sensitivity"`
 	Format           string `yaml:"format,omitempty" json:"format,omitempty"`
 	PreserveOnImport bool   `yaml:"preserveOnImport,omitempty" json:"preserveOnImport,omitempty"`
+	Target           string `yaml:"target,omitempty" json:"target,omitempty"`
 }
 type RecipientRef struct {
 	Class  string `yaml:"class"`
@@ -47,6 +48,7 @@ type Manifest struct {
 		Files                       []string `yaml:"files"`
 		ProjectDirectory            string   `yaml:"projectDirectory"`
 		InterpolationFiles          []Input  `yaml:"interpolationFiles"`
+		EnvironmentFiles            []Input  `yaml:"environmentFiles,omitempty"`
 		ControlEnvironmentAllowlist []string `yaml:"controlEnvironmentAllowlist,omitempty"`
 	} `yaml:"compose"`
 	SecretRecipientRefs         []RecipientRef `yaml:"secretRecipientRefs,omitempty"`
@@ -150,13 +152,38 @@ func Validate(s Snapshot) (Manifest, error) {
 		return m, ErrInvalid
 	}
 	for _, input := range m.Compose.InterpolationFiles {
-		if !ValidPath(input.Path) || seen[input.Path] || s.Files[input.Path] == "" || input.Sensitivity != "encrypted" || (input.Format != "sops-binary" && input.Format != "sops-dotenv" && input.Format != "") || (input.Purpose != "stack" && input.Purpose != "shared" && input.Purpose != "deployment") {
+		if !ValidPath(input.Path) || seen[input.Path] || s.Files[input.Path] == "" || input.Sensitivity != "encrypted" || (input.Format != "sops-binary" && input.Format != "sops-dotenv" && input.Format != "age-dotenv" && input.Format != "") || input.Target != "" || (input.Purpose != "stack" && input.Purpose != "shared" && input.Purpose != "deployment") {
 			return m, ErrInvalid
 		}
 		seen[input.Path] = true
-		if !strings.HasSuffix(input.Path, ".sops") {
+		if !strings.HasSuffix(input.Path, ".sops") && !(input.Format == "age-dotenv" && strings.HasSuffix(input.Path, ".age")) {
 			return m, ErrInvalid
 		}
+	}
+	targets := map[string]bool{}
+	if len(m.Compose.EnvironmentFiles) > 32 {
+		return m, ErrInvalid
+	}
+	for _, input := range m.Compose.EnvironmentFiles {
+		if !ValidPath(input.Path) || !ValidPath(input.Target) || input.Target == "vigara-stack.yaml" || seen[input.Target] || targets[input.Target] || s.Files[input.Target] != "" || s.Files[input.Path] == "" || input.Sensitivity != "encrypted" || input.Purpose != "deployment" || input.Format != "age-dotenv" || !strings.HasSuffix(input.Path, ".age") {
+			return m, ErrInvalid
+		}
+		for path := range s.Files {
+			p, target := strings.ToLower(path), strings.ToLower(input.Target)
+			if p == target || strings.HasPrefix(p, target+"/") || strings.HasPrefix(target, p+"/") {
+				return m, ErrInvalid
+			}
+		}
+		if targets[strings.ToLower(input.Target)] {
+			return m, ErrInvalid
+		}
+		for target := range targets {
+			candidate := strings.ToLower(input.Target)
+			if strings.HasPrefix(target, candidate+"/") || strings.HasPrefix(candidate, target+"/") {
+				return m, ErrInvalid
+			}
+		}
+		targets[strings.ToLower(input.Target)] = true
 	}
 	// Dotenv inputs must be encrypted; do not accidentally commit plaintext environment files.
 	for p := range s.Files {
@@ -164,7 +191,7 @@ func Validate(s Snapshot) (Manifest, error) {
 			return m, ErrInvalid
 		}
 	}
-	if len(m.Compose.InterpolationFiles) > 0 {
+	if len(m.Compose.InterpolationFiles)+len(m.Compose.EnvironmentFiles) > 0 {
 		classes := map[string]int{}
 		refs := map[string]bool{}
 		for _, ref := range m.SecretRecipientRefs {
@@ -190,7 +217,7 @@ func Digest(s Snapshot) string {
 	}
 	sort.Strings(keys)
 	h := sha256.New()
-	h.Write([]byte("VIGARA-STACK-FILES-V1\x00"))
+	h.Write([]byte("VIGIRA-STACK-FILES-V1\x00"))
 	if s.Placement != nil {
 		b, _ := json.Marshal(s.Placement)
 		h.Write(b)
@@ -211,7 +238,6 @@ func Equal(a, b map[string]string) bool {
 }
 
 type Plan struct {
-	Tracking    map[string]string `json:"tracking,omitempty"`
 	Token       string            `json:"token"`
 	Services    []string          `json:"services"`
 	ProjectName string            `json:"projectName"`

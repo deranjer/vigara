@@ -56,7 +56,7 @@ var githubName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`)
 func githubPublicURL(raw string) (string, error) {
 	u, err := url.Parse(strings.TrimRight(raw, "/"))
 	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "" {
-		return "", errors.New("Set VIGARA_PUBLIC_URL to this server's HTTPS origin before connecting GitHub")
+		return "", errors.New("Set VIGIRA_PUBLIC_URL to this server's HTTPS origin before connecting GitHub")
 	}
 	return u.String(), nil
 }
@@ -91,7 +91,7 @@ func (a *API) githubAdmin(w http.ResponseWriter, r *http.Request, mutation bool)
 		return u, false
 	}
 	if a.Pool == nil || !a.GitHub.Available() {
-		http.Error(w, "GitHub App setup requires VIGARA_GITHUB_APP_MASTER_KEY on the server.", 503)
+		http.Error(w, "GitHub App setup requires VIGIRA_GITHUB_APP_MASTER_KEY on the server.", 503)
 		return u, false
 	}
 	return u, true
@@ -337,7 +337,7 @@ func (a *API) githubStatus(ctx context.Context, r *http.Request) (map[string]any
 	_, urlErr := githubPublicURL(a.PublicURL)
 	status := map[string]any{"available": a.GitHub.Available() && urlErr == nil, "connected": false, "pending": false}
 	if !a.GitHub.Available() {
-		status["setupHelp"] = "Set VIGARA_GITHUB_APP_MASTER_KEY to a base64-encoded random 32-byte key on the server."
+		status["setupHelp"] = "Set VIGIRA_GITHUB_APP_MASTER_KEY to a base64-encoded random 32-byte key on the server."
 	} else if urlErr != nil {
 		status["setupHelp"] = urlErr.Error()
 	}

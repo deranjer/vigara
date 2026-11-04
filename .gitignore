@@ -3,6 +3,8 @@
 !.env.example
 !/deploy/.env.staging.example
 /data/
+/deploy/production/
+/deploy/.setup.*/
 /bin/
 /dist/
 /node_modules/

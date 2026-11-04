@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"html/template"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -76,13 +77,38 @@ var page = template.Must(template.New("page").Parse(`<!doctype html>
 {{else}}<p>No connected applications.</p>{{end}}{{end}}
 {{end}}<p><a href="/">Back to Vigara</a></p></main></body></html>`))
 
-func renderPage(w http.ResponseWriter, data any) {
+// Browsers also apply form-action to redirects following a form POST. Consent
+// must permit the registered callback origin as well as its local form action.
+// Never interpolate a full client-provided URL into a CSP directive: query
+// values and host metacharacters must not introduce new sources or directives.
+func consentFormAction(callback string) string {
+	const self = "'self'"
+	if !validRedirect(callback) {
+		return self
+	}
+	u, err := url.Parse(callback)
+	if err != nil || strings.IndexFunc(u.Host, func(c rune) bool {
+		return !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune(".-_:[]", c))
+	}) != -1 {
+		return self
+	}
+	return self + " " + u.Scheme + "://" + u.Host
+}
+
+func renderPage(w http.ResponseWriter, data any, callback ...string) {
+	formAction := "'self'"
+	if len(callback) == 1 {
+		formAction = consentFormAction(callback[0])
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action "+formAction+"; frame-ancestors 'none'; base-uri 'none'")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Referrer-Policy", "no-referrer")
+	// no-referrer makes browser form POSTs send Origin: null, which our
+	// same-origin CSRF check correctly rejects. Keep the origin on local form
+	// submissions while withholding the OAuth query from cross-origin targets.
+	w.Header().Set("Referrer-Policy", "same-origin")
 	_ = page.Execute(w, data)
 }
 
@@ -92,7 +118,7 @@ func (h *Handler) consentPage(w http.ResponseWriter, r *http.Request, a authoriz
 	for _, scope := range a.Scopes {
 		scopes = append(scopes, labels[scope])
 	}
-	renderPage(w, map[string]any{"Title": "Connect to Vigara", "Consent": true, "Client": a.Client.Name, "Redirect": a.Redirect, "Scopes": scopes, "CSRF": h.newCSRF(w, r), "Error": message})
+	renderPage(w, map[string]any{"Title": "Connect to Vigara", "Consent": true, "Client": a.Client.Name, "Redirect": a.Redirect, "Scopes": scopes, "CSRF": h.newCSRF(w, r), "Error": message}, a.Redirect)
 }
 
 type connection struct {

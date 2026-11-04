@@ -14,11 +14,21 @@ The Compose stacks page provides Cards and Table views, search across stack/proj
 
 ### Native GitHub App registration
 
+The Linux installer (`bash deploy/setup.sh`) generates a separate GitHub App
+encryption key automatically and saves it in the private deployment `.env`.
+It uses the HTTPS address entered during setup (or the Caddy hostname) for App
+callbacks, forwards the key into the API container, and persists the Git cache
+with the chosen named-volume or bind storage. After startup, follow the printed
+**Compose stacks → Git settings → GitHub App → Connect with GitHub** instructions.
+If setup has no HTTPS address yet, set `VIGIRA_PUBLIC_URL` in the existing `.env`
+before connecting. Preserve this file and its keys during upgrades; rerunning the
+initial installer is not an upgrade path.
+
 Configure these settings once on the API server:
 
 ```text
-VIGARA_PUBLIC_URL=https://vigara.example.com
-VIGARA_GITHUB_APP_MASTER_KEY=<base64-encoded random 32-byte key>
+VIGIRA_PUBLIC_URL=https://vigara.example.com
+VIGIRA_GITHUB_APP_MASTER_KEY=<base64-encoded random 32-byte key>
 ```
 
 Generate the master key with `openssl rand -base64 32`. Keep it in your server's secret configuration, use the same key on every API replica, and back it up separately from PostgreSQL. Keep it unchanged across restarts. The App's RSA private key is encrypted with AES-256-GCM before it is stored in PostgreSQL, including during unfinished registration. Losing the master key requires reconnecting an App; replacing it does not re-encrypt existing credentials. This key is separate from the managed-backup master key. GitHub App setup is disabled when it is unset; server-credential authentication continues to work.
@@ -136,32 +146,17 @@ configurationRevisionPolicy: sha256-git-tree-and-placement-inputs-v1
 
 Create an approved stack in the UI, or place reviewed files under this layout in Git. Multiple Compose files are passed in the listed order. File contents, including comments, are committed as written. Only regular UTF-8 files are supported: at most 64 files, 128 KiB per file and 384 KiB total per stack. Symlinks, executable files, submodules, unsafe paths, duplicate paths differing only by case, and plaintext `.env` files are refused. Inline secrets in YAML/configuration remain the administrator's responsibility; move them to encrypted interpolation inputs before importing. Repository and deployment access is administrator-only because source files may contain sensitive values.
 
-Existing discovery/import preparation remains separate; there is no automatic adoption wizard or inferred ownership transfer in this release.
+**Import existing** registers reviewed projects already running or stopped under an enrolled device’s managed Compose root, including installer-created Vigara and Caddy. It preserves the original project name, folder and storage, encrypts environment files, and directly saves to Git without restarting containers. Download and securely store the recovery key before importing. See [Compose import](compose-adoption.md) for requirements and recovery details. This is explicit adoption, not ownership transfer.
 
 ## Encrypted environment inputs
 
-### Current service environment limitation
+New managed stacks also provision encryption automatically on the first environment edit, including existing stacks created before this support was added that have no encrypted inputs yet. Their assigned deployment agent must be online and updated for initial setup. Vigara reuses the server editor/recovery identities used by imports and provisions or reuses the host's protected agent identity. The persisted public recipient policy lets later edits and reveals work while the device is offline. There is no recipient-settings screen to configure for this workflow.
 
-The current runner rejects service-level `env_file` entries before invoking Compose, including `env_file: .env`. This is a Vigara deployment limitation; the syntax is valid Compose. Encrypting the source file does not enable `env_file` support, and saving a draft does not prove it can be deployed.
+Use **Environment → Enter replacement**, enter dotenv values, and choose **Encrypt into draft**. New inputs default to `secrets/runtime.env.age`. Download the installation's recovery key from the Environment tab after first encryption and store it outside the server. Save the draft to Git, then preview and deploy separately. Compose `${VARIABLE}` references consume the decrypted interpolation input; the repository does not need a plaintext `.env` file. This operation does not deploy or restart containers.
 
-Declared `compose.interpolationFiles` are decrypted into private temporary files and passed to Compose with `--env-file`. Those files supply `${VARIABLE}` interpolation values; they are not recreated as service env files and do not automatically inject every variable into containers. To pass a setting to a service today, reference it explicitly:
+The MCP `edit_stack_environment` tool follows the same flow. Request an `.age` path and apply the returned **path**, ciphertext, and manifest through `update_stack_draft`. For automatically provisioned policies, a new legacy `.sops` request returns the corresponding `.age` path so the host does not need SOPS. Existing SOPS inputs and operator-managed recipient policies retain their existing behavior. Missing operator-managed policies or policies for already-encrypted revisions are not inferred or overwritten.
 
-```yaml
-services:
-  app:
-    image: example/app:1.0
-    environment:
-      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
-      LOG_LEVEL: ${LOG_LEVEL:-info}
-```
-
-Use the encrypted environment editor for the input values and retain its returned manifest descriptor and ciphertext in the draft. Both secrets and non-secret settings may be stored in that encrypted input. Each new container setting also needs an `environment:` entry; adding it only to the encrypted input will not pass it to the container. Use required interpolation expressions for mandatory settings so missing or empty values fail validation instead of silently becoming empty strings. Plaintext `.env` and `*.env` files remain prohibited in stack drafts.
-
-The broader Compose management contract and its schema examples describe service `env_file` semantics for future support. They do not establish support in the current runner.
-
-### Recipient configuration and editing
-
-Configure three independent age recipient classes in the server target binding. Use actual public recipients and independently backed-up identities; these are illustrative references:
+Imports and new managed stacks provision three independent age recipient classes automatically. For manually configured targets, configure these classes in the server target binding. Use actual public recipients and independently backed-up identities; these are illustrative references:
 
 ```json
 "recipients": [
@@ -171,13 +166,33 @@ Configure three independent age recipient classes in the server target binding. 
 ]
 ```
 
-The **Environment** tab masks values by default. **Reveal and edit** first stores the current ciphertext draft, then explicitly decrypts its declared encrypted input with the central editor identity. The API requires administrator deployment permission and successfully records a metadata-only audit event before returning plaintext. It selects the exact user-owned draft version and file digest (or an immutable Git revision through the API); the browser cannot submit arbitrary ciphertext or private-key paths for decryption. This operation uses the API server and works while the target device is offline. Configure `VIGIRA_COMPOSE_EDITOR_AGE_IDENTITY` as an absolute path to the operator-provisioned editor identity: a service-owned `0600` file in a service-owned `0700` directory on Linux. Mount it separately from Git, PostgreSQL and recovery media. A missing or incorrect key fails without exposing SOPS diagnostics. Secret file operations fail closed on Windows until service-account ACL support exists.
+The **Environment** tab masks values by default. **Reveal and edit** first stores the current ciphertext draft, then explicitly decrypts its declared encrypted input with the central editor identity. The API requires administrator deployment permission and successfully records a metadata-only audit event before returning plaintext. It selects the exact user-owned draft version and file digest (or an immutable Git revision through the API); the browser cannot submit arbitrary ciphertext or private-key paths for decryption. This operation uses the API server and works while the target device is offline. Automatically provisioned stacks default to a protected editor identity in the persisted Git cache at `import-keys/editor.age`. To use an existing identity, configure `VIGIRA_COMPOSE_EDITOR_AGE_IDENTITY` as an absolute path: a service-owned `0600` file in a service-owned `0700` directory on Linux. Mount it separately from Git, PostgreSQL and recovery media. A missing or incorrect key fails without exposing SOPS diagnostics. Secret file operations fail closed on Windows until service-account ACL support exists.
 
 **Enter replacement** accepts complete replacement dotenv contents without revealing existing values. **Encrypt into draft** encrypts in memory to the configured editor, target and recovery recipient policy, checks the exact source draft again, and returns ciphertext plus the updated interpolation descriptor and recipient references in `vigara-stack.yaml`. It clears the plaintext form as encryption starts, including on failure. Save the draft to commit the encrypted result. Secret requests and responses use `no-store`; plaintext is held only in the active form, outside persisted drafts, browser storage, the source editor and query caches. Hide, tab/stack changes, other stack operations, and page visibility changes clear the form and invalidate pending reveal responses. Browser and server runtimes may retain old string allocations until garbage collection; clearing the form is not a secure memory-erasure guarantee. Use `${VARIABLE}` in Compose to consume the values. Dotenv editing is limited to 64 KiB.
 
-The target independently decrypts with its own protected age identity into a private temporary workspace, removed when Compose exits. Central editor, target and recovery identities are provisioned, backed up and rotated by the operator; the UI does not create, escrow, distribute or automatically rotate keys. To rotate recipients, update the operator-managed recipient binding, explicitly reveal/edit and encrypt each affected input into a new saved commit, then verify decryption using each intended identity before retiring old recipients. Keep old keys available under operator custody for historical revisions that still need them. A new central key cannot reveal old ciphertext unless it was already a recipient; use the prior editor or recovery identity in an operator-controlled recovery procedure. Removing a recipient does not revoke old Git history or plaintext copies. See [the secret trust and recovery contract](compose-management.md#secret-editor-trust-and-recovery).
+The target independently decrypts with its own protected age identity into a private temporary workspace, removed when Compose exits. For imported and new managed stacks, Vigara provisions central editor and recovery identities in its persisted Git cache and an independent identity on the target; the administrator downloads and safeguards the recovery identity. Manually configured stacks still require operator-provisioned identities. Operators must back up these keys; automatic rotation is not provided. To rotate recipients, update the operator-managed recipient binding, explicitly reveal/edit and encrypt each affected input into a new saved commit, then verify decryption using each intended identity before retiring old recipients. Keep old keys available under operator custody for historical revisions that still need them. A new central key cannot reveal old ciphertext unless it was already a recipient; use the prior editor or recovery identity in an operator-controlled recovery procedure. Removing a recipient does not revoke old Git history or plaintext copies. See [the secret trust and recovery contract](compose-management.md#secret-editor-trust-and-recovery).
 
-Drafts and job snapshots contain non-secret configuration and SOPS ciphertext. Protect PostgreSQL storage and backups with encryption at rest. Do not paste secrets into ordinary file fields. Raw Compose, Git and SOPS diagnostics are suppressed rather than stored in jobs or audit entries.
+Imported environment inputs use native age ciphertext (`age-dotenv`, `.age`); existing SOPS inputs remain supported. The optional `compose.environmentFiles` array maps encrypted inputs to original project-relative dotenv paths with `target`, `purpose: deployment`, `sensitivity: encrypted`, and `format: age-dotenv`. These mappings allow required service `env_file` references without putting plaintext in Git. Drafts and job snapshots contain non-secret configuration and encrypted ciphertext. Protect PostgreSQL storage and backups with encryption at rest. Do not paste secrets into ordinary file fields. Raw Compose, Git and SOPS diagnostics are suppressed rather than stored in jobs or audit entries.
+
+## Bind mount directories
+
+Vigara honors automatic host directory creation reported by the target device's resolved Compose configuration. Short volume syntax (`./data:/data`) and long syntax with `bind.create_host_path: true` allow a missing source directory through validation. Compose creates that directory during deployment. Save and preview do not create application storage. For a long-syntax directory mount, opt in explicitly:
+
+```yaml
+services:
+  web:
+    image: nginx
+    volumes:
+      - type: bind
+        source: ./data
+        target: /data
+        bind:
+          create_host_path: true
+```
+
+Set `create_host_path: false` when the source must already exist, including a bind-mounted configuration file. Automatic creation produces a directory, not a file. Existing file and directory mounts are preserved. Relative sources continue to use the approved original project directory. Profile-required filesystem mounts and external resources are still checked independently.
+
+When validation cannot inspect a bind source, the error identifies the service, resolved host path, container destination, and whether the source is missing or inaccessible. Missing sources without automatic creation remain blocked. Access errors remain blocked even when automatic creation is enabled; check the agent's permissions on the source and its parent directories. Directory creation and ownership follow Compose and Docker on the target device.
 
 ## Conflicts, saved versions and deployments
 
@@ -186,16 +201,16 @@ Drafts and job snapshots contain non-secret configuration and SOPS ciphertext. P
 - A failed or unconfirmed push is shown as **Pending sync**. The draft is retained. Retry Save after Git is available. The unconfirmed commit is not deployable.
 - Restoring a historical revision loads its files into the draft. Saving creates a new forward commit, preserving history.
 - Deployment captures the selected commit and files in a durable database job. Later saves cannot change that job. Only ancestors of the configured remote branch are selectable; a remote history rewrite may make older commits unavailable for new deployments.
-- The deployment preview checks the saved profile and assignment, Compose configuration, required mounts and devices, existing bind paths, and preexisting external networks and volumes on the device. It resolves each service image to an immutable digest and shows the resulting image references for review. The API stores the exact image map with the preview for 15 minutes; deploy must submit that same map and uses it without resolving newer tags. A fingerprint detects local configuration changes between preview and execution. Each stack has at most one queued, running or uncertain job. Deployment requests and their image digest map, configuration revision and readiness result are journaled on the device; completed requests are not executed again.
+- The deployment preview checks the saved profile and assignment, Compose configuration, required mounts and devices, bind paths and their Compose creation settings, and preexisting external networks and volumes on the device. It resolves each service image to an immutable digest and shows the resulting image references for review. The API stores the exact image map with the preview for 15 minutes; deploy must submit that same map and uses it without resolving newer tags. A fingerprint detects local configuration changes between preview and execution. Each stack has at most one queued, running or uncertain job. Deployment requests and their image digest map, configuration revision and readiness result are journaled on the device; completed requests are not executed again.
 - The runner preserves the project directory, writes the selected files, optionally pulls images, then runs `compose up --detach --no-build --wait`. It never runs `down`, removes volumes, or removes orphaned containers. Runtime reconciliation is Compose's normal non-transactional behavior. Removed Git files are intentionally left on the device.
 - Current service progress is displayed without raw command output. The `compose-wait-passed` readiness result means Compose confirmed services running or healthy according to each service's health check; services without health checks are only confirmed running. It does not verify application data or restore correctness.
 - **Last deployed** is the last successful deployment recorded by Vigara, not a claim that no one has changed Docker outside Vigara. Deployment records retain the normative configuration revision covering the captured stack and placement inputs, plus the reviewed image digest map. The separate stack-file digest used for editor comparisons covers stack files only.
 
 ## Interrupted deployments and current boundaries
 
-The browser can reconnect to deployment history. A server restart or lost channel result marks an executing job **unknown**, rather than retrying it. **Check device result** reads the device's durable journal. A final success/failure releases the server-side block. If the device has no final result, the stack stays blocked for operator inspection; do not start another rollout or delete its `.vigara-jobs/active` lock until the old operation is proven stopped. There is no automatic recovery or ownership-transfer override in the UI.
+The browser can reconnect to deployment history. A server restart or lost channel result marks an executing job **unknown**, rather than retrying it. **Check device result** reads the device's durable journal. A final success/failure releases the server-side block. If the device has no final result, the stack stays blocked for operator inspection; do not start another rollout or delete its `.vigara-jobs/active` lock until the old operation is proven stopped. For imported stacks, the server also checks unknown jobs for a correlated final device result after reconnecting; it never replays deployments. There is no ownership-transfer override in the UI.
 
-This runner supports image-based Compose services, ordinary networks/volumes, encrypted interpolation files, saved profile bindings and initial exclusive assignments at epoch 1. Profile preflight checks required mounts/devices and preexisting external networks/volumes before preview and apply. It does not create managed resources, execute capability requirements or startup dependency ordering, transfer ownership, or support replicas. It rejects builds, includes, extends, lifecycle hooks, service `env_file`, file-based configs/secrets, and other service file inputs before Compose can read them. Existing relative bind storage must already exist. Parent-relative and interpolated storage sources are rejected; use explicit absolute paths or paths inside the approved project directory. Private registry access uses the device service account's Docker configuration. Automatic deployment on Git push and transactional rollback are not implemented. The broader [Compose management contract](compose-management.md) describes subsequent capabilities.
+This runner supports image-based Compose services, ordinary networks/volumes, encrypted interpolation files, saved profile bindings and initial exclusive assignments at epoch 1. Profile preflight checks required mounts/devices and preexisting external networks/volumes before preview and apply. It does not create managed resources, execute capability requirements or startup dependency ordering, transfer ownership, or support replicas. It rejects builds, includes, extends, lifecycle hooks, undeclared service `env_file` inputs, file-based configs/secrets, and other service file inputs before Compose can read them. Required service environment files must be declared as encrypted environment mappings. Missing bind directories are permitted when the resolved Compose model enables automatic creation; Compose creates them during deployment, not preview. Parent-relative and interpolated storage sources remain rejected for new targets. Imported targets resolve them against their approved original project directory and use the same Compose creation settings. Private registry access uses the device service account's Docker configuration. Automatic deployment on Git push and transactional rollback are not implemented. The broader [Compose management contract](compose-management.md) describes subsequent capabilities.
 
 Configuration history does not reverse application migrations or restore application data. Backups are separate.
 

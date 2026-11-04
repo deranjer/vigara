@@ -166,6 +166,9 @@ func ProvisionIdentity(ctx context.Context, ageKeygen, identityRoot string, clas
 // DecryptDotenv verifies the SOPS MAC and decrypts using exactly identityFile.
 // All SOPS diagnostics are discarded and only a generic error is returned.
 func DecryptDotenv(ctx context.Context, sopsBinary, identityFile string, ciphertext []byte) ([]byte, error) {
+	if IsAgeArtifact(ciphertext) {
+		return decryptAgeDotenv(ctx, identityFile, ciphertext)
+	}
 	if len(ciphertext) == 0 || len(ciphertext) > maxDocumentBytes {
 		return nil, ErrInvalidDocument
 	}
@@ -193,6 +196,9 @@ func RotateDotenv(ctx context.Context, sopsBinary, identityFile string, cipherte
 	plain, err := DecryptDotenv(ctx, sopsBinary, identityFile, ciphertext)
 	if err != nil {
 		return nil, err
+	}
+	if IsAgeArtifact(ciphertext) {
+		return EncryptAgeDotenv(ctx, plain, recipients)
 	}
 	return EncryptDotenv(ctx, sopsBinary, plain, recipients)
 }

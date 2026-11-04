@@ -5,7 +5,6 @@ import (
 	"strconv"
 
 	"github.com/deranjer/vigara/apps/api/internal/mcpserver"
-	"github.com/deranjer/vigara/internal/envcompat"
 )
 
 // Config contains runtime settings shared by the API server.
@@ -23,18 +22,18 @@ type Config struct {
 
 func Load() (Config, error) {
 	cfg := Config{
-		MCPURL:                       envcompat.Getenv("VIGARA_MCP_URL"),
+		MCPURL:                       os.Getenv("VIGIRA_MCP_URL"),
 		Address:                      envOr("VIGIRA_ADDR", ":8080"),
 		DatabaseURL:                  envOr("VIGIRA_DATABASE_URL", "postgres://vigira:vigira@localhost:5432/vigira?sslmode=disable"),
 		TelemetryRawRetentionHours:   30 * 24,
 		TelemetryRollupRetentionDays: 365,
-		AndroidBackupRoot:            envcompat.Getenv("VIGARA_ANDROID_BACKUP_ROOT"),
+		AndroidBackupRoot:            os.Getenv("VIGIRA_ANDROID_BACKUP_ROOT"),
 		AndroidBackupMaxFileBytes:    512 << 20,
 		AndroidBackupMaxTotalBytes:   100 << 30,
 	}
 	if cfg.MCPURL != "" {
 		if err := mcpserver.ValidateURL(cfg.MCPURL); err != nil {
-			return Config{}, fmt.Errorf("VIGARA_MCP_URL: %w", err)
+			return Config{}, fmt.Errorf("VIGIRA_MCP_URL: %w", err)
 		}
 	}
 	secure, err := strconv.ParseBool(envOr("VIGIRA_COOKIE_SECURE", "false"))

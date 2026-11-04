@@ -6,6 +6,8 @@ import { appendBounded, filterLogLines, formatBytes, formatRate, logsToText, por
 import { route as routeOf, type Route } from './route'
 import { TerminalPanel } from './terminal-panel'
 import { useStream } from './use-stream'
+import { MountFiles } from './mount-files'
+import { canBrowseFiles } from './mount-file-utils'
 
 type InspectResult = {
   id: string; name: string; image: string; imageId?: string; created?: string
@@ -37,6 +39,7 @@ export function ContainerDetail({ hostId, reference, tab, hosts, role, onNavigat
   const [inspect, setInspect] = useState<InspectResult | null>(null)
   const [error, setError] = useState('')
   const [revealing, setRevealing] = useState(false)
+  const [browseMount, setBrowseMount] = useState<string | null>(null)
   const host = hosts?.find((entry) => entry.agentId === hostId)
   const hostName = host?.name ?? hostId.slice(0, 8)
 
@@ -74,16 +77,17 @@ export function ContainerDetail({ hostId, reference, tab, hosts, role, onNavigat
 
     {inspect && <Tabs value={tab} onChange={goTab} mt="lg" keepMounted={false}>
       <Tabs.List><Tabs.Tab value="overview">Overview</Tabs.Tab><Tabs.Tab value="logs">Logs</Tabs.Tab><Tabs.Tab value="stats">Stats</Tabs.Tab><Tabs.Tab value="terminal">Terminal</Tabs.Tab><Tabs.Tab value="inspect">Inspect</Tabs.Tab></Tabs.List>
-      <Tabs.Panel value="overview" pt="md"><Overview inspect={inspect} admin={role === 'admin'} revealing={revealing} onReveal={reveal} /></Tabs.Panel>
+      <Tabs.Panel value="overview" pt="md"><Overview inspect={inspect} admin={role === 'admin'} revealing={revealing} onReveal={reveal} onBrowse={canBrowseFiles(role, host?.dockerTier) ? setBrowseMount : undefined} /></Tabs.Panel>
       <Tabs.Panel value="logs" pt="md"><LogsPanel hostId={hostId} reference={reference} name={title} /></Tabs.Panel>
       <Tabs.Panel value="stats" pt="md"><StatsPanel hostId={hostId} reference={reference} running={running} /></Tabs.Panel>
       <Tabs.Panel value="terminal" pt="md"><TerminalPanel hostId={hostId} reference={reference} name={title} running={running} role={role} hostTier={host?.dockerTier} /></Tabs.Panel>
       <Tabs.Panel value="inspect" pt="md"><Card withBorder radius="md" padding="md"><Text size="sm" c="dimmed" mb="xs">Environment values are {inspect.envRevealed ? 'shown' : 'hidden unless revealed on the Overview tab'}.</Text><Code block style={{ maxHeight: 560, overflow: 'auto' }}>{JSON.stringify(inspect, null, 2)}</Code></Card></Tabs.Panel>
     </Tabs>}
+    {browseMount !== null && <MountFiles hostId={hostId} target={{ kind: 'mount', id: reference, mount: browseMount }} label={browseMount} onClose={() => setBrowseMount(null)} />}
   </>
 }
 
-function Overview({ inspect, admin, revealing, onReveal }: { inspect: InspectResult; admin: boolean; revealing: boolean; onReveal: (show: boolean) => Promise<void> }) {
+function Overview({ inspect, admin, revealing, onReveal, onBrowse }: { inspect: InspectResult; admin: boolean; revealing: boolean; onReveal: (show: boolean) => Promise<void>; onBrowse?: (mount: string) => void }) {
   const s = inspect.state
   const cpuLimit = inspect.nanoCpus ? `${(inspect.nanoCpus / 1e9).toFixed(2)} cores` : 'Unlimited'
   return <Stack gap="md">
@@ -106,8 +110,8 @@ function Overview({ inspect, admin, revealing, onReveal }: { inspect: InspectRes
         : <Text size="sm" c="dimmed">No ports.</Text>}</Card>
 
     <Card withBorder radius="md" padding="md"><Title order={5} mb="sm">Mounts</Title>
-      {inspect.mounts?.length ? <Table.ScrollContainer minWidth={520}><Table verticalSpacing="xs"><Table.Thead><Table.Tr><Table.Th>Type</Table.Th><Table.Th>Source</Table.Th><Table.Th>Destination</Table.Th><Table.Th>Access</Table.Th></Table.Tr></Table.Thead>
-        <Table.Tbody>{inspect.mounts.map((mount, index) => <Table.Tr key={index}><Table.Td>{mount.type}</Table.Td><Table.Td style={{ wordBreak: 'break-all' }}>{mount.name || mount.source || '–'}</Table.Td><Table.Td style={{ wordBreak: 'break-all' }}>{mount.destination}</Table.Td><Table.Td>{mount.readWrite ? 'Read-write' : 'Read-only'}</Table.Td></Table.Tr>)}</Table.Tbody></Table></Table.ScrollContainer>
+      {inspect.mounts?.length ? <Table.ScrollContainer minWidth={520}><Table verticalSpacing="xs"><Table.Thead><Table.Tr><Table.Th>Type</Table.Th><Table.Th>Source</Table.Th><Table.Th>Destination</Table.Th><Table.Th>Access</Table.Th>{onBrowse && <Table.Th />}</Table.Tr></Table.Thead>
+        <Table.Tbody>{inspect.mounts.map((mount, index) => <Table.Tr key={index}><Table.Td>{mount.type}</Table.Td><Table.Td style={{ wordBreak: 'break-all' }}>{mount.name || mount.source || '–'}</Table.Td><Table.Td style={{ wordBreak: 'break-all' }}>{mount.destination}</Table.Td><Table.Td>{mount.readWrite ? 'Read-write' : 'Read-only'}</Table.Td>{onBrowse && <Table.Td>{(mount.type === 'bind' || mount.type === 'volume') && <Button size="xs" variant="light" onClick={() => onBrowse(mount.destination)}>Browse files</Button>}</Table.Td>}</Table.Tr>)}</Table.Tbody></Table></Table.ScrollContainer>
         : <Text size="sm" c="dimmed">No mounts.</Text>}</Card>
 
     <Card withBorder radius="md" padding="md"><Title order={5} mb="sm">Networks</Title>

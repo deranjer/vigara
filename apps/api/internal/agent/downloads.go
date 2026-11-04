@@ -74,8 +74,12 @@ func (h *Handler) selectServerURL(requested string) (string, bool) {
 }
 
 type releaseManifest struct {
-	ResticVersion   string `json:"resticVersion"`
-	ResticArtifacts map[string]struct {
+	SelfUpdateProtocol  string `json:"selfUpdateProtocol"`
+	ProtocolVersion     string `json:"protocolVersion"`
+	SourceRevision      string `json:"sourceRevision"`
+	ResticLicenseSHA256 string `json:"resticLicenseSha256"`
+	ResticVersion       string `json:"resticVersion"`
+	ResticArtifacts     map[string]struct {
 		File   string `json:"file"`
 		SHA256 string `json:"sha256"`
 	} `json:"resticArtifacts"`
@@ -115,10 +119,17 @@ func (w *boundedBundleWriter) Write(p []byte) (int, error) {
 }
 
 func (h *Handler) verifiedArtifact(target string) ([]byte, string, error) {
-	if _, ok := supportedDownloads[target]; !ok || h.releaseDir == "" {
+	h.releaseFilesMu.RLock()
+	defer h.releaseFilesMu.RUnlock()
+	directory := h.artifactDirectory()
+	return verifiedArtifactIn(directory, target)
+}
+
+func verifiedArtifactIn(directory, target string) ([]byte, string, error) {
+	if _, ok := supportedDownloads[target]; !ok || directory == "" {
 		return nil, "", os.ErrNotExist
 	}
-	manifestPath := filepath.Join(h.releaseDir, "manifest.json")
+	manifestPath := filepath.Join(directory, "manifest.json")
 	manifestBytes, err := readBoundedFile(manifestPath, 1<<20)
 	if err != nil {
 		return nil, "", err
@@ -138,7 +149,7 @@ func (h *Handler) verifiedArtifact(target string) ([]byte, string, error) {
 			return nil, "", errors.New("invalid release digest")
 		}
 	}
-	artifactPath := filepath.Join(h.releaseDir, entry.File)
+	artifactPath := filepath.Join(directory, entry.File)
 	data, err := readBoundedFile(artifactPath, 128<<20)
 	if err != nil {
 		return nil, "", err
@@ -179,7 +190,7 @@ func (h *Handler) downloadAvailability(w http.ResponseWriter, r *http.Request) {
 		if _, _, err := h.verifiedArtifact(target); err == nil {
 			available = append(available, target)
 			if _, e := h.verifiedRestic(target); e == nil {
-				if _, e = readBoundedFile(filepath.Join(h.releaseDir, "restic.LICENSE"), 1<<20); e == nil {
+				if _, e = h.releaseLicense(); e == nil {
 					backupTargets = append(backupTargets, target)
 				}
 			}
@@ -197,10 +208,11 @@ func (h *Handler) downloadAvailability(w http.ResponseWriter, r *http.Request) {
 		}
 		options = append(options, serverOption{URL: candidate, Secure: serverurl.IsSecure(candidate)})
 	}
-	writeJSON(w, map[string]any{"serverUrl": primary, "serverUrls": options, "allowInsecureHttp": h.allowInsecureHTTP, "targets": available, "managedBackupsAvailable": h.managedBackups.Available(), "backupTargets": backupTargets})
+	writeJSON(w, map[string]any{"serverUrl": primary, "serverUrls": options, "allowInsecureHttp": h.allowInsecureHTTP, "targets": available, "managedBackupsAvailable": h.managedBackups.Available(), "backupTargets": backupTargets, "releaseSync": h.releaseStatus()})
 }
 
 type agentDownloadRequest struct {
+	Docker    *dockerSetup          `json:"docker,omitempty"`
 	Backup    *backups.ManagedInput `json:"backup,omitempty"`
 	DeviceID  string                `json:"deviceId,omitempty"`
 	Target    string                `json:"target"`
@@ -217,7 +229,15 @@ func (h *Handler) createAgentDownload(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	h.writeAgentDownload(w, r, req)
+}
+
+func (h *Handler) writeAgentDownload(w http.ResponseWriter, r *http.Request, req agentDownloadRequest) {
 	req.Name = strings.TrimSpace(req.Name)
+	if err := req.Docker.validate(req.Target); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if req.DeviceID != "" && !validUUID(req.DeviceID) {
 		http.Error(w, "invalid device ID", http.StatusBadRequest)
 		return
@@ -311,6 +331,7 @@ func (h *Handler) createAgentDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var resticLicense []byte
+	req.Features = req.Docker.enrollmentFeatures(req.Features)
 	var bundledRestic []byte
 	managedEnabled := false
 	for _, feature := range req.Features {
@@ -321,7 +342,7 @@ func (h *Handler) createAgentDownload(w http.ResponseWriter, r *http.Request) {
 	if managedEnabled {
 		bundledRestic, err = h.verifiedRestic(req.Target)
 		if err == nil {
-			resticLicense, err = readBoundedFile(filepath.Join(h.releaseDir, "restic.LICENSE"), 1<<20)
+			resticLicense, err = h.releaseLicense()
 		}
 		if err != nil {
 			http.Error(w, "verified restic artifact is unavailable; rebuild agent releases", 503)
@@ -353,7 +374,10 @@ func (h *Handler) createAgentDownload(w http.ResponseWriter, r *http.Request) {
 		_, e = f.Write(data)
 		return e
 	}
-	bootstrap, _ := json.Marshal(map[string]any{"serverUrl": serverURL, "insecureHttp": !serverurl.IsSecure(serverURL), "token": token, "name": req.Name, "sessionId": sessionID, "reinstall": replacementID != nil, "agentId": replacementID, "managedBackups": managedEnabled})
+	_, updatePlan, _ := h.updateArtifact(req.Target)
+	artifactSum := sha256.Sum256(artifact)
+	selfUpdates := updatePlan != nil && updatePlan.SHA256 == hex.EncodeToString(artifactSum[:])
+	bootstrap, _ := json.Marshal(map[string]any{"serverUrl": serverURL, "insecureHttp": !serverurl.IsSecure(serverURL), "token": token, "name": req.Name, "sessionId": sessionID, "reinstall": replacementID != nil, "agentId": replacementID, "managedBackups": managedEnabled, "docker": req.Docker, "selfUpdates": selfUpdates})
 	binaryName := "vigara-agent"
 	if strings.HasPrefix(req.Target, "windows-") {
 		binaryName = "vigara-agent.exe"
@@ -374,11 +398,23 @@ func (h *Handler) createAgentDownload(w http.ResponseWriter, r *http.Request) {
 	if err == nil && strings.HasPrefix(req.Target, "linux-") {
 		err = add("install.sh", []byte(linuxAgentInstaller))
 		if err == nil {
+			err = add("configure-docker.py", []byte(linuxDockerInstaller))
+		}
+		if err == nil {
 			err = add("vigara-agent.service", []byte(linuxAgentService))
+		}
+		if err == nil {
+			err = add("vigara-updater.service", []byte(linuxUpdaterService))
+		}
+		if err == nil {
+			err = add("vigara-updater.timer", []byte(linuxUpdaterTimer))
 		}
 	}
 	if err == nil && strings.HasPrefix(req.Target, "windows-") {
 		err = add("install.ps1", []byte(windowsAgentInstaller))
+		if err == nil {
+			err = add("configure-docker.ps1", []byte(windowsDockerInstaller))
+		}
 		if err == nil {
 			err = add("install.cmd", []byte(windowsAgentLauncher))
 		}
@@ -423,11 +459,23 @@ func (h *Handler) cancelAgentDownload(w http.ResponseWriter, r *http.Request) {
 //go:embed installers/linux.sh
 var linuxAgentInstaller string
 
+//go:embed installers/docker_linux.py
+var linuxDockerInstaller string
+
 //go:embed installers/linux.service
 var linuxAgentService string
 
+//go:embed installers/updater.service
+var linuxUpdaterService string
+
+//go:embed installers/updater.timer
+var linuxUpdaterTimer string
+
 //go:embed installers/windows.ps1
 var windowsAgentInstaller string
+
+//go:embed installers/docker_windows.ps1
+var windowsDockerInstaller string
 
 //go:embed installers/windows.cmd
 var windowsAgentLauncher string

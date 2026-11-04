@@ -30,7 +30,10 @@ var interpolationPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)`)
 var dotenvKeyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 var sensitiveKeyPattern = regexp.MustCompile(`(?i)(pass(word)?|secret|token|credential|private[_-]?key|api[_-]?key|access[_-]?key)`)
 var sensitiveAssignmentPattern = regexp.MustCompile(`(?i)(pass(word)?|secret|token|credential|private[_-]?key|api[_-]?key|access[_-]?key)\s*[:=]`)
-var plainInterpolationPattern = regexp.MustCompile(`^\$\{[A-Za-z_][A-Za-z0-9_]*\}$`)
+
+// Empty defaults and required-variable error messages contain no fallback secret.
+var safeInterpolationPattern = regexp.MustCompile(`\$\{[A-Za-z_][A-Za-z0-9_]*(?::?-|(?::?\?)[^{}]*)?\}`)
+var plainInterpolationPattern = regexp.MustCompile(`^\$\{[A-Za-z_][A-Za-z0-9_]*(?::?-|(?::?\?)[^{}]*)?\}$`)
 
 type RuntimeSnapshot struct {
 	ObservedAt time.Time          `json:"observedAt"`
@@ -151,7 +154,18 @@ func DiscoverContext(ctx context.Context, root string, runtime RuntimeSnapshot) 
 
 	composeByDir := map[string][]string{}
 	walked := 0
+	storageDirectories := map[string]bool{}
+	for _, container := range runtime.Containers {
+		for _, mount := range container.StorageBinds {
+			if mount.Type == "bind" && mount.Source != rootReal && within(rootReal, mount.Source) {
+				storageDirectories[filepath.Clean(mount.Source)] = true
+			}
+		}
+	}
 	err = filepath.WalkDir(rootReal, func(path string, d fs.DirEntry, walkErr error) error {
+		if path != rootReal && d != nil && d.IsDir() && (storageDirectories[filepath.Clean(path)] || strings.HasPrefix(d.Name(), ".vigara") || strings.Contains(d.Name(), ".before-reset.")) {
+			return filepath.SkipDir
+		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -679,7 +693,21 @@ func isRelativeBindSource(source string) bool {
 func containsCredentialURL(v any) bool {
 	switch x := v.(type) {
 	case string:
-		return strings.Contains(x, "://") && strings.Contains(strings.SplitN(x, "://", 2)[1], "@")
+		_, rest, url := strings.Cut(x, "://")
+		credentials, _, hasCredentials := strings.Cut(rest, "@")
+		if !url || !hasCredentials {
+			return false
+		}
+		// The installer builds a database URL from encrypted dotenv values.
+		// Permit only substitutions in its credential segment, never literals.
+		literal := safeInterpolationPattern.ReplaceAllString(credentials, "")
+		if literal == "" || literal == ":" {
+			return false
+		}
+		// A literal username is public configuration; the password must still
+		// be entirely substituted from the separately encrypted environment.
+		username, emptyPassword := strings.CutSuffix(literal, ":")
+		return !emptyPassword || strings.Trim(username, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-") != ""
 	case []any:
 		for _, y := range x {
 			if containsCredentialURL(y) {
@@ -698,7 +726,7 @@ func containsCredentialURL(v any) bool {
 func containsSensitiveField(v any) bool {
 	switch x := v.(type) {
 	case string:
-		return sensitiveAssignmentPattern.MatchString(x) && !plainInterpolationPattern.MatchString(strings.TrimSpace(x))
+		return sensitiveAssignmentPattern.MatchString(safeInterpolationPattern.ReplaceAllString(x, ""))
 	case []any:
 		for _, child := range x {
 			if containsSensitiveField(child) {

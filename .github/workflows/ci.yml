@@ -6,6 +6,14 @@ on:
 permissions:
   contents: read
 jobs:
+  deployment:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/test_deployment_env.py
+      - run: bash -n deploy/setup.sh
+      - run: bash -n deploy/check-ready.sh
+      - run: python3 scripts/test_setup.py
   go:
     runs-on: ubuntu-latest
     services:
@@ -38,7 +46,24 @@ jobs:
           echo "VIGIRA_SOPS_BINARY=$GITHUB_WORKSPACE/.tools/sops" >> "$GITHUB_ENV"
           echo "VIGIRA_AGE_KEYGEN_BINARY=$GITHUB_WORKSPACE/.tools/age-keygen" >> "$GITHUB_ENV"
       - run: go test -p 1 ./...
+      - run: go test -race -p 1 ./apps/api/internal/agent ./apps/api/internal/scheduledtasks
       - run: go build ./apps/api/... ./apps/agent/...
+  windows-client:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test ./apps/agent/internal/selfupdate ./apps/agent/cmd/vigira-agent
+      - name: Check client installer and updater provisioning
+        shell: pwsh
+        run: |
+          foreach ($scenario in @('fresh', 'legacy', 'updater', 'failure', 'wrong-agent', 'docker', 'reset', 'reset-service-failure')) {
+            & pwsh -NoProfile -File scripts/test_windows_agent_installer.ps1 -Scenario $scenario
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
   web:
     runs-on: ubuntu-latest
     defaults:

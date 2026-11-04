@@ -1,5 +1,7 @@
 # Docker inventory module
 
+For the optional administrator file browser and text editor for bind mounts and local volumes, see [Browse and edit mounted files](docker-files.md).
+
 The Docker collector is disabled unless `VIGIRA_DOCKER_ENABLED=true` is set on
 the agent. When enabled, set `VIGIRA_DOCKER_HOST` to an explicit endpoint such
 as `unix:///var/run/docker.sock` or `http://127.0.0.1:2375`. HTTP endpoints are

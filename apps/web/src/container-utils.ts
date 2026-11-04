@@ -151,7 +151,7 @@ export function canManage(role: string, hostTier: string | undefined): boolean {
 /** Why management is unavailable, or null when it is available. */
 export function manageBlocker(role: string, hostTier: string | undefined): string | null {
   if (role !== 'operator' && role !== 'admin') return 'Your account can view containers but not change them.'
-  if ((tierRank[hostTier ?? 'read'] ?? 0) < tierRank.manage) return 'Container management is not enabled for this host. Set VIGIRA_DOCKER_MODE=manage on its agent and allow it when the device is enrolled.'
+  if ((tierRank[hostTier ?? 'read'] ?? 0) < tierRank.manage) return 'Container management is not enabled for this host. Open Device info > Reinstall agent and configure Docker management. Manual setup uses VIGIRA_DOCKER_MODE=manage on the agent with matching enrollment permission.'
   return null
 }
 

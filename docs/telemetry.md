@@ -31,29 +31,26 @@ protocol upgrade resolves the rejection. The queue is capped at 100 snapshots.
 
 The endpoint validates finite non-negative values, canonical units, percentage bounds, item limits, identity, and timestamps. It accepts observations up to 48 hours old for offline delivery and rejects timestamps more than five minutes in the future. Observations older than 48 hours are acknowledged and discarded, so stale offline queues can drain without recreating data after deduplication expires. `last_seen_at` reflects server receipt time.
 
-Migration `000005_telemetry` depends only on agent identities from `000003`;
-its SQL does not use the inventory schema. If inventory migration `000004` is
-also pending at deployment, apply the migrations together in numeric order.
+The initial database schema includes agent identities, inventory, telemetry,
+retention and alert policies together.
 
 ## Retention and intake limits
 
-Batch ingestion is atomic and idempotent by `(agent_id, report_id)`. Each agent can submit at most 10 snapshots per one-minute window; a rejected request returns HTTP 429 with `Retry-After: 60`. The 512-series limit applies to new metric name and canonical label combinations after migration. Existing series are grandfathered at migration so an installation already above the limit can keep reporting its current metrics. The agent credential state, deduplication keys, rate counters, and series registry are stored in Postgres.
+Batch ingestion is atomic and idempotent by `(agent_id, report_id)`. Each agent can submit at most 10 snapshots per one-minute window; a rejected request returns HTTP 429 with `Retry-After: 60`. The 512-series limit applies to new metric name and canonical label combinations. The agent credential state, deduplication keys, rate counters, and series registry are stored in Postgres.
 
-Raw snapshots are retained for 30 days by default. `VIGARA_TELEMETRY_RAW_RETENTION_HOURS` accepts 25 through 720 hours; the 25-hour minimum leaves room for alert windows up to 24 hours plus their freshness margin. After the raw window, hourly UTC summaries retain history through day 365 by default. `VIGARA_TELEMETRY_ROLLUP_RETENTION_DAYS` accepts the raw-retention duration rounded up to days through 365. These are ages measured from observation time, not an additional year after raw expiration. Existing `VIGIRA_*` names remain supported; explicit `VIGARA_*` values take precedence. Existing deployments with explicit shorter settings retain those settings. Previously expired detail cannot be recovered by increasing retention.
+Raw snapshots are retained for 30 days by default. `VIGIRA_TELEMETRY_RAW_RETENTION_HOURS` accepts 25 through 720 hours; the 25-hour minimum leaves room for alert windows up to 24 hours plus their freshness margin. After the raw window, hourly UTC summaries retain history through day 365 by default. `VIGIRA_TELEMETRY_ROLLUP_RETENTION_DAYS` accepts the raw-retention duration rounded up to days through 365. These are ages measured from observation time, not an additional year after raw expiration. Existing `VIGIRA_*` names remain supported; explicit `VIGIRA_*` values take precedence. Existing deployments with explicit shorter settings retain those settings. Previously expired detail cannot be recovered by increasing retention.
 
 Rollups contain count, sum, minimum, and maximum for each agent, metric, label set, and hour. Combining hours uses `sum / count`, never an average of hourly averages; peaks survive through min/max. Network and disk throughput metrics arrive as rates, so those rates can be aggregated directly. New cumulative counters must be converted to reset-aware rates before applying this policy. A latest host snapshot and its observation time remain separately available as device state after historical samples expire.
 
 The worker runs on startup and every minute, draining eligible rows in transactions of at most 500 raw snapshots. Each pass has a 45-second deadline, so a backlog can continue on the next minute without monopolizing the database. Rollup writes and deletion of exactly the corresponding raw rows commit atomically. Cleanup statements delete at most 10,000 expired rollups or dedup keys per transaction and continue even when no raw rows need processing. Concurrent passes serialize each transaction using an advisory lock. Expiration is eventual: outages or an overloaded database can delay cleanup, which is reported as backlog. The 48-hour-and-five-minute dedup horizon exceeds the maximum accepted observation age and future allowance, preventing replay from recreating rolled-up data.
 
-Structured server logs report `telemetry retention healthy` or `telemetry retention backlog`, including `retention_duration_ms`, `retention_lag_seconds`, and capped raw/rollup/dedup backlog counts. Counts stop at 10,001; that value means **at least** 10,001 rows. A lag exceeding five minutes or any saturated count produces a warning; errors and unavailable measurements are logged explicitly. `telemetry table storage` reports table/index bytes, estimated live/dead rows, and last automatic vacuum/analyze times. Migration `000020_telemetry_storage_maintenance` sets vacuum/analyze scale factors to 0.02/0.01 on the four high-churn tables. Keep autovacuum enabled: deletion makes space reusable after vacuuming, and does not normally shrink files immediately.
+Structured server logs report `telemetry retention healthy` or `telemetry retention backlog`, including `retention_duration_ms`, `retention_lag_seconds`, and capped raw/rollup/dedup backlog counts. Counts stop at 10,001; that value means **at least** 10,001 rows. A lag exceeding five minutes or any saturated count produces a warning; errors and unavailable measurements are logged explicitly. `telemetry table storage` reports table/index bytes, estimated live/dead rows, and last automatic vacuum/analyze times. The initial schema sets vacuum/analyze scale factors to 0.02/0.01 on the four high-churn tables. Keep autovacuum enabled: deletion makes space reusable after vacuuming, and does not normally shrink files immediately.
 
 At 25 hosts reporting every 30 seconds, 30 days holds about 2.16 million snapshots. At an estimated 2–4 KB per JSON snapshot, that is roughly 4.3–8.6 GB before PostgreSQL indexes and row overhead. If each host averages 30 metric series, a full year of hourly buckets would be 6.57 million rows; normal operation retains raw data instead of hourly rows during the first month. These are planning estimates; actual payloads, labels and TOAST compression determine disk use. Use the read-only [metrics audit](metrics-scale.md) on a representative installation and monitor disk headroom, query latency, vacuum progress, and retention lag.
 
 History API presets include 30 days, 90 days, and 365 days; custom intervals may span at most 365 days. Charts preserve the 20,000-point/64-series limits by combining whole hours for wide multi-series requests. Zooming restores available minute detail in the raw window or hourly detail afterward. All stored hours remain available even when the overview chart combines them. History requests have a ten-second database deadline.
 
 Keep ordinary indexed PostgreSQL tables for now. If measured retention/vacuum costs justify partitioning later, migrate historical tables to time ranges and expire complete partitions only after their samples have been aggregated. A one-year cap does not require daily aggregates or another database service.
-
-Migration `000006_telemetry_retention` follows `000005_telemetry`. Alert policy migration `000007_alerts` follows `000006`.
 
 ## Optional local network checks
 
@@ -84,3 +81,17 @@ paths or endpoint values.
 These checks do not establish support for any specific TP-Link model or
 firmware. Model-specific TP-Link, SNMP, SSH, ICMP, and Prometheus collection
 remain deferred until requirements and supported hardware are identified.
+
+## Telemetry freshness and container recreation
+
+A device is considered fresh only when both its check-in and telemetry observation are within five minutes. A connected agent can continue checking in while telemetry delivery is rejected; inspect the agent service logs for delivery errors in that case.
+
+Telemetry accepts at most 512 metrics per snapshot. This is not a lifetime quota on metric-and-label combinations: recreated Docker containers have new container IDs, so historical series must not block fresh reports. Series metadata records its latest observation time and expires with the configured hourly-history retention window. The upgrade preserves existing metadata for a full retention window. Historical snapshots and rollups are retained normally.
+
+## Per-device upload delivery status
+
+Device cards and table rows show upload throttling and the number of queued snapshots when available. The device detail page includes a delivery panel above the tabs, refreshed every 15 seconds. It separates the last agent check-in from the latest monitoring observation, reports the latest upload response and last accepted upload time, and shows the device's queue count, queue report time, and age of its oldest queued snapshot. The panel explains the per-device allowance of 10 snapshots per minute and automatic retries. It does not estimate completion time from a single queue sample.
+
+The server records authenticated telemetry responses independently of ingestion transactions, so rejected batches can still show as rate limited or rejected. A successful upload clears the previous rate-limit response. Recent check-ins with old monitoring data are described as delayed measurements, rather than overdue check-ins.
+
+Exact backlog counts require an updated agent. Queue metadata is reported through normal authenticated polls only after the server advertises support. Older agents continue working; missing counts display as not reported, and old reports display as last-known values. Queue metadata includes only counts and observation timestamps, not telemetry contents or credentials. Neither the server nor UI treats an unavailable count as zero.

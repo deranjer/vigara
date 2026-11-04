@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/deranjer/vigara/apps/agent/internal/collector"
+	"github.com/deranjer/vigara/apps/agent/internal/selfupdate"
 	"github.com/deranjer/vigara/internal/modules"
 	"github.com/deranjer/vigara/internal/protocol"
 	"github.com/deranjer/vigara/internal/restic"
@@ -38,7 +39,8 @@ type Client struct {
 	Collector *collector.Collector
 	// tiersSuppressed stops offering Docker management tiers after the server
 	// rejected them as outside the enrollment scope, so monitoring keeps working.
-	tiersSuppressed atomic.Bool
+	tiersSuppressed            atomic.Bool
+	telemetryDeliverySupported bool
 }
 
 // httpStatusError is returned when the server answers with a non-success status.
@@ -99,6 +101,11 @@ func enrollmentPayload(token, name string, capability protocol.CapabilityReport,
 }
 
 func (c *Client) Cycle(ctx context.Context) (time.Duration, error) {
+	release, err := selfupdate.Operation(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer release()
 	if c.State.AgentID == "" || c.State.Credential == "" || c.State.ServerURL == "" {
 		return 0, fmt.Errorf("agent is not enrolled; run enroll first")
 	}
@@ -121,11 +128,14 @@ func (c *Client) Cycle(ctx context.Context) (time.Duration, error) {
 	}
 	telemetryErr := c.flushTelemetry(ctx)
 	request := protocol.AgentRequest{ProtocolVersion: protocol.CurrentVersion, AgentID: c.State.AgentID, AgentVersion: AgentVersion, Platform: runtime.GOOS, Architecture: runtime.GOARCH, Capabilities: c.capabilities(), SupportsBackupProgress: true, SupportsManagedBackups: c.State.ManagedBackups, ManagedBackupStatus: c.State.ManagedBackupStatus}
+	if c.telemetryDeliverySupported {
+		request.TelemetryDelivery = c.telemetryQueueStatus()
+	}
 	if c.State.Configuration != nil {
 		request.KnownConfigVersion = c.State.Configuration.Version
 	}
 	var response protocol.AgentResponse
-	err := c.post(ctx, c.State.ServerURL, "/api/agent/poll", c.State.Credential, request, &response)
+	err = c.post(ctx, c.State.ServerURL, "/api/agent/poll", c.State.Credential, request, &response)
 	var rejected *httpStatusError
 	if err != nil && errors.As(err, &rejected) && rejected.status == http.StatusForbidden && len(dockerTierCapabilities()) > 0 && !c.tiersSuppressed.Load() {
 		// The server only rejects a report that exceeds the enrollment scope. Keep monitoring
@@ -142,6 +152,7 @@ func (c *Client) Cycle(ctx context.Context) (time.Duration, error) {
 	if response.ProtocolVersion != protocol.CurrentVersion {
 		return 0, fmt.Errorf("server returned unsupported protocol %q", response.ProtocolVersion)
 	}
+	c.telemetryDeliverySupported = response.SupportsTelemetryDelivery
 	previousManagedProfile := c.State.ManagedBackupProfile
 	c.applyManagedBackup(ctx, response.ManagedBackup)
 	if response.Configuration != nil {
@@ -615,4 +626,18 @@ func randomID() (string, error) {
 	data[8] = data[8]&0x3f | 0x80
 	encoded := base64.RawURLEncoding.EncodeToString(data)
 	return encoded, nil
+}
+
+func (c *Client) telemetryQueueStatus() *protocol.TelemetryQueueStatus {
+	status := &protocol.TelemetryQueueStatus{QueuedSnapshots: len(c.State.Telemetry)}
+	for _, snapshot := range c.State.Telemetry {
+		at := snapshot.ObservedAt
+		if status.OldestQueuedAt == nil || at.Before(*status.OldestQueuedAt) {
+			status.OldestQueuedAt = &at
+		}
+		if status.NewestQueuedAt == nil || at.After(*status.NewestQueuedAt) {
+			status.NewestQueuedAt = &at
+		}
+	}
+	return status
 }

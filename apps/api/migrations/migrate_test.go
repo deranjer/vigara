@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -28,6 +27,9 @@ func testDatabase(t *testing.T) (string, *pgx.Conn) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = admin.Close(context.Background()) })
+	if _, err := admin.Exec(ctx, `BEGIN; SELECT pg_advisory_xact_lock(138139136); CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public; COMMIT;`); err != nil {
+		t.Fatal(err)
+	}
 	schema := fmt.Sprintf("migration_test_%d", time.Now().UnixNano())
 	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+pgx.Identifier{schema}.Sanitize()); err != nil {
 		t.Fatal(err)
@@ -71,7 +73,7 @@ func TestApplyFreshDatabaseAndRestart(t *testing.T) {
 	if err := Apply(u); err != nil {
 		t.Fatal(err)
 	}
-	assertVersion(t, conn, 24, false)
+	assertVersion(t, conn, 5, false)
 	if _, err := conn.Exec(context.Background(), "INSERT INTO devices (display_name) VALUES ('keep across restart')"); err != nil {
 		t.Fatal(err)
 	}
@@ -82,41 +84,77 @@ func TestApplyFreshDatabaseAndRestart(t *testing.T) {
 	if err := conn.QueryRow(context.Background(), "SELECT count(*) FROM devices WHERE display_name = 'keep across restart'").Scan(&count); err != nil || count != 1 {
 		t.Fatalf("restart lost data: count=%d err=%v", count, err)
 	}
-	assertVersion(t, conn, 24, false)
+	assertVersion(t, conn, 5, false)
 }
 
-func TestApplyUpgradesExistingMigrationHistory(t *testing.T) {
-	u, conn := testDatabase(t)
-	// The CLI/container uses the same SQL files and schema_migrations table.
-	initial := fstest.MapFS{}
+func TestInitialSchemaIsConsolidated(t *testing.T) {
 	entries, err := files.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), "000001_") || strings.HasPrefix(entry.Name(), "000002_") {
-			data, err := files.ReadFile(entry.Name())
-			if err != nil {
-				t.Fatal(err)
-			}
-			initial[entry.Name()] = &fstest.MapFile{Data: data}
+	if len(entries) != 10 || entries[0].Name() != "000001_initial_schema.down.sql" || entries[1].Name() != "000001_initial_schema.up.sql" {
+		t.Fatalf("unexpected migration files: %v", entries)
+	}
+}
+
+func TestInitialSchemaIncludesCurrentFeaturesAndSupportsReset(t *testing.T) {
+	u, conn := testDatabase(t)
+	if err := Apply(u); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	var tables int
+	if err := conn.QueryRow(ctx, "SELECT count(*) FROM pg_tables WHERE schemaname=current_schema() AND tablename<>'schema_migrations'").Scan(&tables); err != nil || tables != 47 {
+		t.Fatalf("table count=%d err=%v", tables, err)
+	}
+	for _, table := range []string{"stack_github_app", "stack_github_app_setups", "managed_backup_profiles", "scheduled_tasks", "mcp_oauth_clients", "telemetry_metric_rollups"} {
+		var exists bool
+		if err := conn.QueryRow(ctx, "SELECT to_regclass($1) IS NOT NULL", table).Scan(&exists); err != nil || !exists {
+			t.Fatalf("missing %s: %v", table, err)
 		}
 	}
-	if err := apply(initial, u); err != nil {
+	var completed *time.Time
+	if err := conn.QueryRow(ctx, "SELECT completed_at FROM app_setup WHERE singleton_id=1").Scan(&completed); err != nil || completed != nil {
+		t.Fatalf("fresh account setup: %v %v", completed, err)
+	}
+	var mode string
+	if err := conn.QueryRow(ctx, "INSERT INTO stack_git_settings(singleton,remote,branch) VALUES(true,'https://github.com/owner/repo.git','main') RETURNING auth_mode").Scan(&mode); err != nil || mode != "server" {
+		t.Fatalf("authentication default=%q err=%v", mode, err)
+	}
+	// Remove later tables before exercising the original schema reset.
+	updatesDown, err := files.ReadFile("000005_agent_updates.down.sql")
+	if err != nil {
 		t.Fatal(err)
 	}
-	assertVersion(t, conn, 2, false)
-	if _, err := conn.Exec(context.Background(), "INSERT INTO devices (display_name) VALUES ('keep across upgrade')"); err != nil {
+	if _, err = conn.Exec(ctx, string(updatesDown)); err != nil {
 		t.Fatal(err)
 	}
-	if err := Apply(u); err != nil {
-		t.Fatalf("upgrade: %v", err)
+	deliveryDown, err := files.ReadFile("000004_telemetry_delivery.down.sql")
+	if err != nil {
+		t.Fatal(err)
 	}
-	assertVersion(t, conn, 24, false)
-	var count int
-	if err := conn.QueryRow(context.Background(), "SELECT count(*) FROM devices WHERE display_name = 'keep across upgrade'").Scan(&count); err != nil || count != 1 {
-		t.Fatalf("upgrade lost data: count=%d err=%v", count, err)
+	if _, err = conn.Exec(ctx, string(deliveryDown)); err != nil {
+		t.Fatal(err)
 	}
+	// Exercise the complete rollback and reinitialization, retaining the shared
+	// extension and the migration runner's bookkeeping table.
+	down, err := files.ReadFile("000001_initial_schema.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = conn.Exec(ctx, string(down)); err != nil {
+		t.Fatal(err)
+	}
+	if err = conn.QueryRow(ctx, "SELECT count(*) FROM pg_tables WHERE schemaname=current_schema() AND tablename<>'schema_migrations'").Scan(&tables); err != nil || tables != 0 {
+		t.Fatalf("rollback left %d tables: %v", tables, err)
+	}
+	if _, err = conn.Exec(ctx, "DELETE FROM schema_migrations"); err != nil {
+		t.Fatal(err)
+	}
+	if err = Apply(u); err != nil {
+		t.Fatalf("reinitialize: %v", err)
+	}
+	assertVersion(t, conn, 5, false)
 }
 
 func TestGitHubAppUpgradePreservesExistingGitSettings(t *testing.T) {
@@ -170,7 +208,7 @@ func TestApplyConcurrentStarts(t *testing.T) {
 			t.Errorf("concurrent startup: %v", err)
 		}
 	}
-	assertVersion(t, conn, 24, false)
+	assertVersion(t, conn, 5, false)
 }
 
 func TestApplyRejectsFailedMigration(t *testing.T) {
@@ -201,4 +239,68 @@ func TestApplyRejectsNewerSchema(t *testing.T) {
 		t.Fatal("accepted a database newer than the bundled migrations")
 	}
 	assertVersion(t, conn, 999999, false)
+}
+
+func TestImportMigrationPreservesExistingGitSettings(t *testing.T) {
+	u, conn := testDatabase(t)
+	initial, err := files.ReadFile("000001_initial_schema.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	onlyInitial := fstest.MapFS{"000001_initial_schema.up.sql": &fstest.MapFile{Data: initial}}
+	if err = apply(onlyInitial, u); err != nil {
+		t.Fatal(err)
+	}
+	assertVersion(t, conn, 1, false)
+	ctx := context.Background()
+	if _, err = conn.Exec(ctx, "INSERT INTO stack_git_settings(singleton,remote,branch) VALUES(true,'https://github.com/owner/existing.git','main')"); err != nil {
+		t.Fatal(err)
+	}
+	if err = Apply(u); err != nil {
+		t.Fatal(err)
+	}
+	assertVersion(t, conn, 5, false)
+	var remote string
+	if err = conn.QueryRow(ctx, "SELECT remote FROM stack_git_settings WHERE singleton").Scan(&remote); err != nil || remote != "https://github.com/owner/existing.git" {
+		t.Fatal("upgrade lost Git setup", remote, err)
+	}
+	var columns int
+	if err = conn.QueryRow(ctx, "SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='stack_bindings' AND column_name IN ('recipients','imported')").Scan(&columns); err != nil || columns != 2 {
+		t.Fatal("missing import metadata", columns, err)
+	}
+}
+
+func TestSeriesFreshnessMigrationPreservesExistingRegistry(t *testing.T) {
+	u, conn := testDatabase(t)
+	initial, err := files.ReadFile("000001_initial_schema.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = apply(fstest.MapFS{"000001_initial_schema.up.sql": &fstest.MapFile{Data: initial}}, u); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	var device, agent string
+	if err = conn.QueryRow(ctx, "INSERT INTO devices(display_name) VALUES('series-upgrade') RETURNING id::text").Scan(&device); err != nil {
+		t.Fatal(err)
+	}
+	if err = conn.QueryRow(ctx, `INSERT INTO agent_identities(device_id,credential_hash,protocol_version,platform,architecture,agent_version,capabilities,allowed_capabilities) VALUES($1,decode('aabb','hex'),'v1','linux','amd64','test','[]','{}') RETURNING id::text`, device).Scan(&agent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = conn.Exec(ctx, `INSERT INTO telemetry_metric_series(agent_id,metric_name,labels,legacy,created_at) VALUES($1,'memory_total_bytes','{}',true,now()-interval '2 years')`, agent); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now().Add(-time.Second)
+	if err = Apply(u); err != nil {
+		t.Fatal(err)
+	}
+	var lastObserved time.Time
+	var legacy bool
+	if err = conn.QueryRow(ctx, `SELECT last_observed_at,legacy FROM telemetry_metric_series WHERE agent_id=$1 AND metric_name='memory_total_bytes'`, agent).Scan(&lastObserved, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if lastObserved.Before(started) || !legacy {
+		t.Fatalf("upgrade failed to preserve old series conservatively: %s legacy=%v", lastObserved, legacy)
+	}
+	assertVersion(t, conn, 5, false)
 }

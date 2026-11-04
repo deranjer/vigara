@@ -16,7 +16,7 @@ import (
 
 func adminTestService(t *testing.T) (*Service, *audit.Recorder, Session, *http.ServeMux) {
 	t.Helper()
-	service, pool := testAuthServiceWithMigrations(t, "000001_initial_schema.up.sql", "000002_local_auth.up.sql", "000003_agent_enrollment.up.sql", "000015_roles_and_audit.up.sql")
+	service, pool := testAuthService(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	admin, err := service.CreateFirstUser(ctx, "owner", "Owner", "correct horse battery staple", "correct horse battery staple")

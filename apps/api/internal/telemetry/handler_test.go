@@ -236,8 +236,8 @@ func telemetryTestPool(t *testing.T) *pgxpool.Pool {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	// Deliberately apply 000005 without inventory's 000004 migration.
-	for _, name := range []string{"000001_initial_schema.up.sql", "000003_agent_enrollment.up.sql", "000005_telemetry.up.sql"} {
+	// Every telemetry test uses the same complete schema as a fresh server.
+	for _, name := range []string{"000001_initial_schema.up.sql", "000003_telemetry_series_freshness.up.sql", "000004_telemetry_delivery.up.sql"} {
 		migration, err := os.ReadFile("../../migrations/" + name)
 		if err != nil {
 			t.Fatal(err)
@@ -246,47 +246,39 @@ func telemetryTestPool(t *testing.T) *pgxpool.Pool {
 			t.Fatalf("apply %s: %v", name, err)
 		}
 	}
-	var seedDevice, seedAgent string
-	if err := pool.QueryRow(ctx, `INSERT INTO devices(display_name) VALUES('migration-seed') RETURNING id::text`).Scan(&seedDevice); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.QueryRow(ctx, `INSERT INTO agent_identities(device_id,credential_hash,protocol_version,platform,architecture,agent_version,capabilities,allowed_capabilities) VALUES($1,decode('aabb','hex'),'v1','linux','amd64','test','[]','{}') RETURNING id::text`, seedDevice).Scan(&seedAgent); err != nil {
-		t.Fatal(err)
-	}
-	seedPayload := `{"id":"migration-seed","agentId":"` + seedAgent + `","observedAt":"` + time.Now().UTC().Add(-time.Hour).Format(time.RFC3339Nano) + `","metrics":[{"name":"memory_total_bytes","value":4096,"unit":"By"}]}`
-	if _, err := pool.Exec(ctx, `INSERT INTO agent_telemetry(agent_id,report_id,observed_at,payload) VALUES($1,'migration-seed',now()-interval '1 hour',$2::jsonb)`, seedAgent, seedPayload); err != nil {
-		t.Fatal(err)
-	}
-	migration, err := os.ReadFile("../../migrations/000006_telemetry_retention.up.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, string(migration)); err != nil {
-		t.Fatalf("apply 000006_telemetry_retention.up.sql: %v", err)
-	}
 	return pool
 }
 
-func TestRetentionMigrationSeedsDedupSeriesAndLatestSnapshot(t *testing.T) {
+func TestTelemetryIngestMaintainsDedupSeriesAndLatestSnapshot(t *testing.T) {
 	pool := telemetryTestPool(t)
 	ctx := context.Background()
-	var agentID string
-	if err := pool.QueryRow(ctx, `SELECT agent_id::text FROM agent_telemetry WHERE report_id='migration-seed'`).Scan(&agentID); err != nil {
+	var deviceID, agentID string
+	if err := pool.QueryRow(ctx, `INSERT INTO devices(display_name) VALUES('initial-schema-ingest') RETURNING id::text`).Scan(&deviceID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO agent_identities(device_id,credential_hash,protocol_version,platform,architecture,agent_version,capabilities,allowed_capabilities) VALUES($1,decode('aabb','hex'),'v1','linux','amd64','test','[]','{}') RETURNING id::text`, deviceID).Scan(&agentID); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	snapshot := validSnapshot(agentID, "initial-schema-report", now)
+	snapshot.Metrics = []protocol.TelemetryMetric{{Name: "memory_total_bytes", Value: 4096, Unit: "By"}}
+	store := postgresStore{pool: pool}
+	if err := store.Ingest(ctx, agentID, []protocol.TelemetrySnapshot{snapshot}, now); err != nil {
 		t.Fatal(err)
 	}
 	var latestID string
 	if err := pool.QueryRow(ctx, `SELECT report_id FROM agent_telemetry_latest WHERE agent_id=$1`, agentID).Scan(&latestID); err != nil {
 		t.Fatal(err)
 	}
-	if latestID != "migration-seed" {
-		t.Fatalf("seeded latest report = %q", latestID)
+	if latestID != snapshot.ID {
+		t.Fatalf("latest report = %q", latestID)
 	}
-	var dedup, legacy bool
-	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM telemetry_report_dedup WHERE agent_id=$1 AND report_id='migration-seed'), EXISTS(SELECT 1 FROM telemetry_metric_series WHERE agent_id=$1 AND metric_name='memory_total_bytes' AND legacy)`, agentID).Scan(&dedup, &legacy); err != nil {
+	var dedup, series bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM telemetry_report_dedup WHERE agent_id=$1 AND report_id=$2), EXISTS(SELECT 1 FROM telemetry_metric_series WHERE agent_id=$1 AND metric_name='memory_total_bytes' AND NOT legacy)`, agentID, snapshot.ID).Scan(&dedup, &series); err != nil {
 		t.Fatal(err)
 	}
-	if !dedup || !legacy {
-		t.Fatalf("migration seed dedup=%v legacy_series=%v", dedup, legacy)
+	if !dedup || !series {
+		t.Fatalf("ingest dedup=%v series=%v", dedup, series)
 	}
 }
 

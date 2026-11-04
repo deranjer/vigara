@@ -24,7 +24,7 @@ func ConfigurationRevision(s Snapshot) string {
 	}
 	sort.Strings(keys)
 	h := sha256.New()
-	h.Write([]byte("VIGARA-CONFIG-REVISION-V1\x00"))
+	h.Write([]byte("VIGIRA-CONFIG-REVISION-V1\x00"))
 	for _, name := range keys {
 		h.Write([]byte("100644"))
 		_ = binary.Write(h, binary.BigEndian, uint64(len(name)))

@@ -22,6 +22,16 @@ Go integration tests run when `VIGIRA_TEST_DATABASE_URL` points to a test Postgr
 
 ## Documentation and staging
 
+**Admin → Scheduled tasks** lists server maintenance jobs, manual run controls,
+last/next run times, and agent bundle retention. Enabled tasks run at startup;
+bundle scans repeat every 24 hours and keep two compatible versions by default.
+See [scheduled tasks](docs/scheduled-tasks.md).
+
+For an interactive initial Linux server deployment, run `bash deploy/setup.sh`.
+It checks prerequisites, generates private configuration, and offers Caddy proxy
+labels or direct port access. With approval it can deploy Caddy, then verify HTTPS
+and MCP discovery. See the [setup guide](docs/deployment/docker.md#interactive-linux-setup).
+
 The [documentation site](https://deranjer.github.io/vigara/docs/) is built with Docusaurus from the Markdown files in `docs`. Run `pnpm docs:dev` to preview it locally or `pnpm docs:build` to check the production build. GitHub Actions deploys it to GitHub Pages when changes reach `main`.
 
 Container builds publish to `ghcr.io/deranjer/vigara`: `main` updates the `staging` tag, and version tags publish numbered releases. See the [Docker deployment guide](docs/deployment/docker.md) for the staging Compose setup, database migrations, and upgrades.
@@ -48,5 +58,3 @@ For the native Android companion, its selected-file upload storage, and operator
 Compose stack editing and deployment: [Git-backed stacks setup](docs/git-backed-stacks.md).
 
 Claude and ChatGPT monitoring tools: [MCP and OAuth setup](docs/mcp.md).
-
-Container image checks and opt-in managed-stack updates: [image update monitoring](docs/image-updates.md).

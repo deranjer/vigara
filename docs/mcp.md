@@ -6,17 +6,54 @@ No Google account, external identity provider, or OpenAI API key is required.
 
 ## Enable the server
 
+For a new deployment, `bash deploy/setup.sh` offers MCP as an opt-in step. With
+Caddy it uses the HTTPS hostname you selected. The script also asks for a shared
+Compose root; its generated files live in `<compose-root>/<project>/`, outside
+the source repository.
+
+The installer can also deploy Caddy Docker Proxy with your approval when the
+named proxy is missing, or start an existing stopped proxy. It starts the proxy
+before Vigara, then verifies HTTPS and OAuth discovery. Configure public DNS and
+forward TCP 80/443 to the server first. If verification fails, fix routing or TLS
+and run the generated `check.sh`; do not rerun initial setup or replace credentials.
+
+Open **Account settings → Claude and ChatGPT** for setup guidance even when MCP
+is disabled. When enabled, the page displays the configured server URL with a
+copy button and separate ChatGPT and Claude instructions. An enabled status
+confirms configuration, not reachability from either provider.
+
 Set these variables on the **API server**, then restart it:
 
 ```dotenv
-VIGARA_MCP_URL=https://vigara.example.com
-VIGARA_COOKIE_SECURE=true
+VIGIRA_MCP_URL=https://vigara.example.com
+VIGIRA_COOKIE_SECURE=true
 ```
 
-`VIGARA_MCP_URL` is the externally reachable **origin**, without `/mcp` or another
+`VIGIRA_MCP_URL` is the externally reachable **origin**, without `/mcp` or another
 path. Leaving it unset disables the MCP and OAuth routes. The original
 `VIGIRA_MCP_URL` spelling remains an alias. Database migrations run automatically
 at startup. Building the API now requires Go 1.25 or newer.
+
+For an existing Caddy deployment, adding a value to `.env` is insufficient unless
+the `app` service passes it into the container. The current Caddy example includes:
+
+```yaml
+services:
+  app:
+    environment:
+      VIGIRA_MCP_URL: ${VIGIRA_MCP_URL:-}
+```
+
+Keep your existing database and credentials. Edit the existing deployment files,
+then use its original Compose invocation or helper to recreate the API service:
+
+```sh
+bash ~/dockers/compose-stacks/vigara/compose.sh up -d --wait app
+```
+
+Substitute your actual deployment directory. The staging template already passes
+application settings through its `env_file`. Reload Account settings after the
+server restarts. To disable MCP, clear `VIGIRA_MCP_URL` and recreate the API service.
 
 Use a trusted HTTPS reverse proxy and preserve the original `Host` header.
 Forward `/mcp`, `/oauth/*`, and `/.well-known/oauth-*` to the API without an
@@ -115,14 +152,6 @@ queueing a job does not prove deployment succeeded. Git settings require the
 current settings version; placements require the current placement commit.
 Encrypted environment edits return ciphertext and manifest contents to include
 in a subsequent draft update. Plaintext dotenv files remain prohibited.
-
-The current deployment runner also rejects service `env_file` entries, including
-`env_file: .env`, even when an encrypted environment input is available. Encrypted
-inputs supply Compose interpolation through `--env-file`; map each container
-setting explicitly in the service's `environment:` section using `${VARIABLE}`.
-Adding a variable only to the encrypted input does not pass it to a container.
-A successful draft save does not establish deployment compatibility; preview the
-saved revision. See [the current environment limitation](git-backed-stacks.md#current-service-environment-limitation).
 
 Docker tools require `agentId`; container tools also require `containerId`.
 Resource tools select `kind` from `images`, `networks`, or `volumes`. For example,

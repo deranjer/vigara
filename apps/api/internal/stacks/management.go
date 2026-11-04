@@ -256,7 +256,11 @@ func (a *API) lookupTarget(ctx context.Context, id string) (Binding, bool) {
 	if a.Pool == nil {
 		return b, false
 	}
-	e := a.Pool.QueryRow(ctx, "SELECT agent_id::text,project_name,directory,display_name FROM stack_bindings WHERE stack_id=$1 AND directory<>''", id).Scan(&b.AgentID, &b.ProjectName, &b.Directory, &b.DisplayName)
+	var recipients []byte
+	e := a.Pool.QueryRow(ctx, "SELECT agent_id::text,project_name,directory,display_name,recipients,imported FROM stack_bindings WHERE stack_id=$1 AND directory<>''", id).Scan(&b.AgentID, &b.ProjectName, &b.Directory, &b.DisplayName, &recipients, &b.Imported)
+	if e == nil {
+		e = json.Unmarshal(recipients, &b.Recipients)
+	}
 	return b, e == nil
 }
 func (a *API) bindings(ctx context.Context) (map[string]Binding, error) {
@@ -264,7 +268,7 @@ func (a *API) bindings(ctx context.Context) (map[string]Binding, error) {
 	for id, b := range a.Targets {
 		result[id] = b
 	}
-	rows, e := a.Pool.Query(ctx, "SELECT stack_id,agent_id::text,project_name,directory,display_name FROM stack_bindings WHERE directory<>''")
+	rows, e := a.Pool.Query(ctx, "SELECT stack_id,agent_id::text,project_name,directory,display_name,recipients,imported FROM stack_bindings WHERE directory<>''")
 	if e != nil {
 		return nil, e
 	}
@@ -272,7 +276,11 @@ func (a *API) bindings(ctx context.Context) (map[string]Binding, error) {
 	for rows.Next() {
 		var id string
 		var b Binding
-		if e = rows.Scan(&id, &b.AgentID, &b.ProjectName, &b.Directory, &b.DisplayName); e != nil {
+		var recipients []byte
+		if e = rows.Scan(&id, &b.AgentID, &b.ProjectName, &b.Directory, &b.DisplayName, &recipients, &b.Imported); e != nil {
+			return nil, e
+		}
+		if e = json.Unmarshal(recipients, &b.Recipients); e != nil {
 			return nil, e
 		}
 		if _, exists := result[id]; !exists {

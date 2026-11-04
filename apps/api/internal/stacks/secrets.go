@@ -45,7 +45,7 @@ func secretHeaders(w http.ResponseWriter) {
 }
 
 func validEnvironmentPath(path string) bool {
-	return stack.ValidPath(path) && strings.HasSuffix(path, ".sops")
+	return stack.ValidPath(path) && (strings.HasSuffix(path, ".sops") || strings.HasSuffix(path, ".age"))
 }
 
 func (a *API) environmentSnapshot(ctx context.Context, id, user string, source environmentSource) (stack.Snapshot, error) {
@@ -80,7 +80,7 @@ func encryptedInput(s stack.Snapshot, path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	for _, input := range m.Compose.InterpolationFiles {
+	for _, input := range append(append([]stack.Input{}, m.Compose.InterpolationFiles...), m.Compose.EnvironmentFiles...) {
 		if input.Path == path && input.Sensitivity == "encrypted" {
 			return s.Files[path], nil
 		}
@@ -188,10 +188,28 @@ func (a *API) editEnvironment(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Stack recipient policy is not configured.", 422)
 		return
 	}
+	if len(b.Recipients) == 0 {
+		b, err = a.ensureEnvironmentRecipients(ctx, s, b)
+		if err != nil {
+			http.Error(w, errEnvironmentSetup.Error(), 422)
+			return
+		}
+	}
+	// Provisioned policies use native age on agents without a SOPS binary.
+	// Canonicalize new legacy requests on retries too, while retaining existing
+	// SOPS inputs and operator-managed policies unchanged.
+	_, operatorManaged := a.Targets[id]
+	if !operatorManaged && s.Files[q.Path] == "" && strings.HasSuffix(q.Path, ".sops") && automaticEnvironmentPolicy(b) {
+		q.Path = strings.TrimSuffix(q.Path, ".sops") + ".age"
+	}
 	plain := []byte(*q.Value)
 	q.Value = nil
 	defer clear(plain)
-	ciphertext, err := composesecrets.EncryptForPolicy(ctx, a.SOPS, plain, b.Recipients)
+	format := "sops-binary"
+	if strings.HasSuffix(q.Path, ".age") {
+		format = composesecrets.AgeFormat
+	}
+	ciphertext, err := composesecrets.EncryptForFormat(ctx, a.SOPS, format, plain, b.Recipients)
 	if err != nil || len(ciphertext) > 128<<10 {
 		_ = a.secretAudit(ctx, u, id, "edit", audit.OutcomeFailure, q)
 		http.Error(w, "Environment encryption failed. Configure editor, target and recovery recipients.", 422)

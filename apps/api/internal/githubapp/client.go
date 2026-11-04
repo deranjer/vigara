@@ -59,7 +59,7 @@ func New(master string) (*Client, error) {
 	}
 	key, err := base64.StdEncoding.DecodeString(master)
 	if err != nil || len(key) != 32 {
-		return nil, errors.New("VIGARA_GITHUB_APP_MASTER_KEY must encode exactly 32 bytes in base64")
+		return nil, errors.New("VIGIRA_GITHUB_APP_MASTER_KEY must encode exactly 32 bytes in base64")
 	}
 	block, err := aes.NewCipher(key)
 	if err != nil {

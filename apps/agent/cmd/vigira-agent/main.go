@@ -11,17 +11,20 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
+	"time"
 
 	agentchannel "github.com/deranjer/vigara/apps/agent/internal/channel"
 	dockercollector "github.com/deranjer/vigara/apps/agent/internal/collector/docker"
 	"github.com/deranjer/vigara/apps/agent/internal/composedeploy"
 	"github.com/deranjer/vigara/apps/agent/internal/dockerapi"
 	"github.com/deranjer/vigara/apps/agent/internal/dockerchannel"
+	"github.com/deranjer/vigara/apps/agent/internal/mountfiles"
 	agentruntime "github.com/deranjer/vigara/apps/agent/internal/runtime"
+	"github.com/deranjer/vigara/apps/agent/internal/selfupdate"
 	"github.com/deranjer/vigara/internal/composeadoption"
-	"github.com/deranjer/vigara/internal/envcompat"
 	"github.com/deranjer/vigara/internal/protocol"
 	"github.com/deranjer/vigara/internal/serverurl"
 )
@@ -44,6 +47,12 @@ func execute(args []string, logger *slog.Logger) error {
 		return fmt.Errorf("usage: vigara-agent [--config PATH] enroll --server URL | run | compose-discover --root PATH")
 	}
 	switch rest[0] {
+	case "configure-updater":
+		return selfupdate.Configure(statePath)
+	case "update-client":
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		return selfupdate.Run(ctx)
 	case "enable-managed-backups":
 		return agentruntime.ConfigureManagedBackups(statePath)
 	case "enroll":
@@ -168,6 +177,7 @@ func runAgent(client *agentruntime.Client, logger *slog.Logger) error {
 		logger.Info("agent service started", "agentId", client.State.AgentID)
 		live := agentchannel.NewClient(client.State.ServerURL, client.State.Credential, agentruntime.AgentVersion, client.State.AllowInsecurePrivateHTTP, client.Capabilities, logger)
 		registerDocker(live, logger)
+		guardUpdates(live)
 		go live.Run(ctx)
 		return client.Run(ctx)
 	})
@@ -186,21 +196,37 @@ func registerDocker(live *agentchannel.Client, logger *slog.Logger) {
 	}
 	if protocol.DockerTier(live.Capabilities()) == protocol.DockerModeDeploy {
 		targets := map[string]composedeploy.Target{}
+		validTargets := true
 		if file := os.Getenv("VIGIRA_COMPOSE_TARGETS_FILE"); file != "" {
 			data, readErr := os.ReadFile(file)
 			if readErr != nil || json.Unmarshal(data, &targets) != nil {
 				logger.Warn("Compose deployment targets are invalid")
-			} else {
-				managedRoot := os.Getenv("VIGIRA_COMPOSE_MANAGED_ROOT")
-				if managedRoot == "" {
-					managedRoot = "/var/lib/vigira-agent/compose-stacks"
-				}
-				composedeploy.Register(live, &composedeploy.Runner{ManagedRoot: managedRoot, Targets: targets, DockerHost: strings.TrimSpace(os.Getenv("VIGIRA_DOCKER_HOST")), SOPS: os.Getenv("VIGIRA_SOPS_BINARY"), Identity: os.Getenv("VIGIRA_COMPOSE_AGE_IDENTITY")})
+				validTargets = false
 			}
+		}
+		managedRoot := os.Getenv("VIGIRA_COMPOSE_MANAGED_ROOT")
+		if managedRoot == "" {
+			managedRoot = "/var/lib/vigira-agent/compose-stacks"
+		}
+		if validTargets {
+			composedeploy.Register(live, &composedeploy.Runner{ManagedRoot: managedRoot, Targets: targets, DockerHost: strings.TrimSpace(os.Getenv("VIGIRA_DOCKER_HOST")), SOPS: os.Getenv("VIGIRA_SOPS_BINARY"), Identity: os.Getenv("VIGIRA_COMPOSE_AGE_IDENTITY")})
 		}
 	}
 	dockerchannel.Register(live, api)
 	dockerchannel.RegisterResources(live, api)
+	filesMode := strings.ToLower(strings.TrimSpace(os.Getenv("VIGIRA_DOCKER_FILES")))
+	if filesMode == "read" || filesMode == "write" {
+		if runtime.GOOS != "linux" || !strings.HasPrefix(strings.TrimSpace(os.Getenv("VIGIRA_DOCKER_HOST")), "unix://") {
+			logger.Warn("mount file access requires an agent on the native Linux Docker host with a local Unix socket")
+		} else if protocol.DockerTierRank(protocol.DockerTier(live.Capabilities())) >= protocol.DockerTierRank(protocol.DockerModeExec) {
+			backupDir := os.Getenv("VIGIRA_DOCKER_FILES_BACKUP_DIR")
+			if backupDir == "" {
+				backupDir = "/var/lib/vigira-agent/mount-file-backups"
+			}
+			dockerchannel.RegisterFiles(live, &mountfiles.Service{Resolver: api, Writable: filesMode == "write", BackupDirectory: backupDir})
+			logger.Info("mount file access is enabled", "mode", filesMode)
+		}
+	}
 	if protocol.DockerTierRank(protocol.DockerTier(live.Capabilities())) >= protocol.DockerTierRank(protocol.DockerModeManage) {
 		dockerchannel.RegisterManage(live, api)
 		dockerchannel.RegisterResourceManagement(live, api)

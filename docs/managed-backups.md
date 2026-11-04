@@ -7,7 +7,7 @@ Existing operator-owned `resticProfiles` continue to work separately.
 
 ## Server setup
 
-1. Set `VIGARA_BACKUP_MASTER_KEY` to a base64-encoded, randomly generated 32-byte
+1. Set `VIGIRA_BACKUP_MASTER_KEY` to a base64-encoded, randomly generated 32-byte
    key. For example, generate one with Python:
 
    ```sh
@@ -31,11 +31,11 @@ Existing operator-owned `resticProfiles` continue to work separately.
    necessary. The manifest records agent and Restic SHA-256 digests. The API
    verifies the Restic version and digest before issuing a backup-enabled
    bundle. The bundle also includes Restic's license. Set
-   `VIGARA_AGENT_RELEASE_DIR` and the usual reachable server URL settings.
+   `VIGIRA_AGENT_RELEASE_DIR` and the usual reachable server URL settings.
 
 3. For web browsing, install the same Restic version on the server. The Docker
    image includes it. A standalone server uses `restic` from PATH, or the
-   operator-supplied `VIGARA_RESTIC_EXECUTABLE` path.
+   operator-supplied `VIGIRA_RESTIC_EXECUTABLE` path.
 
 4. Make backup storage accessible to the server and device. The two machines may
    see the same repository at different paths. Mount the repository into the API

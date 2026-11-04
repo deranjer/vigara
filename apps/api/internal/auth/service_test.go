@@ -16,7 +16,7 @@ import (
 
 func testAuthService(t *testing.T) (*Service, *pgxpool.Pool) {
 	t.Helper()
-	return testAuthServiceWithMigrations(t, "000002_local_auth.up.sql")
+	return testAuthServiceWithMigrations(t, "000001_initial_schema.up.sql")
 }
 
 func testAuthServiceWithMigrations(t *testing.T, names ...string) (*Service, *pgxpool.Pool) {
@@ -32,6 +32,9 @@ func testAuthServiceWithMigrations(t *testing.T, names ...string) (*Service, *pg
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { admin.Close(context.Background()) })
+	if _, err := admin.Exec(ctx, `BEGIN; SELECT pg_advisory_xact_lock(138139136); CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public; COMMIT;`); err != nil {
+		t.Fatal(err)
+	}
 	schema := pgx.Identifier{fmt.Sprintf("auth_test_%d", time.Now().UnixNano())}.Sanitize()
 	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
 		t.Fatal(err)

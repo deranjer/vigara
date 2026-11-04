@@ -1,0 +1,25 @@
+services:
+  caddy:
+    image: ${VIGIRA_CADDY_IMAGE:-lucaslorentz/caddy-docker-proxy:alpine}
+    container_name: ${VIGIRA_CADDY_CONTAINER:-caddy-proxy}
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      CADDY_INGRESS_NETWORKS: ${VIGIRA_PROXY_NETWORK:-web}
+    networks:
+      - proxy
+    volumes:
+      - ${VIGIRA_DOCKER_SOCKET:?Set VIGIRA_DOCKER_SOCKET}:/var/run/docker.sock:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+networks:
+  proxy:
+    name: ${VIGIRA_PROXY_NETWORK:-web}
+    external: true
+
+volumes:
+  caddy-data:
+  caddy-config:

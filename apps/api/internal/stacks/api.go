@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -33,9 +34,9 @@ type Binding struct {
 	Directory   string                           `json:"directory,omitempty"`
 	DisplayName string                           `json:"displayName,omitempty"`
 	Recipients  []composesecrets.RecipientRecord `json:"recipients,omitempty"`
+	Imported    bool                             `json:"imported,omitempty"`
 }
 type Config struct {
-	Agents             func() []channel.AgentInfo
 	GitHub             *githubapp.Client
 	PublicURL          string
 	Repository         *stackgit.Repository
@@ -97,8 +98,14 @@ func FromEnv() (*stackgit.Repository, map[string]Binding, error) {
 	return &stackgit.Repository{Directory: dir, Remote: os.Getenv("VIGIRA_STACK_GIT_URL"), Branch: branch}, targets, nil
 }
 func Register(mux *http.ServeMux, c Config) *API {
+	if c.CentralAgeIdentity == "" {
+		c.CentralAgeIdentity = filepath.Join(importKeyDirectory(c), "editor.age")
+	}
 	a := &API{c}
-	a.registerImageUpdates(mux)
+	mux.HandleFunc("POST /api/stacks/imports/discover", a.discoverImports)
+	mux.HandleFunc("POST /api/stacks/imports/preview", a.previewImport)
+	mux.HandleFunc("POST /api/stacks/imports", a.importExisting)
+	mux.HandleFunc("GET /api/stacks/imports/recovery", a.importRecovery)
 	mux.HandleFunc("GET /api/stacks", a.list)
 	mux.HandleFunc("GET /api/stack-placements", a.getPlacements)
 	mux.HandleFunc("PUT /api/stack-placements", a.savePlacements)
@@ -369,7 +376,7 @@ func (a *API) list(w http.ResponseWriter, r *http.Request) {
 		}
 		latest := latestByStack[s.ID]
 		draftPresent := drafts[s.ID]
-		summaries = append(summaries, map[string]any{"id": s.ID, "name": name, "projectName": project, "commit": s.Commit, "digest": stack.Digest(s), "valid": validation == nil, "assigned": assigned, "agentId": b.AgentID, "deviceName": names[b.AgentID], "directory": b.Directory, "serviceCount": serviceCount(s, m), "draft": draftPresent, "deploymentStatus": latest.Status, "deploymentCommit": latest.Commit, "deploymentDigest": latest.Digest, "deploymentAt": latest.CreatedAt})
+		summaries = append(summaries, map[string]any{"id": s.ID, "name": name, "projectName": project, "commit": s.Commit, "digest": stack.Digest(s), "valid": validation == nil, "assigned": assigned, "agentId": b.AgentID, "deviceName": names[b.AgentID], "directory": b.Directory, "serviceCount": serviceCount(s, m), "draft": draftPresent, "imported": b.Imported, "deploymentStatus": latest.Status, "deploymentCommit": latest.Commit, "deploymentDigest": latest.Digest, "deploymentAt": latest.CreatedAt})
 	}
 	sort.Slice(summaries, func(i, j int) bool { return summaries[i]["name"].(string) < summaries[j]["name"].(string) })
 	targets := []map[string]string{}
@@ -662,8 +669,7 @@ func (a *API) plan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	images, _ := json.Marshal(plan.Images)
-	tracking, _ := json.Marshal(plan.Tracking)
-	_, e = a.Pool.Exec(ctx, `INSERT INTO stack_deployment_previews(stack_id,user_id,token,agent_id,configuration_digest,commit_id,images,tracking) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(stack_id,user_id) DO UPDATE SET token=$3,agent_id=$4,configuration_digest=$5,commit_id=$6,images=$7,tracking=$8,expires_at=now()+interval '15 minutes'`, s.ID, u.ID, plan.Token, b.AgentID, stack.Digest(s), s.Commit, images, tracking)
+	_, e = a.Pool.Exec(ctx, `INSERT INTO stack_deployment_previews(stack_id,user_id,token,agent_id,configuration_digest,commit_id,images) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(stack_id,user_id) DO UPDATE SET token=$3,agent_id=$4,configuration_digest=$5,commit_id=$6,images=$7,expires_at=now()+interval '15 minutes'`, s.ID, u.ID, plan.Token, b.AgentID, stack.Digest(s), s.Commit, images)
 	if e != nil {
 		fail(w, e)
 		return
@@ -716,8 +722,8 @@ func (a *API) deploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Only a server-recorded preview can authorize immutable image choices.
-	var imageBytes, trackingBytes []byte
-	e = a.Pool.QueryRow(ctx, `SELECT images,tracking FROM stack_deployment_previews WHERE stack_id=$1 AND user_id=$2 AND token=$3 AND agent_id=$4 AND configuration_digest=$5 AND commit_id=$6 AND expires_at>now()`, s.ID, u.ID, q.Token, b.AgentID, stack.Digest(s), s.Commit).Scan(&imageBytes, &trackingBytes)
+	var imageBytes []byte
+	e = a.Pool.QueryRow(ctx, `SELECT images FROM stack_deployment_previews WHERE stack_id=$1 AND user_id=$2 AND token=$3 AND agent_id=$4 AND configuration_digest=$5 AND commit_id=$6 AND expires_at>now()`, s.ID, u.ID, q.Token, b.AgentID, stack.Digest(s), s.Commit).Scan(&imageBytes)
 	images := map[string]string{}
 	if e != nil || json.Unmarshal(imageBytes, &images) != nil || (q.Images != nil && !stack.Equal(q.Images, images)) {
 		http.Error(w, "Review a fresh deployment preview before deploying.", 409)
@@ -730,7 +736,7 @@ func (a *API) deploy(w http.ResponseWriter, r *http.Request) {
 	}
 	id := hex.EncodeToString(random)
 	raw, _ := json.Marshal(s)
-	_, e = a.Pool.Exec(ctx, `INSERT INTO stack_deployments(id,stack_id,agent_id,project_name,actor_id,actor_name,commit_id,configuration_digest,snapshot,plan_token,pull,status,images,tracking) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'queued',$12,$13)`, id, s.ID, b.AgentID, m.ProjectName, u.ID, u.Username, s.Commit, stack.Digest(s), raw, q.Token, q.Pull, imageBytes, trackingBytes)
+	_, e = a.Pool.Exec(ctx, `INSERT INTO stack_deployments(id,stack_id,agent_id,project_name,actor_id,actor_name,commit_id,configuration_digest,snapshot,plan_token,pull,status,images) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'queued',$12)`, id, s.ID, b.AgentID, m.ProjectName, u.ID, u.Username, s.Commit, stack.Digest(s), raw, q.Token, q.Pull, imageBytes)
 	if e != nil {
 		http.Error(w, "An active or uncertain deployment already exists, or the deployment could not be recorded. Refresh deployment history.", 409)
 		return
@@ -853,21 +859,11 @@ func (a *API) tick(ctx context.Context) {
 	if e != nil {
 		return
 	}
+	a.reconcileImported(ctx, c)
 	var id, agent, token, stackID string
 	var raw, imageBytes []byte
 	var pull bool
-	unlockPolicy, e := a.updateLock(ctx)
-	if e != nil {
-		return
-	}
-	defer func() {
-		if unlockPolicy != nil {
-			unlockPolicy()
-		}
-	}()
-	var automatic bool
-	var policyVersion *int64
-	e = c.QueryRow(ctx, `UPDATE stack_deployments SET status='running',stage='validate' WHERE id=(SELECT id FROM stack_deployments WHERE status='queued' ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING id,agent_id::text,snapshot,plan_token,pull,stack_id,images,automatic,policy_version`).Scan(&id, &agent, &raw, &token, &pull, &stackID, &imageBytes, &automatic, &policyVersion)
+	e = c.QueryRow(ctx, `UPDATE stack_deployments SET status='running',stage='validate' WHERE id=(SELECT id FROM stack_deployments WHERE status='queued' ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING id,agent_id::text,snapshot,plan_token,pull,stack_id,images`).Scan(&id, &agent, &raw, &token, &pull, &stackID, &imageBytes)
 	if e != nil {
 		return
 	}
@@ -878,15 +874,9 @@ func (a *API) tick(ctx context.Context) {
 	}
 	var result stack.Result
 	callCtx, cancel := context.WithTimeout(ctx, 20*time.Minute)
-	if automatic && !a.automaticImageAllowed(callCtx, s, policyVersion) {
-		result = stack.Result{Status: "failed", Stage: "policy", Message: "Automatic update canceled: its policy or maintenance window changed. A future window will use a fresh preview."}
-	} else if guard := a.checkCapturedDeployment(callCtx, s, c); guard != nil {
+	if guard := a.checkCapturedDeployment(callCtx, s, c); guard != nil {
 		result = stack.Result{Status: "failed", Stage: "validate", Message: "Deployment was not sent: current profile assignments or repository access require review."}
 	} else {
-		// The running job is now authorized. Later policy changes affect future
-		// jobs, and never interrupt an already dispatched Compose operation.
-		unlockPolicy()
-		unlockPolicy = nil
 		e = a.Hub.Call(callCtx, agent, protocol.MethodComposeDeploy, stack.DeployRequest{Job: stack.Job{ID: id, Snapshot: s, Pull: pull}, Token: token, Images: images}, &result)
 		if e == nil {
 			result = correlatedResult(result, s, id, token, images)

@@ -33,6 +33,7 @@ import (
 	"github.com/deranjer/vigara/apps/api/internal/mcpserver"
 	"github.com/deranjer/vigara/apps/api/internal/notifications"
 	"github.com/deranjer/vigara/apps/api/internal/notifytransport"
+	"github.com/deranjer/vigara/apps/api/internal/scheduledtasks"
 	"github.com/deranjer/vigara/apps/api/internal/stacks"
 	"github.com/deranjer/vigara/apps/api/internal/telemetry"
 	"github.com/deranjer/vigara/apps/api/migrations"
@@ -50,7 +51,17 @@ var version = "dev"
 var revision = ""
 
 func main() {
-	envcompat.ApplyAliases()
+	if len(os.Args) > 1 {
+		if os.Args[1] != "host-agent-bundle" {
+			os.Stderr.WriteString("Usage: vigara [host-agent-bundle OPTIONS]\n")
+			os.Exit(1)
+		}
+		if err := hostAgentBundle(os.Args[2:], os.Stdout, os.Stderr); err != nil {
+			os.Stderr.WriteString(err.Error() + "\n")
+			os.Exit(1)
+		}
+		return
+	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	cfg, err := config.Load()
 	if err != nil {
@@ -98,7 +109,7 @@ func main() {
 	alerts.NewHandler(database.Pool, authService).Register(alertsMux)
 	backupMux := http.NewServeMux()
 	backups.NewHandler(database.Pool, authService).Register(backupMux)
-	managedBackups, err := backups.NewManager(database.Pool, os.Getenv("VIGARA_BACKUP_MASTER_KEY"), os.Getenv("VIGARA_RESTIC_EXECUTABLE"))
+	managedBackups, err := backups.NewManager(database.Pool, os.Getenv("VIGIRA_BACKUP_MASTER_KEY"), os.Getenv("VIGIRA_RESTIC_EXECUTABLE"))
 	if err != nil {
 		logger.Error("invalid managed backup configuration", "error", err)
 		os.Exit(1)
@@ -144,12 +155,12 @@ func main() {
 		os.Exit(1)
 	}
 	stackMux := http.NewServeMux()
-	githubClient, err := githubapp.New(envcompat.Getenv("VIGARA_GITHUB_APP_MASTER_KEY"))
+	githubClient, err := githubapp.New(os.Getenv("VIGIRA_GITHUB_APP_MASTER_KEY"))
 	if err != nil {
 		logger.Error("invalid GitHub App configuration", "error", err)
 		os.Exit(1)
 	}
-	stackAPI := stacks.Register(stackMux, stacks.Config{Agents: channelHub.Agents, GitHub: githubClient, PublicURL: envcompat.Getenv("VIGARA_PUBLIC_URL"), Repository: stackRepository, Targets: stackTargets, SOPS: os.Getenv("VIGIRA_SOPS_BINARY"), CentralAgeIdentity: os.Getenv("VIGIRA_COMPOSE_EDITOR_AGE_IDENTITY"), Pool: database.Pool, Hub: channelHub, Authz: authService, Audit: auditRecorder})
+	stackAPI := stacks.Register(stackMux, stacks.Config{GitHub: githubClient, PublicURL: os.Getenv("VIGIRA_PUBLIC_URL"), Repository: stackRepository, Targets: stackTargets, SOPS: os.Getenv("VIGIRA_SOPS_BINARY"), CentralAgeIdentity: os.Getenv("VIGIRA_COMPOSE_EDITOR_AGE_IDENTITY"), Pool: database.Pool, Hub: channelHub, Authz: authService, Audit: auditRecorder})
 	adminMux := http.NewServeMux()
 	authService.RegisterAdmin(adminMux, auditRecorder)
 	androidBackupMux := http.NewServeMux()
@@ -173,18 +184,13 @@ func main() {
 			}
 		}
 	}
+	if err := agentHandler.ConfigureReleaseSync(os.Getenv("VIGIRA_AGENT_RELEASE_CACHE"), os.Getenv("VIGIRA_AGENT_RELEASE_TAG"), revision); err != nil {
+		logger.Warn("automatic agent release downloads disabled", "reason", err.Error())
+	}
 	router.Use(auth.NewAttemptLimiter().Middleware)
 	router.Use(authService.SessionMiddleware)
 	router.Use(authService.WriteGuard)
-	router.Get("/api/mcp/status", func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := authService.UserFromRequest(r); !ok {
-			http.Error(w, "login required", http.StatusUnauthorized)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "no-store")
-		_ = json.NewEncoder(w).Encode(map[string]bool{"enabled": cfg.MCPURL != ""})
-	})
+	router.Get("/api/mcp/status", mcpserver.StatusHandler(authService, cfg.MCPURL))
 	var mcpHandler *mcpserver.Handler
 	if cfg.MCPURL != "" {
 		mcpHandler, err = mcpserver.New(database.Pool, authService, auditRecorder, cfg.MCPURL)
@@ -220,8 +226,6 @@ func main() {
 	router.Handle("/api/containers", containersMux)
 	router.Handle("/api/containers/*", containersMux)
 	router.Handle("/api/docker/*", containersMux)
-	router.Handle("/api/image-updates", stackMux)
-	router.Handle("/api/image-updates/*", stackMux)
 	router.Handle("/api/stacks", stackMux)
 	router.Handle("/api/stacks/*", stackMux)
 	router.Handle("/api/stack-placements", stackMux)
@@ -256,7 +260,34 @@ func main() {
 		go mcpHandler.RunCleanup(ctx)
 	}
 	retention := telemetry.RetentionConfig{RawAge: time.Duration(cfg.TelemetryRawRetentionHours) * time.Hour, RollupAge: time.Duration(cfg.TelemetryRollupRetentionDays) * 24 * time.Hour}
-	go telemetry.RunRetentionWorker(ctx, telemetryStore, retention, logger)
+	tasks := scheduledtasks.New(database.Pool, logger, []scheduledtasks.Definition{
+		{ID: "agent-bundles", Name: "Scan agent bundles", Description: "Download the newest compatible published agent bundles and apply cache retention.", Interval: 24 * time.Hour, Timeout: 30 * time.Minute, Available: agentHandler.ReleaseSyncEnabled(), Defaults: json.RawMessage(`{"purgeOld":true,"keepVersions":2}`),
+			Validate: func(raw json.RawMessage) error { _, err := agent.ParseReleaseRetentionSettings(raw); return err },
+			Run: func(ctx context.Context, raw json.RawMessage) error {
+				settings, err := agent.ParseReleaseRetentionSettings(raw)
+				if err != nil {
+					return err
+				}
+				return agentHandler.RefreshReleases(ctx, settings.PurgeOld, settings.KeepVersions)
+			}},
+		{ID: "telemetry-retention", Name: "Telemetry retention", Description: "Roll up expired raw telemetry and purge expired history.", Interval: time.Minute, Timeout: 55 * time.Second, Available: true, Run: func(ctx context.Context, _ json.RawMessage) error {
+			return telemetry.RetentionPass(ctx, telemetryStore, retention, logger)
+		}},
+		{ID: "alert-evaluation", Name: "Evaluate alerts", Description: "Evaluate configured alert rules against current observations.", Interval: 30 * time.Second, Timeout: 25 * time.Second, Available: true, Run: func(ctx context.Context, _ json.RawMessage) error { return alerts.Evaluate(ctx, database.Pool) }},
+		{ID: "backup-scheduling", Name: "Schedule due backups", Description: "Queue due backup policies; individual policy schedules remain in backup settings.", Interval: 30 * time.Second, Timeout: 25 * time.Second, Available: true, Run: func(ctx context.Context, _ json.RawMessage) error {
+			_, err := backups.ScheduleOnce(ctx, database.Pool, time.Now().UTC())
+			return err
+		}},
+		{ID: "oauth-cleanup", Name: "OAuth expiration cleanup", Description: "Expire old MCP authorization codes and grants.", Interval: time.Hour, Timeout: 10 * time.Second, Available: mcpHandler != nil, Run: func(ctx context.Context, _ json.RawMessage) error { return mcpHandler.Cleanup(ctx) }},
+	})
+	if err := tasks.Start(ctx); err != nil {
+		logger.Error("scheduled task initialization failed", "error", err)
+		os.Exit(1)
+	}
+	defer tasks.Close()
+	tasksMux := http.NewServeMux()
+	tasks.Register(tasksMux, authService, auditRecorder)
+	router.Handle("/api/admin/*", tasksMux)
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -266,10 +297,7 @@ func main() {
 		}
 	}()
 	go stackAPI.Run(ctx)
-	go stackAPI.RunImageUpdates(ctx)
 	go notifications.Run(ctx, database.Pool, destinations, logger)
-	go alerts.Run(ctx, database.Pool, logger)
-	go backups.RunScheduler(ctx, database.Pool, logger)
 	logger.Info("starting Vigara API", "addr", cfg.Address)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("server failed", "error", err)

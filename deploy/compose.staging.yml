@@ -2,7 +2,10 @@ services:
   db:
     image: postgres:17-alpine
     restart: unless-stopped
-    env_file: .env.staging
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-vigira}
+      POSTGRES_USER: ${POSTGRES_USER:-vigira}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -17,7 +20,10 @@ services:
     env_file: .env.staging
     environment:
       VIGIRA_ADDR: ":8080"
+      VIGIRA_GITHUB_APP_MASTER_KEY: ${VIGIRA_GITHUB_APP_MASTER_KEY:-}
       VIGIRA_DATABASE_URL: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}?sslmode=disable"
+      VIGIRA_AGENT_RELEASE_TAG: ${VIGIRA_AGENT_RELEASE_TAG:-auto}
+      VIGIRA_AGENT_RELEASE_CACHE: /var/lib/vigira/agent-releases
     depends_on:
       db:
         condition: service_healthy
@@ -25,9 +31,11 @@ services:
       - "${VIGIRA_PORT:-8080}:8080"
     volumes:
       - android-backups:/var/lib/vigira/android-backups
+      - agent-releases:/var/lib/vigira/agent-releases
       - stack-git:/var/lib/vigira/stacks.git
 
 volumes:
   postgres-data:
   android-backups:
+  agent-releases:
   stack-git:

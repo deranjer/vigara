@@ -64,7 +64,7 @@ func NewManager(pool *pgxpool.Pool, key, executable string) (*Manager, error) {
 	}
 	b, err := base64.StdEncoding.DecodeString(key)
 	if err != nil || len(b) != 32 {
-		return nil, errors.New("VIGARA_BACKUP_MASTER_KEY must encode exactly 32 bytes in base64")
+		return nil, errors.New("VIGIRA_BACKUP_MASTER_KEY must encode exactly 32 bytes in base64")
 	}
 	block, err := aes.NewCipher(b)
 	if err != nil {
@@ -78,7 +78,7 @@ func (m *Manager) Available() bool { return m != nil && m.aead != nil }
 
 func (m *Manager) Seal(v ManagedInput) ([]byte, error) {
 	if !m.Available() {
-		return nil, errors.New("managed backups require VIGARA_BACKUP_MASTER_KEY")
+		return nil, errors.New("managed backups require VIGIRA_BACKUP_MASTER_KEY")
 	}
 	data, err := json.Marshal(v)
 	if err != nil {
@@ -308,7 +308,7 @@ func (m *Manager) getManaged(w http.ResponseWriter, r *http.Request) {
 
 func (m *Manager) saveManaged(w http.ResponseWriter, r *http.Request) {
 	if !m.Available() {
-		http.Error(w, "managed backups require VIGARA_BACKUP_MASTER_KEY", 503)
+		http.Error(w, "managed backups require VIGIRA_BACKUP_MASTER_KEY", 503)
 		return
 	}
 	var input ManagedInput
