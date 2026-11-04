@@ -154,13 +154,6 @@ try {
     }
     New-ItemProperty -LiteralPath $key -Name Environment -PropertyType MultiString -Value @($environment + $dockerEnvironment) -Force | Out-Null
   }
-  Start-Service -Name VigaraAgent
-  $service = Get-Service -Name VigaraAgent
-  $service.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
-  Start-Sleep -Seconds 2
-  $service.Refresh()
-  if ($service.Status -ne 'Running') { throw 'VigaraAgent stopped immediately after startup.' }
-  $serviceStarted = $true
   # This separate, protected helper survives stopping/replacing VigaraAgent.
   if ($bootstrap -and ($bootstrap.PSObject.Properties.Name -contains 'selfUpdates') -and $bootstrap.selfUpdates) {
     $updaterDir = Join-Path $installDir 'updater'
@@ -179,6 +172,14 @@ try {
     $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 6) -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
     Register-ScheduledTask -TaskName VigaraClientUpdate -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
   }
+  Start-Service -Name VigaraAgent
+  $service = Get-Service -Name VigaraAgent
+  $service.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+  Start-Sleep -Seconds 2
+  $service.Refresh()
+  if ($service.Status -ne 'Running') { throw 'VigaraAgent stopped immediately after startup.' }
+  $serviceStarted = $true
+
   if ($legacy) { Set-Service -Name VigiraAgent -StartupType Disabled }
   Write-Host 'Vigara Agent is running as the VigaraAgent Windows service. There is no tray icon.'
   Write-Host ('State: ' + $statePath)

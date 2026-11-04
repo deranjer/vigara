@@ -170,9 +170,6 @@ if [ "$MANAGED" -eq 1 ] || sudo python3 -c 'import json; exit(not json.load(open
   sudo mkdir -p /etc/systemd/system/vigara-agent.service.d
   printf '[Service]\nUser=root\nGroup=root\nProtectHome=false\nProtectSystem=false\n' | sudo tee /etc/systemd/system/vigara-agent.service.d/90-managed-backups.conf >/dev/null
 fi
-sudo systemctl daemon-reload
-sudo systemctl enable --now vigara-agent.service
-sudo systemctl is-active --quiet vigara-agent.service
 # A separate root-owned copy survives stopping/replacing the agent. Its private
 # enrollment copy cannot be changed by the monitoring service account.
 if [ "$SELF_UPDATES" -eq 1 ]; then
@@ -184,6 +181,9 @@ if [ "$SELF_UPDATES" -eq 1 ]; then
   sudo systemctl daemon-reload
   sudo systemctl enable --now vigara-updater.timer
 fi
+sudo systemctl daemon-reload
+sudo systemctl enable --now vigara-agent.service
+sudo systemctl is-active --quiet vigara-agent.service
 if sudo systemctl cat vigira-agent.service >/dev/null 2>&1; then sudo systemctl disable vigira-agent.service; fi
 rm -f -- "$CONFIG"
 echo 'Vigara agent is running. Existing device identity and legacy files were preserved.'
