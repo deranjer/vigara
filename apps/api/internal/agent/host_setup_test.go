@@ -61,7 +61,7 @@ func TestHostBundleEnrollsWithDeployScopeAndCannotReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(archive.File) != 5 {
+	if len(archive.File) != 7 {
 		t.Fatalf("unexpected bundle files: %d", len(archive.File))
 	}
 	var bootstrap struct {

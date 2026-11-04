@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"time"
 
 	agentchannel "github.com/deranjer/vigara/apps/agent/internal/channel"
 	dockercollector "github.com/deranjer/vigara/apps/agent/internal/collector/docker"
@@ -22,6 +23,7 @@ import (
 	"github.com/deranjer/vigara/apps/agent/internal/dockerchannel"
 	"github.com/deranjer/vigara/apps/agent/internal/mountfiles"
 	agentruntime "github.com/deranjer/vigara/apps/agent/internal/runtime"
+	"github.com/deranjer/vigara/apps/agent/internal/selfupdate"
 	"github.com/deranjer/vigara/internal/composeadoption"
 	"github.com/deranjer/vigara/internal/protocol"
 	"github.com/deranjer/vigara/internal/serverurl"
@@ -44,6 +46,12 @@ func execute(args []string, logger *slog.Logger) error {
 		return fmt.Errorf("usage: vigara-agent [--config PATH] enroll --server URL | run | compose-discover --root PATH")
 	}
 	switch rest[0] {
+	case "configure-updater":
+		return selfupdate.Configure(statePath)
+	case "update-client":
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		return selfupdate.Run(ctx)
 	case "enable-managed-backups":
 		return agentruntime.ConfigureManagedBackups(statePath)
 	case "enroll":
@@ -168,6 +176,7 @@ func runAgent(client *agentruntime.Client, logger *slog.Logger) error {
 		logger.Info("agent service started", "agentId", client.State.AgentID)
 		live := agentchannel.NewClient(client.State.ServerURL, client.State.Credential, agentruntime.AgentVersion, client.State.AllowInsecurePrivateHTTP, client.Capabilities, logger)
 		registerDocker(live, logger)
+		guardUpdates(live)
 		go live.Run(ctx)
 		return client.Run(ctx)
 	})

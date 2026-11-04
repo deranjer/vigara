@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/deranjer/vigara/apps/agent/internal/collector"
+	"github.com/deranjer/vigara/apps/agent/internal/selfupdate"
 	"github.com/deranjer/vigara/internal/modules"
 	"github.com/deranjer/vigara/internal/protocol"
 	"github.com/deranjer/vigara/internal/restic"
@@ -100,6 +101,11 @@ func enrollmentPayload(token, name string, capability protocol.CapabilityReport,
 }
 
 func (c *Client) Cycle(ctx context.Context) (time.Duration, error) {
+	release, err := selfupdate.Operation(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer release()
 	if c.State.AgentID == "" || c.State.Credential == "" || c.State.ServerURL == "" {
 		return 0, fmt.Errorf("agent is not enrolled; run enroll first")
 	}
@@ -129,7 +135,7 @@ func (c *Client) Cycle(ctx context.Context) (time.Duration, error) {
 		request.KnownConfigVersion = c.State.Configuration.Version
 	}
 	var response protocol.AgentResponse
-	err := c.post(ctx, c.State.ServerURL, "/api/agent/poll", c.State.Credential, request, &response)
+	err = c.post(ctx, c.State.ServerURL, "/api/agent/poll", c.State.Credential, request, &response)
 	var rejected *httpStatusError
 	if err != nil && errors.As(err, &rejected) && rejected.status == http.StatusForbidden && len(dockerTierCapabilities()) > 0 && !c.tiersSuppressed.Load() {
 		// The server only rejects a report that exceeds the enrollment scope. Keep monitoring

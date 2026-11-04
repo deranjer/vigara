@@ -74,6 +74,7 @@ func (h *Handler) selectServerURL(requested string) (string, bool) {
 }
 
 type releaseManifest struct {
+	SelfUpdateProtocol  string `json:"selfUpdateProtocol"`
 	ProtocolVersion     string `json:"protocolVersion"`
 	SourceRevision      string `json:"sourceRevision"`
 	ResticLicenseSHA256 string `json:"resticLicenseSha256"`
@@ -121,6 +122,10 @@ func (h *Handler) verifiedArtifact(target string) ([]byte, string, error) {
 	h.releaseFilesMu.RLock()
 	defer h.releaseFilesMu.RUnlock()
 	directory := h.artifactDirectory()
+	return verifiedArtifactIn(directory, target)
+}
+
+func verifiedArtifactIn(directory, target string) ([]byte, string, error) {
 	if _, ok := supportedDownloads[target]; !ok || directory == "" {
 		return nil, "", os.ErrNotExist
 	}
@@ -369,7 +374,10 @@ func (h *Handler) writeAgentDownload(w http.ResponseWriter, r *http.Request, req
 		_, e = f.Write(data)
 		return e
 	}
-	bootstrap, _ := json.Marshal(map[string]any{"serverUrl": serverURL, "insecureHttp": !serverurl.IsSecure(serverURL), "token": token, "name": req.Name, "sessionId": sessionID, "reinstall": replacementID != nil, "agentId": replacementID, "managedBackups": managedEnabled, "docker": req.Docker})
+	_, updatePlan, _ := h.updateArtifact(req.Target)
+	artifactSum := sha256.Sum256(artifact)
+	selfUpdates := updatePlan != nil && updatePlan.SHA256 == hex.EncodeToString(artifactSum[:])
+	bootstrap, _ := json.Marshal(map[string]any{"serverUrl": serverURL, "insecureHttp": !serverurl.IsSecure(serverURL), "token": token, "name": req.Name, "sessionId": sessionID, "reinstall": replacementID != nil, "agentId": replacementID, "managedBackups": managedEnabled, "docker": req.Docker, "selfUpdates": selfUpdates})
 	binaryName := "vigara-agent"
 	if strings.HasPrefix(req.Target, "windows-") {
 		binaryName = "vigara-agent.exe"
@@ -394,6 +402,12 @@ func (h *Handler) writeAgentDownload(w http.ResponseWriter, r *http.Request, req
 		}
 		if err == nil {
 			err = add("vigara-agent.service", []byte(linuxAgentService))
+		}
+		if err == nil {
+			err = add("vigara-updater.service", []byte(linuxUpdaterService))
+		}
+		if err == nil {
+			err = add("vigara-updater.timer", []byte(linuxUpdaterTimer))
 		}
 	}
 	if err == nil && strings.HasPrefix(req.Target, "windows-") {
@@ -450,6 +464,12 @@ var linuxDockerInstaller string
 
 //go:embed installers/linux.service
 var linuxAgentService string
+
+//go:embed installers/updater.service
+var linuxUpdaterService string
+
+//go:embed installers/updater.timer
+var linuxUpdaterTimer string
 
 //go:embed installers/windows.ps1
 var windowsAgentInstaller string
