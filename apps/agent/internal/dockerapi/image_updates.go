@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/deranjer/vigara/internal/imageupdates"
 	"github.com/deranjer/vigara/internal/protocol"
 )
 
@@ -157,7 +158,7 @@ func (c *Client) imageCheck(ctx context.Context, p protocol.DockerImageCheckPara
 	if err := c.getJSON(ctx, "/containers/"+url.PathEscape(p.ID)+"/json", nil, maxInspectBytes, &raw); err != nil {
 		return protocol.DockerImageCheck{}, err
 	}
-	r := protocol.DockerImageCheck{ID: raw.ID, Name: strings.TrimPrefix(raw.Name, "/"), Image: raw.Config.Image, Current: raw.Image, Project: raw.Config.Labels["com.docker.compose.project"], Service: raw.Config.Labels["com.docker.compose.service"], Status: "unknown"}
+	r := protocol.DockerImageCheck{ID: raw.ID, Name: strings.TrimPrefix(raw.Name, "/"), Image: raw.Config.Image, RunningImage: raw.Config.Image, Current: raw.Image, Project: raw.Config.Labels["com.docker.compose.project"], Service: raw.Config.Labels["com.docker.compose.service"], Status: "unknown"}
 	ref := raw.Config.Image
 	if p.Ref != "" {
 		ref = p.Ref
@@ -167,11 +168,18 @@ func (c *Client) imageCheck(ctx context.Context, p protocol.DockerImageCheckPara
 		r.Message = "No registry tag is available for this image."
 		return r, nil
 	}
-	if strings.Contains(ref, "@") {
+	monitor := imageupdates.MonitoringReference(ref)
+	if monitor == "" && strings.Contains(ref, "@") {
 		r.Status = "pinned"
-		r.Message = "Digest pinned; select a tracking tag to monitor a managed service."
+		r.Message = "No tracking tag is available. Set a monitoring tag to check this pinned image. Its deployed digest will stay unchanged."
 		return r, nil
 	}
+	if monitor == "" {
+		r.Message = "No registry tag is available for this image."
+		return r, nil
+	}
+	ref = monitor
+	r.Image = ref
 	var platform imagePlatform
 	if err := c.getJSON(ctx, "/images/"+url.PathEscape(raw.Image)+"/json", nil, maxInspectBytes, &platform); err != nil {
 		r.Message = "The running image platform could not be read."

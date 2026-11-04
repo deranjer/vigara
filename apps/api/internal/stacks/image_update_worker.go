@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/deranjer/vigara/internal/imageupdates"
 	"github.com/deranjer/vigara/internal/protocol"
 	"github.com/deranjer/vigara/internal/stack"
 	"github.com/jackc/pgx/v5"
@@ -97,20 +98,34 @@ func (a *API) checkImageHost(ctx context.Context, agent string) error {
 	}
 	// Original tags are retained with successful managed releases. This works
 	// even though those containers were launched using immutable digests.
-	rows, err := a.Pool.Query(ctx, `SELECT DISTINCT ON (d.stack_id) d.project_name,d.tracking FROM stack_deployments d WHERE d.agent_id=$1 AND d.status='succeeded' ORDER BY d.stack_id,d.created_at DESC`, agent)
+	rows, err := a.Pool.Query(ctx, `SELECT DISTINCT ON (d.stack_id) d.id,d.project_name,d.tracking,d.snapshot FROM stack_deployments d WHERE d.agent_id=$1 AND d.status='succeeded' ORDER BY d.stack_id,d.created_at DESC`, agent)
 	if err != nil {
 		return err
 	}
 	tracking := map[string]map[string]string{}
+	type recovered struct {
+		id            string
+		before, after []byte
+	}
+	recoveredRecords := []recovered{}
 	for rows.Next() {
-		var project string
-		var raw []byte
-		if err = rows.Scan(&project, &raw); err != nil {
+		var id, project string
+		var raw, snapshot []byte
+		if err = rows.Scan(&id, &project, &raw, &snapshot); err != nil {
 			rows.Close()
 			return err
 		}
 		refs := map[string]string{}
 		if json.Unmarshal(raw, &refs) == nil {
+			var s stack.Snapshot
+			if json.Unmarshal(snapshot, &s) == nil {
+				found := recoverImageTracking(s, refs)
+				if !stack.Equal(found, refs) {
+					after, _ := json.Marshal(found)
+					recoveredRecords = append(recoveredRecords, recovered{id, raw, after})
+					refs = found
+				}
+			}
 			tracking[project] = refs
 		}
 	}
@@ -118,6 +133,11 @@ func (a *API) checkImageHost(ctx context.Context, agent string) error {
 	rows.Close()
 	if err != nil {
 		return err
+	}
+	for _, r := range recoveredRecords {
+		if _, err = a.Pool.Exec(ctx, "UPDATE stack_deployments SET tracking=$2 WHERE id=$1 AND tracking=$3", r.id, r.after, r.before); err != nil {
+			return err
+		}
 	}
 	complete := !list.Truncated
 	var cursor string
@@ -135,11 +155,25 @@ func (a *API) checkImageHost(ctx context.Context, agent string) error {
 			return errors.New("image check will continue with remaining containers")
 		}
 		var ignored bool
-		_ = a.Pool.QueryRow(ctx, "SELECT ignored FROM container_image_updates WHERE agent_id=$1 AND container_id=$2", agent, container.ID).Scan(&ignored)
+		var tag string
+		err = a.Pool.QueryRow(ctx, "SELECT ignored,tracking_tag FROM container_image_updates WHERE agent_id=$1 AND container_id=$2", agent, container.ID).Scan(&ignored, &tag)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
 		if ignored {
 			continue
 		}
 		params := protocol.DockerImageCheckParams{ID: container.ID, Ref: tracking[container.Project][container.Service]}
+		if tag != "" {
+			params.Ref = imageupdates.WithMonitoringTag(container.Image, tag)
+		}
+		ref := params.Ref
+		if ref == "" {
+			ref = container.Image
+		}
+		if monitor := imageupdates.MonitoringReference(ref); monitor != "" {
+			params.Ref = monitor
+		}
 		var result protocol.DockerImageCheck
 		callCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 		err = a.Hub.Call(callCtx, agent, protocol.MethodDockerImageCheck, params, &result)
@@ -150,6 +184,9 @@ func (a *API) checkImageHost(ctx context.Context, agent string) error {
 		}
 		if result.ID != container.ID {
 			return errors.New("uncorrelated image result")
+		}
+		if result.RunningImage == "" {
+			result.RunningImage = container.Image
 		}
 		if result.Status != "current" && result.Status != "available" && result.Status != "pinned" && result.Status != "unknown" {
 			return errors.New("invalid image status")
@@ -388,8 +425,13 @@ func (a *API) queueImageUpdate(ctx context.Context, id string, settings imageSet
 			return err
 		}
 		var result protocol.DockerImageCheck
-		if json.Unmarshal(raw, &result) != nil || result.Image != ref || !imageManifestDigest.MatchString(result.Manifest) {
+		if json.Unmarshal(raw, &result) != nil || !imageManifestDigest.MatchString(result.Manifest) {
 			return stack.ErrInvalid
+		}
+		// A monitoring override observes a channel; it cannot authorize deploying
+		// a different tag from the stack's explicitly approved source reference.
+		if result.Image != ref {
+			continue
 		}
 		repository := ref
 		if i := strings.LastIndex(repository, ":"); i > strings.LastIndex(repository, "/") {

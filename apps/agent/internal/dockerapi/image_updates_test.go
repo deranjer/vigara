@@ -20,6 +20,7 @@ func TestImageCheckComparesRunningConfigAndSelectsPlatform(t *testing.T) {
 	next := "sha256:" + strings.Repeat("b", 64)
 	manifest := "sha256:" + strings.Repeat("c", 64)
 	for _, tc := range []struct{ name, ref, remote, want string }{
+		{"tag-retained-in-pin", "app:stable@" + manifest, next, "available"},
 		{"unchanged", "app:stable", old, "current"}, {"changed", "app:1.2.3", next, "available"}, {"pinned", "app@" + manifest, next, "pinned"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
