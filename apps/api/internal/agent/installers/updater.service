@@ -1,0 +1,12 @@
+[Unit]
+Description=Vigara client package updater
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/vigara-updater update-client
+TimeoutStartSec=360
+UMask=0077
+PrivateTmp=true
+NoNewPrivileges=true

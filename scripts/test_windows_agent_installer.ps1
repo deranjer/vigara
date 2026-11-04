@@ -1,4 +1,4 @@
-param([ValidateSet('legacy','fresh','failure','wrong-agent','managed','docker','reset-docker','reset','reset-explicit','reset-cancel','reset-typo','reset-legacy','reset-decline','reset-failure','reset-service-failure','reset-missing','reset-reinstall','reset-noninteractive')][string]$Scenario = 'legacy')
+param([ValidateSet('legacy','fresh','updater','failure','wrong-agent','managed','docker','reset-docker','reset','reset-explicit','reset-cancel','reset-typo','reset-legacy','reset-decline','reset-failure','reset-service-failure','reset-missing','reset-reinstall','reset-noninteractive')][string]$Scenario = 'legacy')
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 $fixture = Join-Path $repo ('.cache\installer-migration-tests\' + $Scenario + '-' + [Guid]::NewGuid())
@@ -10,11 +10,17 @@ $legacyDir = Join-Path $env:ProgramData 'Vigira'
 $currentDir = Join-Path $env:ProgramData 'Vigara'
 $saved = '{"agentId":"synthetic-agent","credential":"synthetic-credential","serverUrl":"https://example.invalid"}'
 New-Item -ItemType Directory -Force $legacyDir,$currentDir | Out-Null
-if ($Scenario -in @('fresh','managed','docker') -or ($Scenario.StartsWith('reset') -and $Scenario -ne 'reset-legacy')) { [IO.File]::WriteAllText((Join-Path $currentDir 'agent.json'),$saved) }
+if ($Scenario -in @('fresh','managed','docker','updater') -or ($Scenario.StartsWith('reset') -and $Scenario -ne 'reset-legacy')) { [IO.File]::WriteAllText((Join-Path $currentDir 'agent.json'),$saved) }
 else { [IO.File]::WriteAllText((Join-Path $legacyDir 'agent.json'),$saved) }
 $bundle = Join-Path $fixture 'bundle'
 New-Item -ItemType Directory -Force $bundle | Out-Null
 Copy-Item -LiteralPath (Join-Path $repo 'apps\api\internal\agent\installers\windows.ps1') -Destination (Join-Path $bundle 'install.ps1')
+# Keep updater setup entirely within the fixture; never register a real task.
+$installerPath = Join-Path $bundle 'install.ps1'
+$installerText = [IO.File]::ReadAllText($installerPath).Replace('& $updaterExe ', '& Invoke-TestUpdater ')
+[IO.File]::WriteAllText($installerPath, $installerText)
+if ($Scenario -eq 'updater') { [IO.File]::WriteAllText((Join-Path $bundle 'bootstrap.json'),'{"selfUpdates":true}') }
+
 if ($Scenario.StartsWith('reset')) {
   # Substitute only the executable call in the isolated fixture; no real agent or network is used.
   $script = [IO.File]::ReadAllText((Join-Path $bundle 'install.ps1')).Replace('& $exe ', '& Invoke-TestAgent ')
@@ -51,7 +57,7 @@ function FakeService($name) {
   $service | Add-Member ScriptMethod Refresh {}
   return $service
 }
-$global:OldService = if ($Scenario -in @('fresh','managed','docker') -or ($Scenario.StartsWith('reset') -and $Scenario -ne 'reset-legacy')) { $null } else { FakeService 'VigiraAgent' }
+$global:OldService = if ($Scenario -in @('fresh','managed','docker','updater') -or ($Scenario.StartsWith('reset') -and $Scenario -ne 'reset-legacy')) { $null } else { FakeService 'VigiraAgent' }
 $global:NewService = if ($Scenario.StartsWith('reset') -and $Scenario -ne 'reset-legacy') { FakeService 'VigaraAgent' } else { $null }
 $global:MigratedEnvironment = $null
 function New-Object {
@@ -84,6 +90,24 @@ function New-Service {
   $global:NewService=FakeService $Name
 }
 function icacls.exe { $global:LASTEXITCODE=0 }
+function Get-ScheduledTask { param($TaskName,$ErrorAction) return $null }
+$global:UpdaterConfigured = $false
+$global:UpdaterRegistered = $false
+function Invoke-TestUpdater {
+  if ($args[-1] -ne 'configure-updater' -or -not (Test-Path -LiteralPath $statePath)) { throw 'Updater setup lost saved enrollment' }
+  $global:UpdaterConfigured = $true
+  $global:LASTEXITCODE = 0
+}
+function New-ScheduledTaskAction { param($Execute,$Argument) return [pscustomobject]@{Execute=$Execute;Argument=$Argument} }
+function New-ScheduledTaskTrigger { param([switch]$Once,$At,$RepetitionInterval) if ($RepetitionInterval.TotalMinutes -ne 1) { throw 'Updater must scan every minute' }; return [pscustomobject]@{} }
+function New-ScheduledTaskPrincipal { param($UserId,$LogonType,$RunLevel) if ($UserId -ne 'SYSTEM' -or $RunLevel -ne 'Highest') { throw 'Updater principal must be LocalSystem' }; return [pscustomobject]@{} }
+function New-ScheduledTaskSettingsSet { param($MultipleInstances,$ExecutionTimeLimit,[switch]$StartWhenAvailable,[switch]$AllowStartIfOnBatteries,[switch]$DontStopIfGoingOnBatteries) if ($MultipleInstances -ne 'IgnoreNew') { throw 'Updater must prevent overlap' };return [pscustomobject]@{} }
+function Register-ScheduledTask {
+  param($TaskName,$Action,$Trigger,$Principal,$Settings,[switch]$Force)
+  if (-not $global:UpdaterConfigured -or $TaskName -ne 'VigaraClientUpdate' -or $Action.Execute -notlike '*Vigara*updater*vigara-updater.exe' -or $Action.Argument -ne 'update-client') { throw 'Updater task was not safely configured' }
+  $global:UpdaterRegistered = $true
+}
+
 function Start-Sleep { param($Seconds) }
 function Invoke-WebRequest { param([switch]$UseBasicParsing,$Uri,$TimeoutSec) return [pscustomobject]@{StatusCode=200;Content='OK'} }
 function Read-Host {
@@ -139,5 +163,6 @@ if ($Scenario -eq 'managed') {
   if (-not $state.managedBackups -or $state.agentId -ne 'synthetic-agent' -or $state.credential -ne 'synthetic-credential') {throw 'Managed opt-in did not preserve enrollment'}
   if (-not (Test-Path -LiteralPath (Join-Path $env:ProgramFiles 'Vigara\restic.exe'))) {throw 'Restic was not installed'}
 } elseif ([IO.File]::ReadAllText((Join-Path $currentDir 'agent.json')) -ne $saved) {throw 'Enrollment changed during migration'}
-if ($Scenario -notin @('fresh','managed','docker') -and [IO.File]::ReadAllText((Join-Path $legacyDir 'agent.json')) -ne $saved) {throw 'Legacy credentials were modified'}
+if ($Scenario -notin @('fresh','managed','docker','updater') -and [IO.File]::ReadAllText((Join-Path $legacyDir 'agent.json')) -ne $saved) {throw 'Legacy credentials were modified'}
+if ($Scenario -eq 'updater' -and (-not $global:UpdaterRegistered -or -not $global:UpdaterConfigured)) { throw 'Installer omitted self-update setup' }
 Write-Host ('PASS: ' + $Scenario + ' installer migration behavior')

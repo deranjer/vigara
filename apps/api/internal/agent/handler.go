@@ -85,6 +85,12 @@ type EnrollmentTokenResponse struct {
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/devices/{deviceID}/agent-update", h.deviceUpdates)
+	mux.HandleFunc("POST /api/devices/{deviceID}/agent-update", h.deviceUpdates)
+	mux.HandleFunc("GET /api/agent/update-plan", h.agentUpdatePlan)
+	mux.HandleFunc("GET /api/agent/update-package/{digest}", h.agentUpdatePackage)
+	mux.HandleFunc("POST /api/agent/update-status", h.agentUpdateStatus)
+	mux.HandleFunc("GET /api/agent/update-health", h.agentUpdateHealth)
 	mux.HandleFunc("GET /api/agent-downloads/availability", h.downloadAvailability)
 	mux.HandleFunc("POST /api/agent-downloads", h.createAgentDownload)
 	mux.HandleFunc("GET /api/agent-downloads/{id}", h.agentDownloadStatus)

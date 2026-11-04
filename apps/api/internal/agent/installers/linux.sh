@@ -3,6 +3,13 @@ set -eu
 umask 077
 BASE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 CONFIG="$BASE/bootstrap.json"
+SELF_UPDATES=0
+if [ -f "$CONFIG" ]; then SELF_UPDATES=$(python3 -c 'import json,sys; print(int(bool(json.load(open(sys.argv[1])).get("selfUpdates"))))' "$CONFIG"); fi
+sudo systemctl stop vigara-updater.timer 2>/dev/null || true
+if sudo systemctl is-active --quiet vigara-updater.service; then
+  echo 'Client updater is running; retry installation after it finishes.' >&2
+  exit 1
+fi
 RESET_ENROLLMENT=0
 NON_INTERACTIVE=0
 while [ "$#" -gt 0 ]; do
@@ -162,6 +169,17 @@ fi
 if [ "$MANAGED" -eq 1 ] || sudo python3 -c 'import json; exit(not json.load(open("/var/lib/vigara-agent/agent.json")).get("managedBackups", False))'; then
   sudo mkdir -p /etc/systemd/system/vigara-agent.service.d
   printf '[Service]\nUser=root\nGroup=root\nProtectHome=false\nProtectSystem=false\n' | sudo tee /etc/systemd/system/vigara-agent.service.d/90-managed-backups.conf >/dev/null
+fi
+# A separate root-owned copy survives stopping/replacing the agent. Its private
+# enrollment copy cannot be changed by the monitoring service account.
+if [ "$SELF_UPDATES" -eq 1 ]; then
+  sudo install -d -m 0755 /usr/local/libexec
+  sudo install -m 0755 "$BASE/vigara-agent" /usr/local/libexec/vigara-updater
+  sudo /usr/local/libexec/vigara-updater --config /var/lib/vigara-agent/agent.json configure-updater
+  sudo install -m 0644 "$BASE/vigara-updater.service" /etc/systemd/system/vigara-updater.service
+  sudo install -m 0644 "$BASE/vigara-updater.timer" /etc/systemd/system/vigara-updater.timer
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now vigara-updater.timer
 fi
 sudo systemctl daemon-reload
 sudo systemctl enable --now vigara-agent.service

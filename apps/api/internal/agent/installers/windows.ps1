@@ -12,6 +12,11 @@ try {
   if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw 'Run install.cmd and accept the administrator prompt. No enrollment was attempted.'
   }
+  $oldTask = Get-ScheduledTask -TaskName VigaraClientUpdate -ErrorAction SilentlyContinue
+  if ($oldTask) {
+    Disable-ScheduledTask -TaskName VigaraClientUpdate | Out-Null
+    if ((Get-ScheduledTask -TaskName VigaraClientUpdate).State -eq 'Running') { throw 'Client updater is running; retry installation after it finishes.' }
+  }
   $stateDir = Join-Path $env:ProgramData 'Vigara'
   $statePath = Join-Path $stateDir 'agent.json'
   $legacyState = Join-Path $env:ProgramData 'Vigira\agent.json'
@@ -149,6 +154,24 @@ try {
     }
     New-ItemProperty -LiteralPath $key -Name Environment -PropertyType MultiString -Value @($environment + $dockerEnvironment) -Force | Out-Null
   }
+  # This separate, protected helper survives stopping/replacing VigaraAgent.
+  if ($bootstrap -and ($bootstrap.PSObject.Properties.Name -contains 'selfUpdates') -and $bootstrap.selfUpdates) {
+    $updaterDir = Join-Path $installDir 'updater'
+    $updaterExe = Join-Path $updaterDir 'vigara-updater.exe'
+    New-Item -ItemType Directory -Force $updaterDir | Out-Null
+    icacls.exe $updaterDir /reset | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Could not reset client updater directory permissions.' }
+    icacls.exe $updaterDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Could not secure the client updater directory.' }
+    Copy-Item -LiteralPath $exe -Destination $updaterExe -Force
+    & $updaterExe --config $statePath configure-updater
+    if ($LASTEXITCODE -ne 0) { throw 'Could not configure client self updates.' }
+    $action = New-ScheduledTaskAction -Execute $updaterExe -Argument 'update-client'
+    $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1)
+    $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+    $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 6) -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+    Register-ScheduledTask -TaskName VigaraClientUpdate -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+  }
   Start-Service -Name VigaraAgent
   $service = Get-Service -Name VigaraAgent
   $service.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
@@ -156,6 +179,7 @@ try {
   $service.Refresh()
   if ($service.Status -ne 'Running') { throw 'VigaraAgent stopped immediately after startup.' }
   $serviceStarted = $true
+
   if ($legacy) { Set-Service -Name VigiraAgent -StartupType Disabled }
   Write-Host 'Vigara Agent is running as the VigaraAgent Windows service. There is no tray icon.'
   Write-Host ('State: ' + $statePath)

@@ -35,7 +35,7 @@ def main() -> int:
         return 2
     restic_version = re.search(r'const PinnedVersion = "([^"\n]+)"', (ROOT / "internal/restic/runner.go").read_text()).group(1)
     protocol_version = re.search(r'const CurrentVersion = "([^"\n]+)"', (ROOT / "internal/protocol/protocol.go").read_text()).group(1)
-    manifest = {"version": version, "sourceRevision": revision, "protocolVersion": protocol_version, "artifacts": {}, "resticVersion": restic_version, "resticArtifacts": {}}
+    manifest = {"version": version, "sourceRevision": revision, "protocolVersion": protocol_version, "selfUpdateProtocol": "v1", "artifacts": {}, "resticVersion": restic_version, "resticArtifacts": {}}
     for target, (goos, goarch, filename) in TARGETS.items():
         path = output / filename
         env = os.environ.copy()

@@ -1,5 +1,8 @@
 # Agent enrollment and services
 
+For dashboard-triggered and automatic client package installation, see
+[Client self updates](client-updates.md).
+
 ## Device hardware inventory
 
 Device info shows a used/free capacity bar for every filesystem in the latest

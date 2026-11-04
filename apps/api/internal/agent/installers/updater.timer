@@ -1,0 +1,11 @@
+[Unit]
+Description=Check for approved Vigara client updates
+
+[Timer]
+OnBootSec=90s
+OnUnitInactiveSec=60s
+RandomizedDelaySec=15s
+Unit=vigara-updater.service
+
+[Install]
+WantedBy=timers.target
