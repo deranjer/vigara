@@ -2,6 +2,8 @@
 
 **Docker Stacks → Image updates** monitors all containers discovered on Docker-enabled agents, including external Compose projects and standalone containers. Monitoring never enables deployments. External containers are notification-only.
 
+The **Image updates** tab contains the container table, search, device/status/management filters, and ascending or descending sorting by container, device, image, status, or check time. Filters and sorting stay selected while results refresh or you switch tabs. Per-device check details expand below the table. The second tab, **Global schedule**, contains the check interval and default maintenance window.
+
 ## Checks and notifications
 
 Checks follow the configured image reference: `latest`, `stable`, `17`, and `1.2.3` each track that exact tag. Vigara does not enumerate versions, upgrade major versions, or infer release ordering. A tag can move backward, so the result says **Image changed**, not “newer version.” Deployment pins are separate from monitoring tags. A reference such as `app:stable@sha256:…` can still be monitored against `app:stable`. For older managed deployments, Vigara recovers literal source references from the exact recorded Compose snapshot without redeploying. Digest-only references have no implied tag: Vigara never guesses `latest` or a PostgreSQL version. Local images without a registry reference report an unavailable check.
