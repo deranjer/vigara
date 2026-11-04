@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/deranjer/vigara/internal/envcompat"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -30,6 +31,7 @@ import (
 )
 
 func main() {
+	envcompat.ApplyAliases()
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	if err := execute(os.Args[1:], logger); err != nil {
 		logger.Error("agent stopped", "error", err)

@@ -1,0 +1,10 @@
+DROP TABLE image_update_notices;
+DELETE FROM alert_rules WHERE kind='image_update';
+ALTER TABLE alert_rules DROP CONSTRAINT alert_rules_kind_check;
+ALTER TABLE alert_rules ADD CONSTRAINT alert_rules_kind_check CHECK(kind IN ('device_unavailable','threshold','backup_failure','backup_overdue'));
+ALTER TABLE stack_deployments DROP COLUMN policy_version, DROP COLUMN automatic, DROP COLUMN tracking;
+ALTER TABLE stack_deployment_previews DROP COLUMN tracking;
+DROP TABLE stack_update_policies;
+DROP TABLE container_image_updates;
+DROP TABLE image_update_hosts;
+DROP TABLE image_update_settings;

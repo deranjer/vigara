@@ -2,7 +2,7 @@ package config
 
 import (
 	"fmt"
-	"os"
+	"github.com/deranjer/vigara/internal/envcompat"
 	"strconv"
 
 	"github.com/deranjer/vigara/apps/api/internal/mcpserver"
@@ -23,12 +23,12 @@ type Config struct {
 
 func Load() (Config, error) {
 	cfg := Config{
-		MCPURL:                       os.Getenv("VIGIRA_MCP_URL"),
+		MCPURL:                       envcompat.Getenv("VIGIRA_MCP_URL"),
 		Address:                      envOr("VIGIRA_ADDR", ":8080"),
 		DatabaseURL:                  envOr("VIGIRA_DATABASE_URL", "postgres://vigira:vigira@localhost:5432/vigira?sslmode=disable"),
 		TelemetryRawRetentionHours:   30 * 24,
 		TelemetryRollupRetentionDays: 365,
-		AndroidBackupRoot:            os.Getenv("VIGIRA_ANDROID_BACKUP_ROOT"),
+		AndroidBackupRoot:            envcompat.Getenv("VIGIRA_ANDROID_BACKUP_ROOT"),
 		AndroidBackupMaxFileBytes:    512 << 20,
 		AndroidBackupMaxTotalBytes:   100 << 30,
 	}
@@ -58,14 +58,14 @@ func Load() (Config, error) {
 }
 
 func envOr(key, fallback string) string {
-	if value := os.Getenv(key); value != "" {
+	if value := envcompat.Getenv(key); value != "" {
 		return value
 	}
 	return fallback
 }
 
 func parseBoundedInt(key string, value *int, minimum, maximum int) error {
-	raw := os.Getenv(key)
+	raw := envcompat.Getenv(key)
 	if raw == "" {
 		return nil
 	}
@@ -78,7 +78,7 @@ func parseBoundedInt(key string, value *int, minimum, maximum int) error {
 }
 
 func parseBoundedInt64(key string, value *int64, minimum, maximum int64) error {
-	raw := os.Getenv(key)
+	raw := envcompat.Getenv(key)
 	if raw == "" {
 		return nil
 	}

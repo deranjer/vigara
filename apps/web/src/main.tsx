@@ -1,3 +1,4 @@
+import { ImageUpdates } from './image-updates'
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { useEffect, useState, type FormEvent } from 'react'
@@ -52,12 +53,12 @@ function App() {
   const [route, setRoute] = useState<Route>(() => parseRoute(window.location.hash))
   const section = route.section
   const selectedId = route.id
-  const dockerSection = ['stacks', 'containers', 'images', 'networks', 'volumes'].includes(section)
+  const dockerSection = ['stacks', 'containers', 'updates', 'images', 'networks', 'volumes'].includes(section)
   const [dockerMenuOpen, setDockerMenuOpen] = useState(dockerSection)
   const { colorScheme, toggleColorScheme } = useMantineColorScheme()
 
   useEffect(() => {
-    if (['stacks', 'containers', 'images', 'networks', 'volumes'].includes(section)) setDockerMenuOpen(true)
+    if (['stacks', 'containers', 'updates', 'images', 'networks', 'volumes'].includes(section)) setDockerMenuOpen(true)
   }, [section])
   useEffect(() => { document.documentElement.dataset.mantineColorScheme = colorScheme }, [colorScheme])
   useEffect(() => { window.scrollTo({ top: 0, left: 0, behavior: 'instant' }) }, [section, selectedId])
@@ -172,6 +173,7 @@ function App() {
           <NavLink component="button" label="Docker Stacks" leftSection={<IconBox size={18}/>} opened={dockerMenuOpen} onChange={setDockerMenuOpen} childrenOffset={28} aria-expanded={dockerMenuOpen}>
             <NavLink component="button" label="Compose stacks" leftSection={<IconStack3 size={16}/>} active={section === 'stacks'} onClick={() => navigate('stacks')} />
             <NavLink component="button" label="Containers" leftSection={<IconBox size={16}/>} active={section === 'containers'} onClick={() => navigate('containers')} />
+            <NavLink component="button" label="Image updates" leftSection={<IconCube size={16}/>} active={section === 'updates'} onClick={() => navigate('updates')} />
             <NavLink component="button" label="Images" leftSection={<IconCube size={16}/>} active={section === 'images'} onClick={() => navigate('images')} />
             <NavLink component="button" label="Networks" leftSection={<IconNetwork size={16}/>} active={section === 'networks'} onClick={() => navigate('networks')} />
             <NavLink component="button" label="Volumes" leftSection={<IconDatabase size={16}/>} active={section === 'volumes'} onClick={() => navigate('volumes')} />
@@ -219,7 +221,7 @@ function App() {
             <Button type="submit" loading={busy}>Log in</Button>
           </form>
         </section>}
-        {view === 'dashboard' && <>{error && <Alert color="red" mb="md" withCloseButton onClose={() => setError('')}>{error}</Alert>}{section === 'admin' ? <Admin role={user?.role ?? ''} /> : section === 'account' ? user && <Account key={user.id} user={user} onChanged={setUser} onSessionExpired={() => { setUser(null); setView('login'); setError('Your session expired. Log in again.') }} /> : section === 'stacks' ? <Stacks key={user?.id} route={route} role={user?.role ?? ''} onNavigate={go} /> : section === 'images' || section === 'networks' || section === 'volumes' ? <Resources key={`${user?.id}/${section}`} kind={section === 'images' ? 'image' : section === 'networks' ? 'network' : 'volume'} route={route} role={user?.role ?? ''} onNavigate={go} /> : section === 'containers' ? <Containers key={user?.id} route={route} role={user?.role ?? ''} onNavigate={go} /> : <Devices key={user?.id} section={section} selectedId={selectedId} onSelect={(id) => go(routeOf(id ? 'devices' : section, id))} />}</>}
+        {view === 'dashboard' && <>{error && <Alert color="red" mb="md" withCloseButton onClose={() => setError('')}>{error}</Alert>}{section === 'admin' ? <Admin role={user?.role ?? ''} /> : section === 'account' ? user && <Account key={user.id} user={user} onChanged={setUser} onSessionExpired={() => { setUser(null); setView('login'); setError('Your session expired. Log in again.') }} /> : section === 'updates' ? <ImageUpdates key={user?.id} role={user?.role ?? ''} onNavigate={go} /> : section === 'stacks' ? <Stacks key={user?.id} route={route} role={user?.role ?? ''} onNavigate={go} /> : section === 'images' || section === 'networks' || section === 'volumes' ? <Resources key={`${user?.id}/${section}`} kind={section === 'images' ? 'image' : section === 'networks' ? 'network' : 'volume'} route={route} role={user?.role ?? ''} onNavigate={go} /> : section === 'containers' ? <Containers key={user?.id} route={route} role={user?.role ?? ''} onNavigate={go} /> : <Devices key={user?.id} section={section} selectedId={selectedId} onSelect={(id) => go(routeOf(id ? 'devices' : section, id))} />}</>}
       </AppShell.Main>
     </AppShell>
   </>

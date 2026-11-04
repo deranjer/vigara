@@ -119,6 +119,24 @@ func imageOverride(file string, images map[string]string) error {
 }
 
 func Register(c *channel.Client, r *Runner) {
+	c.Calls[protocol.MethodComposeImagePlan] = func(ctx context.Context, p json.RawMessage) (any, error) {
+		var q struct {
+			Snapshot stack.Snapshot    `json:"snapshot"`
+			Images   map[string]string `json:"images"`
+		}
+		if json.Unmarshal(p, &q) != nil || !validImages(q.Images) {
+			return nil, stack.ErrInvalid
+		}
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		t, m, err := r.target(q.Snapshot)
+		if err != nil {
+			return nil, validationFailure(err)
+		}
+		plan, err := r.modelWithImages(ctx, q.Snapshot, t, m, q.Images)
+		return plan, validationFailure(err)
+	}
+
 	c.Calls[protocol.MethodComposeDiscover] = func(ctx context.Context, p json.RawMessage) (any, error) { return r.DiscoverImports(ctx) }
 	for method, handler := range map[string]func(context.Context, protocol.ComposeImportRequest) (any, error){
 		protocol.MethodComposeImportPreview: func(ctx context.Context, q protocol.ComposeImportRequest) (any, error) {
@@ -504,6 +522,18 @@ func (r *Runner) modelWithImages(ctx context.Context, s stack.Snapshot, t Target
 	}
 	configArgs := append(args, "config", "--format", "json")
 	if images == nil {
+		// Keep the interpolated source reference before Compose pins the release.
+		original, err := r.command(ctx, dir, configArgs...)
+		var source struct {
+			Services map[string]struct{ Image string }
+		}
+		if err != nil || json.Unmarshal(original, &source) != nil {
+			return plan, errCompose
+		}
+		plan.Tracking = map[string]string{}
+		for name, svc := range source.Services {
+			plan.Tracking[name] = svc.Image
+		}
 		configArgs = append(configArgs, "--resolve-image-digests")
 	}
 	b, e := r.command(ctx, dir, configArgs...)

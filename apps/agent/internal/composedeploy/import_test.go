@@ -48,7 +48,7 @@ func existingFixture(t *testing.T) (*Runner, string, *[]string) {
 		case "inspect":
 			return json.Marshal(map[string]any{"ID": strings.Repeat("a", 64), "Project": "existing-vigara", "Service": "app", "Directory": project, "Files": filepath.Join(project, "compose.yml"), "State": "running", "Started": "2026-11-01T00:00:00Z", "Mounts": []map[string]any{{"Source": filepath.Join(project, "data", "postgres"), "Destination": "/data", "Type": "bind", "RW": true}}})
 		case "compose":
-			if args[len(args)-1] != "--resolve-image-digests" {
+			if !strings.Contains(strings.Join(args, " "), "config --format json") {
 				return nil, errCompose
 			}
 			if !strings.Contains(strings.Join(args, " "), "--project-directory "+project) {
@@ -65,7 +65,11 @@ func existingFixture(t *testing.T) (*Runner, string, *[]string) {
 					}
 				}
 			}
-			return []byte(`{"services":{"app":{"image":"example/vigara@sha256:` + strings.Repeat("b", 64) + `","volumes":[{"type":"bind","source":"` + filepath.Join(project, "data", "postgres") + `","target":"/data"}]}}}`), nil
+			image := "example/vigara:latest"
+			if args[len(args)-1] == "--resolve-image-digests" {
+				image = "example/vigara@sha256:" + strings.Repeat("b", 64)
+			}
+			return json.Marshal(map[string]any{"services": map[string]any{"app": map[string]any{"image": image, "volumes": []map[string]any{{"type": "bind", "source": filepath.Join(project, "data", "postgres"), "target": "/data"}}}}})
 		}
 		return nil, errCompose
 	}
@@ -213,6 +217,9 @@ func TestImportEncryptsAndRegistersWithoutChangingDeployment(t *testing.T) {
 	plan, err := restarted.Plan(ctx, s)
 	if err != nil || len(plan.Images) != 1 {
 		t.Fatal("imported environment preview failed", err)
+	}
+	if plan.Tracking["app"] != "example/vigara:latest" || plan.Images["app"] != "example/vigara@sha256:"+strings.Repeat("b", 64) {
+		t.Fatalf("imported preview lost its source tag or immutable release: %+v", plan)
 	}
 	q.ID = "duplicate"
 	if _, err = r.ConfirmImport(ctx, q); err == nil {

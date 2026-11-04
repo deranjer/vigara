@@ -154,10 +154,10 @@ shown as unavailable; the server does not build binaries during downloads.
 
 Bundles point agents at a server URL chosen from addresses the operator configures:
 
-- `VIGIRA_PUBLIC_URL` is the default address.
-- `VIGIRA_PUBLIC_URLS` is an optional comma-separated list of alternates, for example a LAN address and a Tailscale address. When more than one address is configured, **Add device** lets the administrator pick which one the new device should use. A request can only select a configured address; it cannot supply its own.
+- `VIGARA_PUBLIC_URL` is the default address.
+- `VIGARA_PUBLIC_URLS` is an optional comma-separated list of alternates, for example a LAN address and a Tailscale address. When more than one address is configured, **Add device** lets the administrator pick which one the new device should use. A request can only select a configured address; it cannot supply its own.
 
-HTTPS addresses are always accepted. Plain HTTP is accepted only when you set `VIGIRA_ALLOW_INSECURE_AGENT_HTTP=true` **and** the host is a private-network address: loopback, RFC 1918 (`10/8`, `172.16/12`, `192.168/16`), IPv6 unique-local or link-local, the Tailscale/CGNAT range `100.64.0.0/10`, a `.local` or `.ts.net` name, or a single-label name such as `nas`. A public IP or dotted public hostname must use HTTPS even with the flag on, and entries that break the rule are ignored with a startup warning.
+HTTPS addresses are always accepted. Plain HTTP is accepted only when you set `VIGARA_ALLOW_INSECURE_AGENT_HTTP=true` **and** the host is a private-network address: loopback, RFC 1918 (`10/8`, `172.16/12`, `192.168/16`), IPv6 unique-local or link-local, the Tailscale/CGNAT range `100.64.0.0/10`, a `.local` or `.ts.net` name, or a single-label name such as `nas`. A public IP or dotted public hostname must use HTTPS even with the flag on, and entries that break the rule are ignored with a startup warning.
 
 Plain HTTP means the agent's credential, telemetry, and inventory cross the network unencrypted, so anyone who can observe or alter that traffic can impersonate the agent or read its data. Use it only on a network you trust or over a VPN such as Tailscale (whose traffic is already encrypted), and never across the internet. The Add device dialog shows a warning whenever the selected address is not encrypted, and the installers repeat it. Prefer HTTPS where practical: for example put Caddy in front with `tls internal`, or use `tailscale serve` for a real certificate on a `*.ts.net` name.
 
