@@ -22,7 +22,9 @@ import (
 
 type updateAgent struct {
 	fakeAgent
-	checks map[string]protocol.DockerImageCheck
+	checks          map[string]protocol.DockerImageCheck
+	containers      []protocol.DockerContainerInfo
+	requestedChecks []protocol.DockerImageCheckParams
 }
 
 func (f *updateAgent) Call(ctx context.Context, agent, method string, params, out any) error {
@@ -35,10 +37,17 @@ func (f *updateAgent) Call(ctx context.Context, agent, method string, params, ou
 		return nil
 	case protocol.MethodDockerList:
 		*out.(*protocol.DockerListResult) = protocol.DockerListResult{Containers: []protocol.DockerContainerInfo{{ID: "web", Name: "web", Project: "demo", Service: "web"}, {ID: "db", Name: "db", Project: "demo", Service: "db"}}}
+		if f.containers != nil {
+			out.(*protocol.DockerListResult).Containers = f.containers
+		}
 		return nil
 	case protocol.MethodDockerImageCheck:
 		p := params.(protocol.DockerImageCheckParams)
+		f.requestedChecks = append(f.requestedChecks, p)
 		*out.(*protocol.DockerImageCheck) = f.checks[p.ID]
+		if p.Ref != "" {
+			out.(*protocol.DockerImageCheck).Image = p.Ref
+		}
 		return nil
 	}
 	return f.fakeAgent.Call(ctx, agent, method, params, out)

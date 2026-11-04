@@ -43,6 +43,7 @@ func (a *API) registerImageUpdates(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/image-updates/settings", a.putImageSettings)
 	mux.HandleFunc("POST /api/image-updates/check", a.requestImageCheck)
 	mux.HandleFunc("PUT /api/image-updates/containers/{agent}/{container}", a.ignoreImage)
+	mux.HandleFunc("PUT /api/image-updates/containers/{agent}/{container}/tracking", a.setImageTracking)
 	mux.HandleFunc("GET /api/stacks/{id}/update-policy", a.getUpdatePolicy)
 	mux.HandleFunc("PUT /api/stacks/{id}/update-policy", a.putUpdatePolicy)
 }
@@ -102,19 +103,19 @@ func (a *API) imageUpdateList(w http.ResponseWriter, r *http.Request) {
 	if _, ok := a.Authz.Authorize(w, r, auth.PermContainersRead); !ok {
 		return
 	}
-	rows, err := a.Pool.Query(r.Context(), `SELECT u.agent_id::text,d.display_name,u.container_id,u.result,u.checked_at,u.last_success_at,u.last_success,u.ignored,COALESCE(b.stack_id,'') FROM container_image_updates u JOIN agent_identities ai ON ai.id=u.agent_id JOIN devices d ON d.id=ai.device_id LEFT JOIN stack_bindings b ON b.agent_id=u.agent_id AND b.project_name=u.result->>'project' WHERE ai.revoked_at IS NULL ORDER BY d.display_name,u.result->>'name' LIMIT 10000`)
+	rows, err := a.Pool.Query(r.Context(), `SELECT u.agent_id::text,d.display_name,u.container_id,u.result,u.checked_at,u.last_success_at,u.last_success,u.ignored,COALESCE(b.stack_id,''),u.tracking_tag FROM container_image_updates u JOIN agent_identities ai ON ai.id=u.agent_id JOIN devices d ON d.id=ai.device_id LEFT JOIN stack_bindings b ON b.agent_id=u.agent_id AND b.project_name=u.result->>'project' WHERE ai.revoked_at IS NULL ORDER BY d.display_name,u.result->>'name' LIMIT 10000`)
 	if err != nil {
 		fail(w, err)
 		return
 	}
 	items := []map[string]any{}
 	for rows.Next() {
-		var agent, name, id, stackID string
+		var agent, name, id, stackID, tag string
 		var raw, last []byte
 		var checked time.Time
 		var success *time.Time
 		var ignored bool
-		if err = rows.Scan(&agent, &name, &id, &raw, &checked, &success, &last, &ignored, &stackID); err != nil {
+		if err = rows.Scan(&agent, &name, &id, &raw, &checked, &success, &last, &ignored, &stackID, &tag); err != nil {
 			rows.Close()
 			fail(w, err)
 			return
@@ -125,7 +126,7 @@ func (a *API) imageUpdateList(w http.ResponseWriter, r *http.Request) {
 		if len(last) > 0 {
 			_ = json.Unmarshal(last, &previous)
 		}
-		items = append(items, map[string]any{"agentId": agent, "device": name, "containerId": id, "stackId": stackID, "result": result, "checkedAt": checked, "lastSuccessAt": success, "lastSuccess": previous, "ignored": ignored})
+		items = append(items, map[string]any{"agentId": agent, "device": name, "containerId": id, "stackId": stackID, "result": result, "checkedAt": checked, "lastSuccessAt": success, "lastSuccess": previous, "ignored": ignored, "trackingTag": tag})
 	}
 	err = rows.Err()
 	rows.Close()
@@ -155,6 +156,69 @@ func (a *API) imageUpdateList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respond(w, 200, map[string]any{"items": items, "hosts": hosts})
+}
+
+func (a *API) setImageTracking(w http.ResponseWriter, r *http.Request) {
+	u, ok := a.Authz.Authorize(w, r, auth.PermContainersManage)
+	if !ok {
+		return
+	}
+	var q struct {
+		Tag string `json:"tag"`
+	}
+	if !decode(w, r, &q) {
+		return
+	}
+	agent, id := r.PathValue("agent"), r.PathValue("container")
+	if !updateUUID.MatchString(agent) {
+		http.Error(w, "Device not found.", 404)
+		return
+	}
+	var raw []byte
+	err := a.Pool.QueryRow(r.Context(), "SELECT result FROM container_image_updates WHERE agent_id=$1 AND container_id=$2", agent, id).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		http.Error(w, "Container not found.", 404)
+		return
+	}
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	var result protocol.DockerImageCheck
+	if json.Unmarshal(raw, &result) != nil {
+		fail(w, stack.ErrInvalid)
+		return
+	}
+	image := result.RunningImage
+	if image == "" {
+		image = result.Image
+	}
+	if q.Tag != "" && imageupdates.WithMonitoringTag(image, q.Tag) == "" {
+		http.Error(w, "Enter an image tag such as latest or pg17. The repository is taken from the deployed container.", 422)
+		return
+	}
+	tx, err := a.Pool.Begin(r.Context())
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	defer tx.Rollback(context.Background())
+	_, err = tx.Exec(r.Context(), `UPDATE container_image_updates SET tracking_tag=$3,result=jsonb_set(jsonb_set(result,'{status}','"unknown"'),'{message}','"Monitoring tag changed; check queued."') WHERE agent_id=$1 AND container_id=$2`, agent, id, q.Tag)
+	if err == nil {
+		_, err = tx.Exec(r.Context(), "INSERT INTO image_update_hosts(agent_id,next_check) VALUES($1,now()) ON CONFLICT(agent_id) DO UPDATE SET next_check=now(),cursor_id=''", agent)
+	}
+	detail, _ := json.Marshal(map[string]string{"tag": q.Tag})
+	if err == nil {
+		_, err = tx.Exec(r.Context(), `INSERT INTO audit_events(actor_user_id,actor_name,action,target_kind,target_id,agent_id,outcome,detail) VALUES($1,$2,'container.image-tracking','container',$3,$4,'success',$5)`, u.ID, u.Username, id, agent, detail)
+	}
+	if err == nil {
+		err = tx.Commit(r.Context())
+	}
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	respond(w, 200, q)
 }
 func (a *API) requestImageCheck(w http.ResponseWriter, r *http.Request) {
 	if _, ok := a.Authz.Authorize(w, r, auth.PermContainersManage); !ok {
