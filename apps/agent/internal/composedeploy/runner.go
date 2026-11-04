@@ -520,22 +520,17 @@ func (r *Runner) modelWithImages(ctx context.Context, s stack.Snapshot, t Target
 			External bool
 		} `json:"volumes"`
 		Services map[string]struct {
-			Image     string `json:"image"`
-			Build     any    `json:"build"`
-			Develop   any    `json:"develop"`
-			Extends   any    `json:"extends"`
-			EnvFile   any    `json:"env_file"`
-			PostStart any    `json:"post_start"`
-			PreStop   any    `json:"pre_stop"`
-			PreStart  any    `json:"pre_start"`
-			Volumes   []struct {
-				Type, Source, Target string
-				Bind                 struct {
-					CreateHostPath bool `json:"create_host_path"`
-				} `json:"bind"`
-			} `json:"volumes"`
-			Configs any `json:"configs"`
-			Secrets any `json:"secrets"`
+			Image     string              `json:"image"`
+			Build     any                 `json:"build"`
+			Develop   any                 `json:"develop"`
+			Extends   any                 `json:"extends"`
+			EnvFile   any                 `json:"env_file"`
+			PostStart any                 `json:"post_start"`
+			PreStop   any                 `json:"pre_stop"`
+			PreStart  any                 `json:"pre_start"`
+			Volumes   []composeBindVolume `json:"volumes"`
+			Configs   any                 `json:"configs"`
+			Secrets   any                 `json:"secrets"`
 		} `json:"services"`
 	}
 	if json.Unmarshal(b, &model) != nil || len(model.Services) == 0 {
@@ -556,6 +551,7 @@ func (r *Runner) modelWithImages(ctx context.Context, s stack.Snapshot, t Target
 			}
 		}
 	}
+	var omittedCreation *bool
 	for name, svc := range model.Services {
 		if !immutableImage.MatchString(svc.Image) || svc.Build != nil || svc.Develop != nil || svc.Extends != nil || (svc.EnvFile != nil && len(m.Compose.EnvironmentFiles) == 0) || svc.Configs != nil || svc.Secrets != nil || svc.PostStart != nil || svc.PreStop != nil || svc.PreStart != nil {
 			return plan, errUnsupportedStack
@@ -570,11 +566,23 @@ func (r *Runner) modelWithImages(ctx context.Context, s stack.Snapshot, t Target
 					return plan, errTarget
 				}
 				if _, e := os.Stat(source); e != nil {
-					// Compose's normalized model sets this for short syntax and
-					// bind.create_host_path. Leave creation to Compose during up;
-					// previews must not create application storage.
-					if os.IsNotExist(e) && v.Bind.CreateHostPath {
-						continue
+					if os.IsNotExist(e) {
+						creation := omittedCreation
+						if v.Bind != nil && v.Bind.CreateHostPath != nil {
+							creation = v.Bind.CreateHostPath
+						}
+						if creation == nil {
+							value, err := r.omittedBindCreation(ctx, dir)
+							if err != nil {
+								return plan, err
+							}
+							omittedCreation = &value
+							creation = omittedCreation
+						}
+						// Leave directory creation to Compose during up.
+						if *creation {
+							continue
+						}
 					}
 					return plan, newBindMountError(name, source, v.Target, e)
 				}
