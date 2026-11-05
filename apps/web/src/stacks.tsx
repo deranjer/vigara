@@ -10,6 +10,8 @@ import { StackDiff } from './stack-diff'
 import { StackLoading } from './stack-loading'
 import { StackContainersTab, StackRuntime } from './stack-runtime'
 import type { StackRuntimeStatus } from './stack-list-utils'
+import { StackImageTags } from './stack-image-tags'
+import { setServiceImage } from './stack-image-utils'
 
 const ComposeEditor = lazy(() => import('./compose-editor'))
 
@@ -19,7 +21,7 @@ type Draft = { digest?: string; base: string; files: Files | null; version: numb
 type Detail = { projectName: string; snapshot: Snapshot; draft: Draft; branch: string; assigned: boolean; agentId: string; digest: string }
 type Revision = { commit: string; message: string; at: string }
 type Deployment = { id: string; commit: string; digest: string; status: string; stage: string; message: string; createdAt: string }
-type Plan = { images: Record<string, string>; token: string; projectName: string; services: string[] }
+type Plan = { images: Record<string, string>; tracking?: Record<string, string>; token: string; projectName: string; services: string[] }
 
 async function request<T>(url: string, method = 'GET', body?: unknown): Promise<T> {
   const response = await fetch(url, { method, credentials: 'same-origin', headers: body === undefined ? undefined : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })
@@ -62,6 +64,8 @@ function StackEditor({ id, projectName, onBack, role, onNavigate }: { id: string
   const [newPath, setNewPath] = useState('')
   const [plan, setPlan] = useState<Plan | null>(null)
   const [pull, setPull] = useState(false)
+  const [recreate, setRecreate] = useState(false)
+  const [tagImages, setTagImages] = useState<Record<string, string> | null>(null)
   const [discarding, setDiscarding] = useState(false)
   const [remote, setRemote] = useState<Snapshot | null>(null)
   const filesRef = useRef(files)
@@ -79,6 +83,7 @@ function StackEditor({ id, projectName, onBack, role, onNavigate }: { id: string
       setRemote(value.snapshot)
       setNotice(value.snapshot.commit !== detail?.snapshot.commit ? 'Fetched the latest saved version. Your editor contents are preserved; compare the versions before replacing your draft.' : 'The saved version is up to date. Your editor contents are preserved.')
     }
+    return value
   }
   useEffect(() => {
     let active = true
@@ -106,8 +111,8 @@ function StackEditor({ id, projectName, onBack, role, onNavigate }: { id: string
   }, [dirty, unpersisted])
 
   async function action(work: () => Promise<void>) { setSecretEpoch((epoch) => epoch + 1); setBusy(true); setError(''); setNotice(''); try { await work() } catch (cause) { setError(cause instanceof Error ? cause.message : 'The operation failed.') } finally { setBusy(false) } }
-  async function persistDraft() {
-    const next = await request<Draft>(`${base(id)}/draft`, 'PUT', { base: draft.base || detail?.snapshot.commit || '', files: filesRef.current, version: draft.version })
+  async function persistDraft(nextFiles = filesRef.current) {
+    const next = await request<Draft>(`${base(id)}/draft`, 'PUT', { base: draft.base || detail?.snapshot.commit || '', files: nextFiles, version: draft.version })
     setDraft(next); return next
   }
   async function save() {
@@ -115,6 +120,24 @@ function StackEditor({ id, projectName, onBack, role, onNavigate }: { id: string
     const result = await request<{ state: string; commit: string }>(`${base(id)}/save`, 'POST', { version: next.version })
     if (result.state === 'pendingPush') { setNotice('Pending sync: your draft is stored, but Git has not confirmed the push. Retry Save to sync it. This version cannot be deployed yet.'); return }
     await load(true); setPlan(null); setNotice(`Saved revision ${short(result.commit)} to ${detail?.branch}. Running services are unchanged.`)
+  }
+  async function preview(recreateStack: boolean) {
+    setPull(recreateStack); setRecreate(recreateStack)
+    setPlan(await request<Plan>(`${base(id)}/plan`, 'POST', { commit: detail?.snapshot.commit }))
+  }
+  async function selectTag(service: string, image: string) {
+    const updated = setServiceImage(filesRef.current, service, image)
+    setFiles(updated); filesRef.current = updated; setPlan(null)
+    const next = await persistDraft(updated)
+    const saved = await request<{ state: string; commit: string }>(`${base(id)}/save`, 'POST', { version: next.version })
+    setTagImages(null)
+    if (saved.state !== 'saved') {
+      setNotice('The selected tag is stored in your draft. Retry Save to finish syncing Git before deployment.'); return
+    }
+    await load(true)
+    setNotice(`Saved ${service}: ${image}. Review the deployment before applying it.`)
+    setPull(true); setRecreate(true)
+    setPlan(await request<Plan>(`${base(id)}/plan`, 'POST', { commit: saved.commit }))
   }
   if (loading) return <StackLoading />
   if (!detail) return <Stack><Alert color="red">{error}</Alert><Button variant="default" onClick={onBack}>All stacks</Button></Stack>
@@ -127,6 +150,14 @@ function StackEditor({ id, projectName, onBack, role, onNavigate }: { id: string
     {error && <Alert color="red" title="Stack operation could not complete" withCloseButton onClose={() => setError('')}>{error}</Alert>}
     {notice && <Alert color="blue" withCloseButton onClose={() => setNotice('')}>{notice}</Alert>}
     <Group gap="xs"><Badge variant="light">Saved: {short(detail.snapshot.commit)}</Badge><Badge color="gray" variant="light">Last deployed: {deployed ? short(deployed.commit) : 'Never'}</Badge>{dirty && <Badge color="yellow">Draft changes</Badge>}{deployed && deployed.digest !== detail.digest && <Badge color="orange">Saved changes waiting to deploy</Badge>}</Group>
+    <Group gap="xs">
+      <Button variant="light" loading={actionBusy} disabled={busy || !detail.snapshot.commit || !!activeJob || !detail.assigned || dirty} onClick={() => void action(() => preview(true))}>Pull and recreate stack</Button>
+      <Button variant="default" disabled={busy || !detail.snapshot.commit || !!activeJob || !detail.assigned || dirty} onClick={() => void action(async () => {
+        const source = await request<Plan>(`${base(id)}/plan`, 'POST', { commit: detail.snapshot.commit, sourcesOnly: true })
+        setTagImages(source.tracking ?? source.images)
+      })}>Browse image tags</Button>
+      <Text size="xs" c="dimmed">Pull refreshes configured tags, including latest, and recreates all services. Data volumes are retained.</Text>
+    </Group>
     {!detail.assigned && <Alert color="yellow">Configure an approved device and project folder for this stack before saving or deploying.</Alert>}
     {jobs[0]?.status === 'failed' && <Alert color="red" title="Last deployment failed">{jobs[0].stage} · {jobs[0].message || 'Open Deployments for the device result.'}</Alert>}
     <Tabs value={tab} onChange={(value) => { setTab(value); if (value === 'history') void action(async () => setHistory(await request<Revision[]>(`${base(id)}/history`))) }}>
@@ -146,10 +177,14 @@ function StackEditor({ id, projectName, onBack, role, onNavigate }: { id: string
       <Tabs.Panel value="updates">{tab === 'updates' && <StackUpdatePolicy id={id} />}</Tabs.Panel>
       <Tabs.Panel value="deployments"><Stack>{!jobs.length && <Text c="dimmed">No deployments yet.</Text>}{jobs.map((job) => <Card withBorder key={job.id}><Group justify="space-between"><Text fw={600}>Revision {short(job.commit)}</Text><Badge color={job.status === 'succeeded' ? 'green' : job.status === 'failed' ? 'red' : 'yellow'}>{job.status}</Badge></Group><Text size="sm" mt="xs">{job.stage} · {job.message || 'Waiting for the device.'}</Text><Text size="xs" c="dimmed" mt="xs">{new Date(job.createdAt).toLocaleString()}</Text>{job.status === 'unknown' && <Button mt="sm" variant="light" disabled={busy} onClick={() => void action(async () => { const value = await request<{ message: string }>(`${base(id)}/deployments/${job.id}/reconcile`, 'POST', {}); setNotice(value.message) })}>Check device result</Button>}</Card>)}</Stack></Tabs.Panel>
     </Tabs>
-    <Group justify="space-between"><Group><Button variant="subtle" color="red" disabled={busy || (!dirty && !draft.files)} onClick={() => setDiscarding(true)}>Discard draft</Button><Button variant="default" disabled={busy || !unpersisted} onClick={() => void action(async () => { await persistDraft(); setNotice('Draft stored in Vigara. Git and running services are unchanged.') })}>Keep draft</Button><Button loading={busy} disabled={!dirty || !detail.assigned} onClick={() => void action(save)}>Save to {detail.branch}</Button><Button variant="subtle" disabled={busy} onClick={() => void action(async () => { await load(false); setTab('diff') })}>Fetch saved version</Button></Group><Button variant="light" disabled={busy || !detail.snapshot.commit || !!activeJob || !detail.assigned || dirty} onClick={() => void action(async () => setPlan(await request<Plan>(`${base(id)}/plan`, 'POST', { commit: detail.snapshot.commit })))}>Preview deployment</Button></Group>
+    <Group justify="space-between"><Group><Button variant="subtle" color="red" disabled={busy || (!dirty && !draft.files)} onClick={() => setDiscarding(true)}>Discard draft</Button><Button variant="default" disabled={busy || !unpersisted} onClick={() => void action(async () => { await persistDraft(); setNotice('Draft stored in Vigara. Git and running services are unchanged.') })}>Keep draft</Button><Button loading={busy} disabled={!dirty || !detail.assigned} onClick={() => void action(save)}>Save to {detail.branch}</Button><Button variant="subtle" disabled={busy} onClick={() => void action(async () => { await load(false); setTab('diff') })}>Fetch saved version</Button></Group><Button variant="light" disabled={busy || !detail.snapshot.commit || !!activeJob || !detail.assigned || dirty} onClick={() => void action(() => preview(false))}>Preview deployment</Button></Group>
     {dirty && <Text size="sm" c="dimmed">Save your draft before deploying. Saving does not restart services.</Text>}
+    <Modal opened={tagImages !== null} onClose={() => { if (!busy) setTagImages(null) }} closeOnEscape={!busy} closeOnClickOutside={!busy} title="Choose an image tag" size="lg" centered>
+      {error && <Alert color="red" mb="sm">{error}</Alert>}
+      {tagImages && <StackImageTags id={id} images={tagImages} busy={busy} onSelect={(service, image) => void action(() => selectTag(service, image))} />}
+    </Modal>
     {remote && <Alert title="Compare fetched version"><Text size="sm">Fetched {short(remote.commit)}. Review all files in the Draft diff tab. Keeping your draft against this version may overwrite changes, so resolve differences before saving.</Text><Button mt="sm" variant="light" disabled={busy} onClick={() => { setDetail({ ...detail, snapshot: remote }); setDraft({ ...draft, base: remote.commit }); setRemote(null); setNotice('Draft now uses the fetched version as its base. Review your edits before saving.') }}>Use fetched version as draft base</Button></Alert>}
     <Modal opened={discarding} onClose={() => { if (!busy) setDiscarding(false) }} title="Discard draft?" centered><Stack><Text>Discard your edits and stored draft for this stack? Saved Git revisions and running services are retained.</Text><Button color="red" loading={busy} onClick={() => void action(async () => { if (draft.files) await request(base(id) + '/draft', 'DELETE', { version: draft.version }); const next = Object.keys(detail.snapshot.files).length ? detail.snapshot.files : starter(id, detail.projectName || projectName); setFiles(next); setDraft({ base: detail.snapshot.commit, files: null, version: 0 }); setFile(next['compose.yaml'] !== undefined ? 'compose.yaml' : Object.keys(next)[0] ?? null); setPlan(null); setDiscarding(false); setNotice('Stored draft discarded.'); })}>Discard draft</Button></Stack></Modal>
-    <Modal opened={!!plan} onClose={() => { if (!busy) setPlan(null) }} title="Deploy saved revision" size="lg" classNames={{ body: 'stack-deploy-preview' }} centered><Stack><Text>Apply revision <Code>{short(detail.snapshot.commit)}</Code> to project <Code>{plan?.projectName}</Code>?</Text><Text size="sm">Device: {detail.agentId}</Text><Text size="sm">Services: {plan?.services.join(', ')}</Text><Stack gap="xs">{Object.entries(plan?.images ?? {}).map(([service, image]) => <Text size="xs" key={service}><Code>{service}</Code>: <Code>{image}</Code></Text>)}</Stack><Text size="sm" c="dimmed">Changed services may restart. Existing data volumes are retained. Deploying an older configuration does not undo application data migrations.</Text><Checkbox label="Download the reviewed images before deployment" checked={pull} onChange={(event) => setPull(event.currentTarget.checked)} />{error && <Alert color="red">{error}</Alert>}<Button loading={busy} onClick={() => void action(async () => { await request(`${base(id)}/deploy`, 'POST', { commit: detail.snapshot.commit, token: plan?.token, images: plan?.images, pull }); setPlan(null); setTab('deployments'); setNotice('Deployment queued. You can leave this page and return to its status.'); })}>Deploy revision</Button></Stack></Modal>
+    <Modal opened={!!plan} onClose={() => { if (!busy) setPlan(null) }} title={recreate ? (pull ? "Pull and recreate stack" : "Recreate stack") : "Deploy saved revision"} size="lg" classNames={{ body: 'stack-deploy-preview' }} centered><Stack><Text>Apply revision <Code>{short(detail.snapshot.commit)}</Code> to project <Code>{plan?.projectName}</Code>?</Text><Text size="sm">Device: {detail.agentId}</Text><Text size="sm">Services: {plan?.services.join(', ')}</Text><Stack gap="xs">{Object.entries(plan?.images ?? {}).map(([service, image]) => <Text size="xs" key={service}><Code>{service}</Code>: <Code>{image}</Code></Text>)}</Stack><Text size="sm" c="dimmed">Changed services may restart. Existing data volumes are retained. Deploying an older configuration does not undo application data migrations.</Text><Checkbox label="Recreate all stack containers" checked={recreate} onChange={(event) => setRecreate(event.currentTarget.checked)} /><Checkbox label="Download the reviewed images before deployment" checked={pull} onChange={(event) => setPull(event.currentTarget.checked)} />{error && <Alert color="red">{error}</Alert>}<Button loading={busy} onClick={() => void action(async () => { await request(`${base(id)}/deploy`, 'POST', { commit: detail.snapshot.commit, token: plan?.token, images: plan?.images, pull, recreate }); setPlan(null); setTab('deployments'); setNotice('Deployment queued. You can leave this page and return to its status.'); })}>{recreate ? (pull ? "Pull and recreate stack" : "Recreate stack") : "Deploy revision"}</Button></Stack></Modal>
   </Stack></section>
 }

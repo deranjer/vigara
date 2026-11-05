@@ -120,6 +120,21 @@ func imageOverride(file string, images map[string]string) error {
 }
 
 func Register(c *channel.Client, r *Runner) {
+	registerImageTags(c.Calls)
+	c.Calls[protocol.MethodComposeImageSources] = func(ctx context.Context, p json.RawMessage) (any, error) {
+		var s stack.Snapshot
+		if json.Unmarshal(p, &s) != nil {
+			return nil, stack.ErrInvalid
+		}
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		t, m, err := r.target(s)
+		if err != nil {
+			return nil, validationFailure(err)
+		}
+		plan, err := r.composeModel(ctx, s, t, m, nil, true)
+		return plan, validationFailure(err)
+	}
 	c.Calls[protocol.MethodComposeImagePlan] = func(ctx context.Context, p json.RawMessage) (any, error) {
 		var q struct {
 			Snapshot stack.Snapshot    `json:"snapshot"`
@@ -201,6 +216,9 @@ func Register(c *channel.Client, r *Runner) {
 		}
 		return result, nil
 	}
+	// A distinct method lets older agents reject recreation explicitly instead
+	// of silently ignoring the newer Job.Recreate field.
+	c.Calls[protocol.MethodComposeRecreate] = c.Calls[protocol.MethodComposeDeploy]
 	c.Calls[protocol.MethodComposeStatus] = func(ctx context.Context, p json.RawMessage) (any, error) {
 		var q struct {
 			StackID string `json:"stackId"`
@@ -453,6 +471,10 @@ func (r *Runner) model(ctx context.Context, s stack.Snapshot, t Target, m stack.
 }
 
 func (r *Runner) modelWithImages(ctx context.Context, s stack.Snapshot, t Target, m stack.Manifest, images map[string]string) (Plan, error) {
+	return r.composeModel(ctx, s, t, m, images, false)
+}
+
+func (r *Runner) composeModel(ctx context.Context, s stack.Snapshot, t Target, m stack.Manifest, images map[string]string, sourcesOnly bool) (Plan, error) {
 	plan := Plan{ProjectName: m.ProjectName, Services: []string{}}
 	if err := validateRecoveryPaths(s, m); err != nil {
 		return plan, err
@@ -540,6 +562,14 @@ func (r *Runner) modelWithImages(ctx context.Context, s stack.Snapshot, t Target
 		plan.Tracking = map[string]string{}
 		for name, svc := range source.Services {
 			plan.Tracking[name] = svc.Image
+		}
+		if sourcesOnly {
+			plan.Images = plan.Tracking
+			for name := range plan.Tracking {
+				plan.Services = append(plan.Services, name)
+			}
+			sort.Strings(plan.Services)
+			return plan, nil
 		}
 		configArgs = append(configArgs, "--resolve-image-digests")
 	}
@@ -830,7 +860,7 @@ func (r *Runner) Deploy(ctx context.Context, q Request) (stack.Result, error) {
 		if !persist() {
 			return stack.Result{}, errJournal
 		}
-		if _, e = r.command(ctx, t.Directory, append(args, "pull", "--quiet")...); e != nil {
+		if _, e = r.command(ctx, t.Directory, append(args, "pull", "--quiet", "--policy", "always")...); e != nil {
 			return fail("pull", "Image download failed. Check registry access on this device.")
 		}
 	}
@@ -839,7 +869,7 @@ func (r *Runner) Deploy(ctx context.Context, q Request) (stack.Result, error) {
 	if !persist() {
 		return stack.Result{}, errJournal
 	}
-	if _, e = r.command(ctx, t.Directory, append(args, "up", "--detach", "--no-build", "--pull", "never", "--wait", "--wait-timeout", "120")...); e != nil {
+	if _, e = r.command(ctx, t.Directory, append(args, deploymentUpArgs(q.Job.Recreate)...)...); e != nil {
 		result.Readiness = "compose-wait-failed"
 		return fail("apply", "Compose did not confirm all services running or healthy. Inspect the stack before retrying.")
 	}
@@ -851,4 +881,12 @@ func (r *Runner) Deploy(ctx context.Context, q Request) (stack.Result, error) {
 		return stack.Result{}, errJournal
 	}
 	return result, nil
+}
+
+func deploymentUpArgs(recreate bool) []string {
+	args := []string{"up", "--detach", "--no-build", "--pull", "never", "--wait", "--wait-timeout", "120"}
+	if recreate {
+		args = append(args, "--force-recreate")
+	}
+	return args
 }

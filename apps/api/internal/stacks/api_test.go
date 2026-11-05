@@ -105,7 +105,7 @@ func (f *fakeAgent) Call(ctx context.Context, agent, method string, params, out 
 		*out.(*protocol.ComposeTargetInfo) = protocol.ComposeTargetInfo{ID: q.ID, ProjectName: q.ProjectName, Directory: "/srv/managed/" + q.ID}
 	case protocol.MethodComposeValidate:
 		*out.(*stack.Plan) = stack.Plan{Token: strings.Repeat("d", 64), ProjectName: "demo", Services: []string{"web"}, Images: map[string]string{"web": "nginx@sha256:" + strings.Repeat("a", 64)}}
-	case protocol.MethodComposeDeploy:
+	case protocol.MethodComposeDeploy, protocol.MethodComposeRecreate:
 		f.deployed = append(f.deployed, params.(stack.DeployRequest))
 		q := params.(stack.DeployRequest)
 		*out.(*stack.Result) = stack.Result{Status: "succeeded", Stage: "complete", Message: "Running", JobID: q.Job.ID, Commit: q.Job.Snapshot.Commit, ConfigurationRevision: stack.ConfigurationRevision(q.Job.Snapshot), PlanToken: q.Token, Images: q.Images, Readiness: "compose-wait-passed"}
@@ -186,7 +186,7 @@ func TestSaveDeployPinnedRevisionAndRecoverUnknown(t *testing.T) {
 	if w = call("POST", "/api/stacks/demo/plan", map[string]any{"commit": saved.Commit}); w.Code != 200 {
 		t.Fatalf("preview %d %s", w.Code, w.Body)
 	}
-	w = call("POST", "/api/stacks/demo/deploy", map[string]any{"commit": saved.Commit, "token": strings.Repeat("d", 64), "pull": false})
+	w = call("POST", "/api/stacks/demo/deploy", map[string]any{"commit": saved.Commit, "token": strings.Repeat("d", 64), "pull": true, "recreate": true})
 	if w.Code != 202 {
 		t.Fatalf("deploy %d %s", w.Code, w.Body)
 	}
@@ -202,6 +202,9 @@ func TestSaveDeployPinnedRevisionAndRecoverUnknown(t *testing.T) {
 	api.tick(ctx)
 	if len(hub.deployed) != 1 || hub.deployed[0].Job.Snapshot.Commit != saved.Commit || hub.deployed[0].Job.Snapshot.Files["compose.yaml"] == s.Files["compose.yaml"] {
 		t.Fatal("queued deployment was not pinned")
+	}
+	if !hub.deployed[0].Job.Pull || !hub.deployed[0].Job.Recreate {
+		t.Fatal("pull and recreate options were lost between queuing and dispatch")
 	}
 	var status string
 	if e = pool.QueryRow(ctx, "SELECT status FROM stack_deployments").Scan(&status); e != nil || status != "succeeded" {
