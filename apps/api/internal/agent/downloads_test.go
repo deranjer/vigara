@@ -111,7 +111,7 @@ func TestAgentDownloadCancelRejectsBootstrapToken(t *testing.T) {
 	handler.ConfigureDownloads("https://vigira.example", releaseDir)
 	mux := http.NewServeMux()
 	handler.Register(mux)
-	create := httptest.NewRequest(http.MethodPost, "/api/agent-downloads", strings.NewReader(`{"target":"linux-amd64","name":"Synthetic node","features":[],"docker":{"mode":"read","host":"unix:///var/run/docker.sock"}}`))
+	create := httptest.NewRequest(http.MethodPost, "/api/agent-downloads", strings.NewReader(`{"target":"linux-amd64","name":"Synthetic node","features":[],"docker":{"mode":"exec","host":"unix:///var/run/docker.sock","files":"write"}}`))
 	create.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: admin.Token})
 	created := httptest.NewRecorder()
 	mux.ServeHTTP(created, create)
@@ -166,7 +166,7 @@ func TestAgentDownloadCancelRejectsBootstrapToken(t *testing.T) {
 	if bootstrap.Token == "" {
 		t.Fatal("bundle omitted its one-use token")
 	}
-	if !dockerInstallerFound || bootstrap.Docker == nil || bootstrap.Docker.Mode != "read" || bootstrap.Docker.Host != "unix:///var/run/docker.sock" {
+	if !dockerInstallerFound || bootstrap.Docker == nil || bootstrap.Docker.Mode != "exec" || bootstrap.Docker.Host != "unix:///var/run/docker.sock" || bootstrap.Docker.Files != "write" {
 		t.Fatal("bundle omitted the selected Docker settings or installer")
 	}
 	if !installerFound {

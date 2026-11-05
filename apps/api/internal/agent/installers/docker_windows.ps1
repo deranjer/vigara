@@ -1,5 +1,6 @@
 function Get-DockerEnvironment($settings) {
   if ($null -eq $settings) { return @() }
+  if (($settings.PSObject.Properties.Name -contains 'files') -and $settings.files -and $settings.files -ne 'disabled') { throw 'Mounted file access requires a native Linux Docker host.' }
   if ($settings.mode -notin @('read', 'manage', 'exec')) { throw 'Windows Docker access must be read, manage, or exec. Compose deployment is Linux-only.' }
   $uri = $null
   $ip = $null

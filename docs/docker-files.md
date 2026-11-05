@@ -6,7 +6,13 @@ Administrators can open **Containers → container → Overview → Mounts → B
 
 This feature requires the agent installed directly on the native Linux Docker host, access to its local Unix socket, and **exec** or **deploy** Docker access granted in the device enrollment and enabled on the agent. An administrator account is required because mounted configuration can contain credentials. Existing container viewing permissions alone do not grant file access.
 
-Add one of these settings to the agent service's environment and restart the service:
+In **Add device**, enable Docker access, select an access level with container terminals or stack deployment, and use a local Docker socket. Set **Mounted file access** to **Browse only** or **Browse and edit**, then download and run the installer on that host. New installs default to **Disabled**.
+
+For an existing host, use **Device info → Reinstall agent → Configure Docker access during reinstall**. **Keep existing mounted file access** preserves the setting in the installer's Docker environment file when the selected endpoint and access level still support it. Selecting **Disabled** revokes mount file access. Selecting a Docker access level or endpoint that does not support mounted files also disables it. Leaving Docker configuration unchecked preserves the existing service settings.
+
+The Linux installer runs the service as root when mounted file access is enabled and exposes host home and temporary directories to it. **Browse and edit** also enables host filesystem writes; **Browse only** disables edits in the agent. Other enabled features, such as stack deployment or managed backups, can independently require filesystem writes.
+
+For manual configuration, add one of these settings to the agent service's environment and restart the service. Ensure the service account and systemd filesystem restrictions permit access to the mounted sources (and writes plus the private backup directory for editing):
 
 ```ini
 # Browse and download text; editing disabled.
@@ -16,7 +22,7 @@ VIGIRA_DOCKER_FILES=read
 # VIGIRA_DOCKER_FILES=write
 ```
 
-The variable is unset by default, which disables all mount file methods. It does not change the existing Docker management tier. Agent Docker configuration still needs `VIGIRA_DOCKER_ENABLED=true`, `VIGIRA_DOCKER_HOST=unix:///var/run/docker.sock` (or the actual local socket) and `VIGIRA_DOCKER_MODE=exec` or `deploy`. Keep these settings on the host service, rather than the central Vigara server. Reinstallation may replace the service environment; preserve custom settings when reinstalling.
+An unset variable or `VIGIRA_DOCKER_FILES=disabled` disables all mount file methods. It does not change the existing Docker management tier. Agent Docker configuration still needs `VIGIRA_DOCKER_ENABLED=true`, `VIGIRA_DOCKER_HOST=unix:///var/run/docker.sock` (or the actual local socket) and `VIGIRA_DOCKER_MODE=exec` or `deploy`. Keep these settings on the host service, rather than the central Vigara server. The installer preserves the mounted file permission from its Docker environment file on reinstall when requested; preserve other custom service settings separately.
 
 ## Supported storage
 

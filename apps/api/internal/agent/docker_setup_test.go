@@ -69,3 +69,27 @@ func TestDockerOmittedRootRemainsHostChoice(t *testing.T) {
 		t.Fatal("server replaced omitted root before host could preserve local choice")
 	}
 }
+
+func TestDockerMountedFileSettings(t *testing.T) {
+	for _, tc := range []struct {
+		target, mode, host, files string
+		valid                     bool
+	}{
+		{"linux-amd64", "exec", "unix:///var/run/docker.sock", "read", true},
+		{"linux-arm64", "deploy", "unix:///var/run/docker.sock", "write", true},
+		{"linux-amd64", "exec", "unix:///var/run/docker.sock", "", true},
+		{"windows-amd64", "read", "http://127.0.0.1:2375", "disabled", true},
+		{"linux-amd64", "read", "unix:///var/run/docker.sock", "read", false},
+		{"linux-amd64", "manage", "unix:///var/run/docker.sock", "write", false},
+		{"linux-amd64", "exec", "http://127.0.0.1:2375", "read", false},
+		{"windows-amd64", "exec", "http://127.0.0.1:2375", "write", false},
+		{"linux-amd64", "exec", "unix:///var/run/docker.sock", "write\nUser=root", false},
+	} {
+		t.Run(tc.target+tc.mode+tc.host+tc.files, func(t *testing.T) {
+			d := dockerSetup{Mode: tc.mode, Host: tc.host, Files: tc.files}
+			if err := d.validate(tc.target); (err == nil) != tc.valid {
+				t.Fatalf("validate=%v, valid=%v", err, tc.valid)
+			}
+		})
+	}
+}

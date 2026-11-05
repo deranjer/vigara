@@ -15,6 +15,21 @@ import shlex
 
 def load_settings(bootstrap):
     settings = bootstrap.get('docker')
+    if isinstance(settings, dict) and not settings.get('files'):
+        files = 'disabled'
+        if (bootstrap.get('reinstall') and settings.get('mode') in ('exec', 'deploy')
+                and settings.get('host', '').startswith('unix://')):
+            for file in ('/etc/vigira-agent/docker.env', '/etc/vigara-agent/docker.env'):
+                path = Path(file)
+                if not path.exists():
+                    continue
+                for line in path.read_text().splitlines():
+                    if line.startswith('VIGIRA_DOCKER_FILES='):
+                        values = shlex.split(line.split('=', 1)[1], comments=True)
+                        if len(values) != 1 or values[0] not in ('disabled', 'read', 'write'):
+                            raise ValueError('Invalid existing mounted file access; select it explicitly in the reinstall bundle.')
+                        files = values[0]
+        settings = dict(settings, files=files)
     if (bootstrap.get('reinstall') and isinstance(settings, dict)
             and settings.get('mode') == 'deploy' and not settings.get('stackOwner')):
         owner = ''
@@ -54,7 +69,12 @@ def validate(settings):
         return None
     if not isinstance(settings, dict) or settings.get('mode') not in ('read', 'manage', 'exec', 'deploy'):
         raise ValueError('Invalid Docker access level.')
+    files = settings.get('files', 'disabled')
+    if files not in ('disabled', 'read', 'write'):
+        raise ValueError('Invalid mounted file access level.')
     host = settings.get('host', '')
+    if files != 'disabled' and (settings['mode'] not in ('exec', 'deploy') or not host.startswith('unix://')):
+        raise ValueError('Mounted file access requires a local Docker socket and exec or deploy access.')
     if host.startswith('unix://'):
         path = host[7:]
         if not re.fullmatch(r'/[a-zA-Z0-9_./-]+', path) or '..' in path:
@@ -119,7 +139,7 @@ def prepare(settings, agent_user):
     if settings is None:
         return
     mode, host = settings['mode'], settings['host']
-    service_user = 'root' if mode == 'deploy' else agent_user
+    service_user = 'root' if mode == 'deploy' or settings.get('files', 'disabled') != 'disabled' else agent_user
     if mode == 'deploy':
         run('docker', 'compose', 'version')
         if settings.get('stackOwner'):
@@ -149,7 +169,8 @@ def apply(settings, agent_user):
         return
     prepare(settings, agent_user)
     mode, host = settings['mode'], settings['host']
-    env = f'VIGIRA_DOCKER_ENABLED=true\nVIGIRA_DOCKER_HOST={host}\nVIGIRA_DOCKER_MODE={mode}\n'
+    files = settings.get('files', 'disabled')
+    env = f'VIGIRA_DOCKER_ENABLED=true\nVIGIRA_DOCKER_HOST={host}\nVIGIRA_DOCKER_MODE={mode}\nVIGIRA_DOCKER_FILES={files}\n'
     dropin = '[Service]\nEnvironmentFile=/etc/vigara-agent/docker.env\n'
     if mode == 'deploy':
         root = settings['managedRoot']
@@ -159,6 +180,11 @@ def apply(settings, agent_user):
             env += f'VIGIRA_COMPOSE_OWNER={settings["stackOwner"]}\n'
         # Stack file operations need host access, limited to the selected root.
         dropin += f'User=root\nGroup=root\nProtectHome=read-only\nReadWritePaths="{root}"\n'
+    if files != 'disabled':
+        # Docker resolves mount sources anywhere on the native host. The base
+        # unit hides home and temporary directories and makes storage read-only.
+        dropin += 'User=root\nGroup=root\nPrivateTmp=false\n'
+        dropin += 'ProtectHome=false\nProtectSystem=false\n' if files == 'write' else 'ProtectHome=read-only\n'
     run('sudo', 'install', '-d', '-m', '0755', '/etc/vigara-agent', '/etc/systemd/system/vigara-agent.service.d')
     with tempfile.TemporaryDirectory() as directory:
         envfile, unit = Path(directory) / 'docker.env', Path(directory) / 'docker.conf'

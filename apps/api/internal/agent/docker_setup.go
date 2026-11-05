@@ -18,6 +18,7 @@ type dockerSetup struct {
 	Host        string `json:"host"`
 	ManagedRoot string `json:"managedRoot,omitempty"`
 	StackOwner  string `json:"stackOwner,omitempty"`
+	Files       string `json:"files,omitempty"`
 }
 
 var dockerSocketPath = regexp.MustCompile(`^/[a-zA-Z0-9_./-]+$`)
@@ -48,6 +49,15 @@ func (d *dockerSetup) validate(target string) error {
 		if ip == nil || !ip.IsLoopback() || err != nil || port < 1 || port > 65535 {
 			return errors.New("Docker HTTP endpoint must use a loopback IP and port")
 		}
+	}
+	switch d.Files {
+	case "", "disabled":
+	case "read", "write":
+		if !strings.HasPrefix(target, "linux-") || !strings.HasPrefix(d.Host, "unix://") || (d.Mode != protocol.DockerModeExec && d.Mode != protocol.DockerModeDeploy) {
+			return errors.New("Mounted file access requires a native Linux host, local Docker socket, and exec or deploy access")
+		}
+	default:
+		return errors.New("Mounted file access must be disabled, read, or write")
 	}
 	if d.Mode == protocol.DockerModeDeploy {
 		if d.StackOwner != "" && !dockerStackOwner.MatchString(d.StackOwner) {
