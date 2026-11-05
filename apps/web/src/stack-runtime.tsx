@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { Alert, Badge, Button, Card, Group, SimpleGrid, Stack, Text, Title } from '@mantine/core'
+import { Alert, Badge, Button, Card, Group, SimpleGrid, Stack, Tabs, Text, Title } from '@mantine/core'
 import { fetchInspect, type InspectResult } from './container-detail'
 import { portSummary, runLimited, stateColors, type ContainerInfo, type HostEntry } from './container-utils'
 import { runStackActions } from './stack-actions'
-import { stackActionBlocker, stackActionTargets, stackRuntimeBadge, type StackAction, type StackSummary } from './stack-list-utils'
+import { stackActionBlocker, stackActionTargets, stackRuntimeBadge, type StackAction, type StackSummary, type StackRuntimeStatus } from './stack-list-utils'
 import { route as routeOf, type Route } from './route'
 
 type ContainerRuntime = { container: ContainerInfo; inspect?: InspectResult; error?: string }
@@ -30,7 +30,11 @@ export async function loadStackRuntime(id: string, knownStack?: StackSummary): P
   return { stack, hosts: inventory.hosts, containers: details }
 }
 
-export function StackRuntime({ id, role, deploymentStatus, onNavigate }: { id: string; role: string; deploymentStatus?: string; onNavigate: (route: Route) => void }) {
+export function StackContainersTab({ status }: { status: StackRuntimeStatus }) {
+  return <Tabs.Tab value="containers" rightSection={<Badge size="sm" color={status.color} variant="light" title={status.label} aria-label={status.label}>{status.count}</Badge>}>Containers</Tabs.Tab>
+}
+
+export function StackRuntime({ id, role, deploymentStatus, onNavigate, onStatusChange }: { id: string; role: string; deploymentStatus?: string; onNavigate: (route: Route) => void; onStatusChange?: (status: StackRuntimeStatus) => void }) {
   const [data, setData] = useState<RuntimeData | null>(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
@@ -38,6 +42,9 @@ export function StackRuntime({ id, role, deploymentStatus, onNavigate }: { id: s
   const [busy, setBusy] = useState<StackAction | null>(null)
   const [outcomes, setOutcomes] = useState<Outcome[]>([])
   const lock = useRef(false)
+  useEffect(() => {
+    onStatusChange?.(data ? stackRuntimeBadge(data.stack, data.hosts) : { color: 'gray', label: 'Container information unavailable', count: '—' })
+  }, [data, onStatusChange])
   useEffect(() => {
     let active = true
     let polling = false
