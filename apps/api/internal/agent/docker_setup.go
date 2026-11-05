@@ -17,10 +17,12 @@ type dockerSetup struct {
 	Mode        string `json:"mode"`
 	Host        string `json:"host"`
 	ManagedRoot string `json:"managedRoot,omitempty"`
+	StackOwner  string `json:"stackOwner,omitempty"`
 }
 
 var dockerSocketPath = regexp.MustCompile(`^/[a-zA-Z0-9_./-]+$`)
 var dockerManagedPath = regexp.MustCompile(`^/[a-zA-Z0-9_./ -]+$`)
+var dockerStackOwner = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,63})?$`)
 
 func (d *dockerSetup) validate(target string) error {
 	if d == nil {
@@ -48,6 +50,9 @@ func (d *dockerSetup) validate(target string) error {
 		}
 	}
 	if d.Mode == protocol.DockerModeDeploy {
+		if d.StackOwner != "" && !dockerStackOwner.MatchString(d.StackOwner) {
+			return errors.New("Stack owner must be a local user or UID, optionally followed by :group or :GID")
+		}
 		if !strings.HasPrefix(target, "linux-") {
 			return errors.New("Compose stack deployment is supported on Linux agents only")
 		}
@@ -58,6 +63,8 @@ func (d *dockerSetup) validate(target string) error {
 		}
 	} else if d.ManagedRoot != "" {
 		return errors.New("A Compose root requires deploy access")
+	} else if d.StackOwner != "" {
+		return errors.New("A stack owner requires deploy access")
 	}
 	return nil
 }

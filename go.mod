@@ -4,7 +4,9 @@ go 1.25.0
 
 require (
 	filippo.io/age v1.2.1
+	github.com/UserExistsError/conpty v0.1.4
 	github.com/coder/websocket v1.8.15
+	github.com/creack/pty v1.1.24
 	github.com/danielgtaylor/huma/v2 v2.34.0
 	github.com/go-chi/chi/v5 v5.2.3
 	github.com/golang-migrate/migrate/v4 v4.18.3

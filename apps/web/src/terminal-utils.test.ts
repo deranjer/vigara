@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { clampTerminalSize, describeTerminalEnd, isValidExecUser, parseTerminalEnd, resizeMessage, splitInput, terminalBlocker, terminalPath } from './terminal-utils'
+import { clampTerminalSize, describeTerminalEnd, deviceTerminalPath, isValidExecUser, parseTerminalEnd, resizeMessage, splitInput, terminalBlocker, terminalPath } from './terminal-utils'
 
 describe('terminal-utils', () => {
   it('builds the terminal path with encoded, bounded options', () => {
@@ -11,6 +11,10 @@ describe('terminal-utils', () => {
   it('validates the run-as user like the server does', () => {
     for (const ok of ['', '  ', ' root ', 'root', '1000', '1000:1000', 'www-data:www.data', 'a_b-c.d']) expect(isValidExecUser(ok)).toBe(true)
     for (const bad of ['root;id', '$(id)', 'a:b:c', 'a b', 'x'.repeat(65), 'ro ot', 'root\nid']) expect(isValidExecUser(bad)).toBe(false)
+  })
+
+  it('opens device shells without container user overrides', () => {
+    expect(deviceTerminalPath('agent/1', { shell: 'powershell', user: 'root', cols: 2, rows: 900 })).toBe('/api/containers/agent%2F1/shell?shell=powershell&cols=10&rows=500')
   })
 
   it('clamps sizes into the supported range', () => {

@@ -36,6 +36,7 @@ type Target struct {
 type Plan = stack.Plan
 type Request = stack.DeployRequest
 type Runner struct {
+	StackOwner                 string
 	ManagedRoot                string
 	Targets                    map[string]Target
 	DockerHost, Identity, SOPS string
@@ -59,7 +60,7 @@ func validationFailure(err error) error {
 	if errors.As(err, &bindError) {
 		return &protocol.ChannelError{Code: protocol.ErrCodeBadRequest, Message: bindError.Error()}
 	}
-	for _, known := range []error{errRecovery, errTarget, errCompose, errJournal, errExternalNetwork, errExternalVolume, errBindMount, errUnsupportedStack, stack.ErrInvalid} {
+	for _, known := range []error{errStackOwner, errRecovery, errTarget, errCompose, errJournal, errExternalNetwork, errExternalVolume, errBindMount, errUnsupportedStack, stack.ErrInvalid} {
 		if errors.Is(err, known) {
 			return &protocol.ChannelError{Code: protocol.ErrCodeBadRequest, Message: known.Error()}
 		}
@@ -652,6 +653,10 @@ func (r *Runner) Deploy(ctx context.Context, q Request) (stack.Result, error) {
 	if e != nil {
 		return stack.Result{}, e
 	}
+	owner, e := r.stackOwnership()
+	if e != nil {
+		return stack.Result{}, e
+	}
 	if !stack.CommitPattern.MatchString(q.Job.ID) || !stack.CommitPattern.MatchString(s.Commit) || q.Token == "" || !validImages(q.Images) {
 		return stack.Result{}, stack.ErrInvalid
 	}
@@ -746,12 +751,19 @@ func (r *Runner) Deploy(ctx context.Context, q Request) (stack.Result, error) {
 	defer os.RemoveAll(dir)
 	// Apply files only after validation, preserving the existing project directory and data paths.
 	// No files or volumes are deleted, and no compose down operation is issued.
+	ownershipRoot := r.ManagedRoot
+	if ownershipRoot == "" {
+		ownershipRoot = filepath.Dir(t.Directory)
+	}
+	if owner.directory(ownershipRoot, t.Directory) != nil {
+		return fail("write", errStackOwner.Error())
+	}
 	for p, v := range s.Files {
 		if safeFile(t.Directory, p) != nil {
 			return fail("write", "Target path changed.")
 		}
 		full := filepath.Join(t.Directory, filepath.FromSlash(p))
-		if os.MkdirAll(filepath.Dir(full), 0700) != nil {
+		if owner.parents(t.Directory, p) != nil {
 			return fail("write", "Could not prepare stack files.")
 		}
 		temp, e := os.CreateTemp(filepath.Dir(full), ".vigara-write-")
@@ -760,6 +772,11 @@ func (r *Runner) Deploy(ctx context.Context, q Request) (stack.Result, error) {
 		}
 		tmp := temp.Name()
 		_ = temp.Chmod(0600)
+		if owner.file(temp) != nil {
+			_ = temp.Close()
+			_ = os.Remove(tmp)
+			return fail("write", errStackOwner.Error())
+		}
 		_, e = temp.WriteString(v)
 		closeErr := temp.Close()
 		if e != nil || closeErr != nil || os.Rename(tmp, full) != nil {
@@ -776,7 +793,7 @@ func (r *Runner) Deploy(ctx context.Context, q Request) (stack.Result, error) {
 			return fail("write", "Could not prepare environment input.")
 		}
 		full := filepath.Join(t.Directory, filepath.FromSlash(input.Target))
-		if os.MkdirAll(filepath.Dir(full), 0700) != nil {
+		if owner.parents(t.Directory, input.Target) != nil {
 			return fail("write", "Could not prepare environment target.")
 		}
 		f, e := os.CreateTemp(filepath.Dir(full), ".vigara-env-")
@@ -785,6 +802,11 @@ func (r *Runner) Deploy(ctx context.Context, q Request) (stack.Result, error) {
 		}
 		temporary := f.Name()
 		_ = f.Chmod(0600)
+		if owner.file(f) != nil {
+			_ = f.Close()
+			_ = os.Remove(temporary)
+			return fail("write", errStackOwner.Error())
+		}
 		_, e = f.Write(plain)
 		closeErr := f.Close()
 		if e != nil || closeErr != nil || os.Rename(temporary, full) != nil {

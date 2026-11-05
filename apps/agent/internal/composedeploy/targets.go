@@ -107,6 +107,10 @@ func (r *Runner) CreateTarget(ctx context.Context, q protocol.ComposeCreateTarge
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := protocol.ComposeTargetInfo{ID: q.ID, ProjectName: q.ProjectName}
+	owner, ownerErr := r.stackOwnership()
+	if ownerErr != nil {
+		return out, ownerErr
+	}
 	if !stack.ValidID(q.ID) || !stack.ValidProject(q.ProjectName) {
 		return out, stack.ErrInvalid
 	}
@@ -149,8 +153,14 @@ func (r *Runner) CreateTarget(ctx context.Context, q protocol.ComposeCreateTarge
 			return out, errTarget
 		}
 	}
+	_, rootErr := os.Lstat(root)
 	if os.MkdirAll(root, 0700) != nil {
 		return out, errTarget
+	}
+	if os.IsNotExist(rootErr) {
+		if err := owner.directory(filepath.Dir(root), root); err != nil {
+			return out, err
+		}
 	}
 	if os.Mkdir(out.Directory, 0700) != nil {
 		return out, errTarget
@@ -166,6 +176,9 @@ func (r *Runner) CreateTarget(ctx context.Context, q protocol.ComposeCreateTarge
 	closeErr := f.Close()
 	if e != nil || syncErr != nil || closeErr != nil {
 		return out, errTarget
+	}
+	if err := owner.directory(root, out.Directory); err != nil {
+		return out, err
 	}
 	return out, nil
 }

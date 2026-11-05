@@ -10,6 +10,14 @@ Start all stacks and Stop all stacks cover every deployed or imported stack acro
 
 Runtime chips refresh every ten seconds. Red means observed containers are not all running, or containers are missing from the currently deployed configuration. Offline observations are gray, and incomplete inventories cannot show an all-running green chip. The separate deployment chip continues to describe the last deployment attempt.
 
+Opening a stack also shows Start/Stop controls and live container cards above the
+editor. Cards include state, health, image, service, exit code, restart count,
+out-of-memory status and the full Docker error when reported. Container details
+and Logs open the existing container views; unsaved editor changes are stored
+as a draft before navigating. Missing services and the latest failed deployment
+are visible without opening a separate tab. Runtime refreshes do not replace
+editor contents or deploy changes.
+
 For terminal recovery without the server, see [Starting deployed stacks without Vigara](compose-recovery.md). Explicit deployments generate a protected local `start.sh` and retain the environment inputs it needs.
 
 ## Portable repository layout

@@ -9,7 +9,7 @@ import { useStream } from './use-stream'
 import { MountFiles } from './mount-files'
 import { canBrowseFiles } from './mount-file-utils'
 
-type InspectResult = {
+export type InspectResult = {
   id: string; name: string; image: string; imageId?: string; created?: string
   state: { status: string; running: boolean; paused: boolean; restarting: boolean; oomKilled: boolean; exitCode: number; error?: string; startedAt?: string; finishedAt?: string; health?: string; pid?: number }
   command?: string[]; entrypoint?: string[]; workingDir?: string; user?: string; hostname?: string; tty: boolean
@@ -25,7 +25,7 @@ type Props = { hostId: string; reference: string; tab: string; hosts: HostEntry[
 const logLimit = 5000
 const sampleLimit = 120
 
-async function fetchInspect(hostId: string, reference: string, revealEnv: boolean): Promise<InspectResult> {
+export async function fetchInspect(hostId: string, reference: string, revealEnv: boolean): Promise<InspectResult> {
   const path = `/api/containers/${encodeURIComponent(hostId)}/${encodeURIComponent(reference)}/inspect${revealEnv ? '?reveal=env' : ''}`
   const response = await fetch(path, { credentials: 'same-origin' })
   if (!response.ok) throw new Error((await response.text()).trim().slice(0, 200) || 'The container could not be read.')

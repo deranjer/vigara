@@ -1,5 +1,7 @@
 """Exercise Linux Docker installation with a socket fixture and mocked host changes."""
 import importlib.util
+import os
+import pwd
 from pathlib import Path
 import socket
 import stat
@@ -20,6 +22,37 @@ spec.loader.exec_module(installer)
 
 
 class DockerInstallerTests(unittest.TestCase):
+    def test_reinstall_preserves_selected_owner_and_explicit_owner_overrides(self):
+        existing = {'/etc/vigara-agent/docker.env': 'VIGIRA_COMPOSE_OWNER=root\n'}
+        bootstrap = {'reinstall': True, 'docker': {'mode': 'deploy', 'host': 'http://127.0.0.1:2375', 'managedRoot': '/srv/stacks'}}
+        with patch.object(installer.Path, 'exists', lambda p: str(p) in existing), \
+             patch.object(installer.Path, 'read_text', lambda p: existing[str(p)]):
+            self.assertEqual(installer.load_settings(bootstrap)['stackOwner'], 'root')
+            bootstrap['docker']['stackOwner'] = '0:0'
+            self.assertEqual(installer.load_settings(bootstrap)['stackOwner'], '0:0')
+
+    def test_explicit_owner_is_verified_and_persisted_without_recursive_chown(self):
+        account = pwd.getpwuid(os.getuid())
+        owner = f'{account.pw_uid}:{account.pw_gid}'
+        settings = installer.validate({'mode': 'deploy', 'host': self.host, 'managedRoot': str(self.root), 'stackOwner': owner})
+        calls, installed = [], {}
+        def run(*args):
+            calls.append(args)
+            if args[:3] == ('sudo', 'install', '-m'):
+                installed[args[-1]] = Path(args[-2]).read_text()
+        with patch.object(installer, 'run', side_effect=run):
+            installer.apply(settings, 'vigara-agent')
+        self.assertIn(f'VIGIRA_COMPOSE_OWNER={owner}', installed['/etc/vigara-agent/docker.env'])
+        self.assertIn(('sudo', '-u', account.pw_name, 'test', '-x', str(self.root)), calls)
+        self.assertFalse(any('chown' in call for call in calls))
+
+    def test_invalid_or_missing_owners_fail_before_host_mutation(self):
+        for owner in ('missing-vigara-user-123456', 'root:missing-vigara-group-123456', 'root\nUser=root', 'root;id'):
+            with self.subTest(owner=owner), patch.object(installer, 'run') as run:
+                with self.assertRaises(ValueError):
+                    installer.validate({'mode': 'deploy', 'host': self.host, 'managedRoot': str(self.root), 'stackOwner': owner})
+                run.assert_not_called()
+
     def test_reinstall_preserves_root_from_existing_environment_files(self):
         existing = {'/etc/vigara-agent/compose.env': 'VIGIRA_COMPOSE_MANAGED_ROOT="/home/operator/stacks"\n',
                     '/etc/vigara-agent/docker.env': 'VIGIRA_DOCKER_MODE=deploy\n'}

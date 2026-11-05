@@ -237,6 +237,9 @@ func (c *Client) Capabilities() []string { return c.capabilities() }
 
 func (c *Client) capabilities() []string {
 	capabilities := []string{}
+	if c.State.ShellEnabled && (runtime.GOOS == "linux" || runtime.GOOS == "windows") {
+		capabilities = append(capabilities, protocol.CapabilityHostExec)
+	}
 	if c.State.ManagedBackups || resticCapabilityEnabled(c.State.ResticProfiles) {
 		capabilities = append(capabilities, resticCapability)
 	}

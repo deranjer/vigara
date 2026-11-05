@@ -24,12 +24,20 @@ export type TerminalOptions = { shell: string; user: string; cols: number; rows:
 
 /** The WebSocket path that opens a terminal for a container. */
 export function terminalPath(hostId: string, reference: string, options: TerminalOptions): string {
+  return `/api/containers/${encodeURIComponent(hostId)}/${encodeURIComponent(reference)}/exec?${terminalQuery(options)}`
+}
+
+export function deviceTerminalPath(agentId: string, options: TerminalOptions): string {
+  return `/api/containers/${encodeURIComponent(agentId)}/shell?${terminalQuery({ ...options, user: '' })}`
+}
+
+function terminalQuery(options: TerminalOptions): string {
   const query = new URLSearchParams()
   if (options.shell && options.shell !== 'auto') query.set('shell', options.shell)
   if (options.user.trim()) query.set('user', options.user.trim())
   query.set('cols', String(clampTerminalSize(options.cols, 80)))
   query.set('rows', String(clampTerminalSize(options.rows, 24)))
-  return `/api/containers/${encodeURIComponent(hostId)}/${encodeURIComponent(reference)}/exec?${query.toString()}`
+  return query.toString()
 }
 
 /** The control message that tells the host the terminal changed size. */

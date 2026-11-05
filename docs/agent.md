@@ -3,6 +3,34 @@
 For dashboard-triggered and automatic client package installation, see
 [Client self updates](client-updates.md).
 
+## Device shells
+
+Open a device's **Shell** tab for an interactive terminal. Linux uses bash when
+available and falls back to sh; Windows uses PowerShell 7 (`pwsh.exe`) when
+available and falls back to Windows PowerShell. Windows requires ConPTY support
+(Windows 10 version 1809 / Windows Server 2019 or newer).
+
+An administrator must select **Device shell access → Enabled** in Add device or
+Device info → Reinstall agent, then run the installer on that device. This grants
+the separate `host.exec` enrollment capability and enables the agent locally.
+Reinstall can preserve, enable, or disable shell access. Docker terminal access
+does not grant a device shell. Both the server and agent must be updated.
+
+Administrators and operators can open shells; viewers cannot. Commands run as
+the agent service account, with its filesystem restrictions and privileges.
+Linux monitoring services retain their existing restrictions; backup/deploy
+agents may run as root, and Windows services commonly run as LocalSystem.
+Opening a shell does not elevate the agent or relax service restrictions.
+
+Sessions use the existing outbound agent connection and require no inbound SSH
+or PowerShell port. They close when leaving the tab, after 15 minutes without
+typing, or after four hours. Opens and closes are audited; input and output are
+not recorded. The same per-user terminal limit covers device and container shells.
+
+For manual installation, include `host.exec` in the enrollment token and run
+`vigara-agent --config PATH configure-shell true` locally before enrolling.
+Use `configure-shell false` and restart the service to disable local access.
+
 ## Device hardware inventory
 
 Device info shows a used/free capacity bar for every filesystem in the latest
@@ -253,3 +281,36 @@ existing stacks when this setting changes.
 If an older reinstall replaced your selected path with the default, enter the
 original path explicitly when generating the replacement reinstall bundle. The
 server cannot infer a path that has already been overwritten on the host.
+
+### Linux stack folder and configuration ownership
+
+For Docker deploy installations, **Stack folder and configuration owner** accepts
+an existing Linux user or UID, optionally followed by `:group` or `:GID`, such as
+`deranjer` or `1000:1000`. The installer checks that the account exists and can
+access the selected Compose directory or its existing parent. Use an accessible
+location such as `/home/deranjer/stacks` rather than the agent's private state
+directory when choosing a non-root owner.
+
+Blank preserves the host's setting during reinstall. A fresh installation with
+no owner selected retains root ownership. Enter `root` explicitly to restore
+root ownership. Manual installations use `VIGIRA_COMPOSE_OWNER` on the agent
+service. The account choice is local configuration, not a remotely supplied
+deployment parameter. It does not change the agent's service account, container
+users, or Docker privileges.
+
+New stack folders use the selected owner and remain private (`0700`). On the
+next approved deployment, an existing stack's top-level directory and the
+configuration files that Vigara writes use that owner; files remain `0600`.
+New configuration subdirectories also use the selected owner. Existing
+subdirectories retain their owners because they may be bind mount sources or
+application data; adjust access to such directories separately when needed.
+
+No recursive ownership change is performed. Database files, bind mount data,
+volumes, existing unrelated files and directories, `.vigara-import` keys and
+registrations, and `.vigara-jobs` journals retain their ownership. Setting an
+owner or reinstalling the agent does not itself deploy or restart a stack.
+
+Generated standalone recovery files (`start.sh` and `.vigara-recovery/`) also
+remain private to the deploying service account. For a root-run deploy agent,
+run the launcher as root, for example `sudo ./start.sh`, even when the ordinary
+stack configuration belongs to your selected user.

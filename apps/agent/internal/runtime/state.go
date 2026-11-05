@@ -37,7 +37,8 @@ type PostgreSQLProfile struct {
 }
 
 type State struct {
-	ServerURL string `json:"serverUrl"`
+	ShellEnabled bool   `json:"shellEnabled,omitempty"`
+	ServerURL    string `json:"serverUrl"`
 	// AllowInsecurePrivateHTTP records the operator's choice, made at enrollment,
 	// to reach this server over plain HTTP on a private or Tailscale address.
 	AllowInsecurePrivateHTTP bool                          `json:"allowInsecurePrivateHttp,omitempty"`

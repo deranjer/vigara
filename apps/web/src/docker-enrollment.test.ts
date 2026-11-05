@@ -2,6 +2,12 @@ import { describe, expect, it } from 'vitest'
 import { dockerEnrollment } from './docker-enrollment'
 
 describe('Docker enrollment choices', () => {
+  it('passes an explicit stack owner only for deployment', () => {
+    expect(dockerEnrollment(true, 'deploy', 'linux-amd64', '', '/srv/stacks', ' deranjer:docker ').docker?.stackOwner).toBe('deranjer:docker')
+    expect(dockerEnrollment(true, 'deploy', 'linux-amd64', '', '', '').docker).not.toHaveProperty('stackOwner')
+    expect(dockerEnrollment(true, 'read', 'linux-amd64', '', '', 'deranjer').docker).not.toHaveProperty('stackOwner')
+    expect(() => dockerEnrollment(true, 'deploy', 'linux-amd64', '', '', 'root\nUser=root')).toThrow('owner')
+  })
   it('leaves an omitted Compose root for the installer to preserve on reinstall', () => {
     expect(dockerEnrollment(true, 'deploy', 'linux-amd64', '', '').docker?.managedRoot).toBe('')
   })

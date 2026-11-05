@@ -144,7 +144,13 @@ b=json.load(open(sys.argv[1]))
 raise SystemExit(0 if (b.get('docker') or {}).get('mode') == 'deploy' else 1)
 PY
 then ENROLL_USER=root; fi
-if [ "$REINSTALL" -eq 1 ] || sudo test ! -f /var/lib/vigara-agent/agent.json; then
+ENROLL_NEEDED=0
+if [ "$REINSTALL" -eq 1 ] || sudo test ! -f /var/lib/vigara-agent/agent.json; then ENROLL_NEEDED=1; fi
+if [ -f "$CONFIG" ]; then
+  SHELL_ACCESS=$(python3 -c 'import json,sys; v=json.load(open(sys.argv[1])).get("shell"); print("preserve" if v is None else str(v).lower())' "$CONFIG")
+  if [ "$SHELL_ACCESS" != preserve ]; then sudo -u "$ENROLL_USER" /usr/local/bin/vigara-agent --config /var/lib/vigara-agent/agent.json configure-shell "$SHELL_ACCESS"; fi
+fi
+if [ "$ENROLL_NEEDED" -eq 1 ]; then
   test -f "$CONFIG" || { echo 'No saved enrollment. Download a device bundle.' >&2; exit 1; }
   INSECURE=$(python3 -c 'import json,sys; print("1" if json.load(open(sys.argv[1])).get("insecureHttp") else "")' "$CONFIG")
   INSECURE_FLAG=""
