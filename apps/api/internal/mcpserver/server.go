@@ -23,7 +23,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-var supportedScopes = []string{"devices.read", "containers.read", "containers.manage", "stacks.deploy", "backups.read", "alerts.read"}
+var supportedScopes = []string{"devices.read", "containers.read", "containers.manage", "stacks.deploy", "backups.read", "alerts.read", "devices.exec"}
 
 type Accounts interface {
 	Login(context.Context, string, string) (auth.Session, error)

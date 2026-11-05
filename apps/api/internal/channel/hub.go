@@ -195,7 +195,7 @@ func (h *Hub) conn(agentID string) (*agentConn, error) {
 }
 
 func (h *Hub) authorizeMethod(c *agentConn, method string) error {
-	if method == protocol.MethodHostExec {
+	if method == protocol.MethodHostExec || method == protocol.MethodHostRun {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		caps, err := h.opts.Capabilities(ctx, c.id)

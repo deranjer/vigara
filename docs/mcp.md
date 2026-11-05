@@ -115,6 +115,7 @@ Client interface names can change. The discovery documents are the source of tru
 | `list_devices` | `devices.read` | Devices, latest agent, heartbeat, and monitoring status |
 | `list_containers` | `containers.read` | Latest collected names, images, and states; no environment/configuration secrets |
 | `get_container_logs` | `containers.read` | Finite live log snapshot from stdout and stderr; optional line count, start time and timestamps |
+| `run_host_command` | `devices.exec` | One allowlisted read-only command on a device (disk, memory, uptime, directory listings and sizes, Docker listings); bounded output |
 | `list_backup_status` | `backups.read` | Latest report per device and policy, including failures |
 | `list_backup_policies` | `backups.read` | Backup schedules, retention, source paths and destinations; no credentials |
 | `list_alerts` | `alerts.read` | Recent firing and resolved incidents |
@@ -139,10 +140,29 @@ Account roles are reloaded on every MCP request, and a
 tool requires both its connection scope and the corresponding current account
 permission. Viewers retain read access. Operators can manage Docker containers
 and resources; administrators can also manage Compose stacks. Requests without
-an explicit scope ask for all six supported scopes, and consent lists the write
+an explicit scope ask for the six default scopes (not `devices.exec`), and consent lists the write
 capabilities explicitly. Clients can request only read scopes for monitoring.
 Existing grants do not gain write scopes automatically: disconnect and reconnect
 to approve `containers.manage` and `stacks.deploy`. Refresh cannot expand scopes.
+
+### Host commands
+
+`run_host_command` is opt-in. `devices.exec` is never part of the default grant: a
+client must request it explicitly, and consent lists it separately. It also needs
+the account to hold the `devices.exec` permission (operators and administrators,
+the same permission that opens the web device shell) and the device to have been
+enrolled with device shell access (`host.exec`). Linux devices only.
+
+It is not a shell. The agent maps a fixed command name to a fixed argument
+vector, with no pipes, redirects, globbing or environment from the caller:
+`df`, `free`, `uptime`, `uname`, `ls` and `du` (both need an absolute `path`,
+which must be clean: no `..`, no trailing or doubled slash, no special
+characters), `docker_ps`, `docker_images`, `docker_networks` and `docker_volumes`.
+There is no way to read file contents. Each call has a 20-second limit and
+64 KiB of output (`truncated` is set if cut). The result is
+`{exitCode, stdout, stderr, truncated, timedOut}`. Every call is audited as
+`device.run` with the command, path, exit code and output size, never the output.
+Example: `{"agentId":"<uuid>","command":"ls","path":"/srv/stacks"}`.
 
 Stack tools accept `stackId` when targeting an existing stack, and write payloads
 under `body` as documented in each tool's schema. The normal workflow is
