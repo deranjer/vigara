@@ -1,7 +1,23 @@
 import { describe, expect, it } from 'vitest'
-import { dockerEnrollment } from './docker-enrollment'
+import { dockerEnrollment, supportsMountFiles } from './docker-enrollment'
 
 describe('Docker enrollment choices', () => {
+  it('includes explicit mounted file permissions and omits the preserve choice', () => {
+    for (const files of ['disabled', 'read', 'write']) {
+      expect(dockerEnrollment(true, 'exec', 'linux-amd64', '', '', '', files).docker?.files).toBe(files)
+    }
+    expect(dockerEnrollment(true, 'deploy', 'linux-amd64', '', '', '', 'preserve').docker).not.toHaveProperty('files')
+  })
+  it('rejects mounted file access on unsupported platforms, endpoints and tiers', () => {
+    for (const [mode, target, host] of [
+      ['read', 'linux-amd64', ''], ['manage', 'linux-amd64', ''],
+      ['exec', 'windows-amd64', ''], ['exec', 'linux-amd64', 'http://127.0.0.1:2375'],
+    ]) {
+      expect(supportsMountFiles(mode, target, host)).toBe(false)
+      expect(() => dockerEnrollment(true, mode, target, host, '', '', 'write')).toThrow('Mounted file access')
+    }
+    expect(() => dockerEnrollment(true, 'exec', 'linux-amd64', '', '', '', 'admin')).toThrow('mounted file access level')
+  })
   it('passes an explicit stack owner only for deployment', () => {
     expect(dockerEnrollment(true, 'deploy', 'linux-amd64', '', '/srv/stacks', ' deranjer:docker ').docker?.stackOwner).toBe('deranjer:docker')
     expect(dockerEnrollment(true, 'deploy', 'linux-amd64', '', '', '').docker).not.toHaveProperty('stackOwner')

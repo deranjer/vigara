@@ -9,6 +9,8 @@ foreach ($mode in @('read','manage','exec')) {
 if (@(Get-DockerEnvironment $null).Count -ne 0) { throw 'Omitted settings must not change the service environment' }
 foreach ($settings in @(
   @{mode='deploy';host='http://127.0.0.1:2375'},
+  @{mode='exec';host='http://127.0.0.1:2375';files='read'},
+  @{mode='exec';host='http://127.0.0.1:2375';files='write'},
   @{mode='read';host='http://192.168.1.10:2375'},
   @{mode='read';host='npipe:////./pipe/docker_engine'},
   @{mode='read';host='http://127.0.0.1'},

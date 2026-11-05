@@ -141,7 +141,8 @@ if [ "$CURRENT_USER" = root ] || [ "$MANAGED" -eq 1 ]; then ENROLL_USER=root; fi
 if [ -f "$CONFIG" ] && python3 - "$CONFIG" <<'PY'
 import json,sys
 b=json.load(open(sys.argv[1]))
-raise SystemExit(0 if (b.get('docker') or {}).get('mode') == 'deploy' else 1)
+d=b.get('docker') or {}
+raise SystemExit(0 if d.get('mode') == 'deploy' or d.get('files') in ('read', 'write') else 1)
 PY
 then ENROLL_USER=root; fi
 ENROLL_NEEDED=0

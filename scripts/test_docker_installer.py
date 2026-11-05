@@ -22,6 +22,58 @@ spec.loader.exec_module(installer)
 
 
 class DockerInstallerTests(unittest.TestCase):
+    def test_mounted_file_permissions_configure_effective_service_access(self):
+        for mode in ('exec', 'deploy'):
+            for files in ('disabled', 'read', 'write'):
+                with self.subTest(mode=mode, files=files):
+                    settings = installer.validate({'mode': mode, 'host': self.host, 'files': files,
+                                                   **({'managedRoot': str(self.root)} if mode == 'deploy' else {})})
+                    calls, installed = [], {}
+                    def run(*args):
+                        calls.append(args)
+                        if args[:3] == ('sudo', 'install', '-m'):
+                            installed[args[-1]] = Path(args[-2]).read_text()
+                    with patch.object(installer.Path, 'stat', return_value=SimpleNamespace(st_gid=998, st_mode=stat.S_IFSOCK | 0o660)), \
+                         patch.object(installer.grp, 'getgrgid', return_value=SimpleNamespace(gr_name='docker')), \
+                         patch.object(installer, 'run', side_effect=run):
+                        installer.apply(settings, 'vigara-agent')
+                    env = installed['/etc/vigara-agent/docker.env']
+                    unit = installed['/etc/systemd/system/vigara-agent.service.d/60-docker.conf']
+                    self.assertIn(f'VIGIRA_DOCKER_FILES={files}\n', env)
+                    if files != 'disabled':
+                        self.assertIn(('sudo', '-u', 'root', 'python3', '-c', installer.PROBE, self.host), calls)
+                        self.assertIn('User=root\n', unit)
+                        self.assertIn('PrivateTmp=false\n', unit)
+                        if files == 'write':
+                            self.assertIn('ProtectSystem=false\n', unit)
+                            self.assertIn('ProtectHome=false\n', unit)
+                        else:
+                            self.assertNotIn('ProtectSystem=false', unit)
+                            self.assertIn('ProtectHome=read-only\n', unit)
+                    else:
+                        self.assertNotIn('PrivateTmp=false', unit)
+                        self.assertNotIn('ProtectSystem=false', unit)
+
+    def test_mounted_file_reinstall_preserves_or_explicitly_revokes_access(self):
+        existing = {'/etc/vigara-agent/docker.env': 'VIGIRA_DOCKER_FILES=write\n'}
+        settings = {'mode': 'exec', 'host': self.host}
+        with patch.object(installer.Path, 'exists', lambda p: str(p) in existing), \
+             patch.object(installer.Path, 'read_text', lambda p: existing[str(p)]):
+            self.assertEqual(installer.load_settings({'docker': settings})['files'], 'disabled')
+            self.assertEqual(installer.load_settings({'reinstall': True, 'docker': settings})['files'], 'write')
+            for files in ('disabled', 'read'):
+                self.assertEqual(installer.load_settings({'reinstall': True, 'docker': dict(settings, files=files)})['files'], files)
+            for replacement in (dict(settings, mode='manage'), dict(settings, host='http://127.0.0.1:2375')):
+                self.assertEqual(installer.load_settings({'reinstall': True, 'docker': replacement})['files'], 'disabled')
+
+    def test_mounted_file_invalid_choices_fail_without_host_changes(self):
+        for change in ({'files': 'admin'}, {'files': 'write\nUser=root'}, {'mode': 'read'},
+                       {'mode': 'manage'}, {'host': 'http://127.0.0.1:2375'}):
+            with self.subTest(change=change), patch.object(installer, 'run') as run:
+                with self.assertRaises(ValueError):
+                    installer.validate(dict({'mode': 'exec', 'host': self.host, 'files': 'write'}, **change))
+                run.assert_not_called()
+
     def test_reinstall_preserves_selected_owner_and_explicit_owner_overrides(self):
         existing = {'/etc/vigara-agent/docker.env': 'VIGIRA_COMPOSE_OWNER=root\n'}
         bootstrap = {'reinstall': True, 'docker': {'mode': 'deploy', 'host': 'http://127.0.0.1:2375', 'managedRoot': '/srv/stacks'}}

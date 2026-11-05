@@ -65,7 +65,7 @@ func (a *api) files(operation, method string) http.HandlerFunc {
 					http.Error(w, channelErr.Message, http.StatusBadRequest)
 					return
 				case protocol.ErrCodeUnknownMethod:
-					http.Error(w, "Mount file access is disabled or the agent needs updating. On a native Linux Docker host, set VIGIRA_DOCKER_FILES=read (browse) or write (edit) on the agent service and restart it.", http.StatusConflict)
+					http.Error(w, "Mount file access is disabled or the agent needs updating. On a native Linux Docker host, open Device info > Reinstall agent, configure Docker with container terminals or stack deployment, and select Mounted file access: Browse only or Browse and edit. Run the downloaded installer on that host.", http.StatusConflict)
 					return
 				}
 			}

@@ -3,7 +3,7 @@ import { Alert, Button, Checkbox, Group, Modal, Select, Stack, Text, TextInput }
 
 import { BackupFields, newBackupConfig } from './backup-config'
 import { isAbsoluteBackupPath } from './backup-path-utils'
-import { dockerEnrollment } from './docker-enrollment'
+import { dockerEnrollment, supportsMountFiles } from './docker-enrollment'
 
 type ServerOption = { url: string; secure: boolean }
 type Availability = { serverUrl: string; serverUrls: ServerOption[]; allowInsecureHttp: boolean; targets: string[]; managedBackupsAvailable?: boolean; backupTargets?: string[]; releaseSync?: { enabled: boolean; state: string; tag?: string; error?: string } }
@@ -28,6 +28,8 @@ export function AddDevice({ opened, onClose, device }: Props) {
   const [dockerHost, setDockerHost] = useState('')
   const [composeRoot, setComposeRoot] = useState('')
   const [stackOwner, setStackOwner] = useState('')
+  const [dockerFiles, setDockerFiles] = useState<string | null>(device ? 'preserve' : 'disabled')
+  const mountFilesAvailable = supportsMountFiles(dockerCeiling, target, dockerHost)
   const effectiveDockerHost = dockerHost || (target?.startsWith('linux-') ? 'unix:///var/run/docker.sock' : 'http://127.0.0.1:2375')
 
   const selectedOption = availability.serverUrls.find((option) => option.url === serverUrl)
@@ -71,7 +73,7 @@ export function AddDevice({ opened, onClose, device }: Props) {
   async function createBundle() {
     setBusy(true); setError('')
     try {
-      const dockerChoice = dockerEnrollment(dockerEnabled, dockerCeiling ?? 'read', target, dockerHost, composeRoot, stackOwner)
+      const dockerChoice = dockerEnrollment(dockerEnabled, dockerCeiling ?? 'read', target, dockerHost, composeRoot, stackOwner, mountFilesAvailable ? dockerFiles ?? 'disabled' : 'disabled')
       const response = await fetch('/api/agent-downloads', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ shell: shellAccess === 'preserve' ? undefined : shellAccess === 'enabled', deviceId: device?.id, target, serverUrl, name, backup: backupFeature ? { ...backup, sourcePaths: backup.sourcePaths.map((p) => p.trim()).filter(Boolean) } : undefined, docker: dockerChoice.docker, features: [...(backupFeature ? ['restic.backup'] : []), ...dockerChoice.features] }) })
       if (!response.ok) throw new Error((await response.text()).slice(0, 300) || 'Could not prepare the bundle.')
       const sessionId = response.headers.get('X-Vigara-Session-ID') ?? response.headers.get('X-Vigira-Session-ID') ?? ''
@@ -92,7 +94,7 @@ export function AddDevice({ opened, onClose, device }: Props) {
   }
 
   function close() {
-    if (['enrolled', 'canceled', 'expired'].includes(status)) { setSession(''); setStatus(''); setName(device?.name ?? ''); setBackupFeature(false); setShellAccess(device ? 'preserve' : 'disabled'); setDockerCeiling('read'); setDockerEnabled(false); setDockerHost(''); setComposeRoot('') }
+    if (['enrolled', 'canceled', 'expired'].includes(status)) { setSession(''); setStatus(''); setName(device?.name ?? ''); setBackupFeature(false); setShellAccess(device ? 'preserve' : 'disabled'); setDockerCeiling('read'); setDockerEnabled(false); setDockerHost(''); setComposeRoot(''); setDockerFiles(device ? 'preserve' : 'disabled'); setStackOwner('') }
     onClose()
   }
 
@@ -136,6 +138,10 @@ export function AddDevice({ opened, onClose, device }: Props) {
       {dockerEnabled && <><TextInput disabled={!!session} label="Docker endpoint on this device" value={dockerHost} placeholder={effectiveDockerHost} onChange={(event) => setDockerHost(event.currentTarget.value)} description={target?.startsWith('linux-') ? 'Default: local Docker socket. A loopback HTTP IP and port is also supported.' : 'Requires an existing loopback HTTP Docker endpoint. Windows named pipes are not supported; the installer does not expose the Docker daemon.'} />
         {dockerCeiling === 'deploy' && <TextInput disabled={!!session} label="Managed Compose directory on this device" value={composeRoot} placeholder={device ? 'Keep the host’s configured directory' : '/var/lib/vigara-agent/compose-stacks'} onChange={(event) => setComposeRoot(event.currentTarget.value)} description={device ? 'Leave blank to preserve the directory configured on this host. Enter a path only to change it.' : 'Choose the directory containing your Compose stacks. Blank uses the default shown above.'} />}
         {dockerCeiling === 'deploy' && <TextInput disabled={!!session} label="Stack folder and configuration owner" value={stackOwner} placeholder="e.g. deranjer or 1000:1000" onChange={(event) => setStackOwner(event.currentTarget.value)} description="An existing Linux user, optionally followed by :group. Blank keeps the host setting; fresh installs default to root. Applies to new stack folders and configuration on the next deployment. Application data ownership is preserved." />}
+        <Select disabled={!!session || !mountFilesAvailable} label="Mounted file access" value={mountFilesAvailable ? dockerFiles : 'disabled'} onChange={setDockerFiles} allowDeselect={false}
+          description={mountFilesAvailable ? 'Administrators can browse mounted files and Docker volumes. Requires an agent installed directly on the native Linux Docker host.' : 'Requires Linux, a local Docker socket, and Docker access with container terminals or stack deployment.'}
+          data={[...(device ? [{ value: 'preserve', label: 'Keep existing mounted file access' }] : []), { value: 'disabled', label: 'Disabled' }, { value: 'read', label: 'Browse only' }, { value: 'write', label: 'Browse and edit' }]} />
+        {mountFilesAvailable && (dockerFiles === 'read' || dockerFiles === 'write') && <Alert color="yellow" title="Mounted file permissions">The agent service runs as root to access mounted files, including files in home and temporary directories. {dockerFiles === 'write' ? 'Editing enables host filesystem writes, with a backup before each save. It can also change mounts marked read-only inside a container.' : 'Browsing keeps file editing disabled.'}</Alert>}
         <Alert color="yellow" title="Docker host access">Docker socket or unrestricted API access can control the host, including when Vigara is set to view-only. Only install this bundle on a host where you approve that access. Linux stack deployment runs the agent as root with write access to the selected Compose directory.</Alert></>}
       <Text size="sm" c="dimmed">Telemetry and inventory are included. Selected Docker and backup settings are applied when you run the installer on the device.</Text>
       {status && <Alert color={status === 'enrolled' ? 'green' : status === 'waiting' ? 'blue' : 'gray'} title={`Enrollment ${status}`}>{status === 'waiting' ? <>Extract the bundle on the device and run <code>{target?.startsWith('linux-') ? 'sh install.sh' : 'install.cmd'}</code> as an administrator. This one-use enrollment expires after 30 minutes.</> : status === 'enrolled' ? 'Enrollment was accepted. Installation is complete only when the installer confirms the service is running and the device reports a successful check-in.' : status === 'canceled' ? 'The enrollment was canceled.' : 'The enrollment expired.'}</Alert>}
