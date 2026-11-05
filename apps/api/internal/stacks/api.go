@@ -130,6 +130,7 @@ func Register(mux *http.ServeMux, c Config) *API {
 	mux.HandleFunc("POST /api/stacks/{id}/environment", a.editEnvironment)
 	mux.HandleFunc("POST /api/stacks/{id}/environment/reveal", a.revealEnvironment)
 	mux.HandleFunc("POST /api/stacks/{id}/plan", a.plan)
+	mux.HandleFunc("POST /api/stacks/{id}/image-tags", a.imageTags)
 	mux.HandleFunc("POST /api/stacks/{id}/deploy", a.deploy)
 	mux.HandleFunc("GET /api/stacks/{id}/deployments", a.deployments)
 	mux.HandleFunc("POST /api/stacks/{id}/deployments/{job}/reconcile", a.reconcile)
@@ -634,7 +635,8 @@ func (a *API) plan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var q struct {
-		Commit string `json:"commit"`
+		Commit      string `json:"commit"`
+		SourcesOnly bool   `json:"sourcesOnly"`
 	}
 	if !decode(w, r, &q) {
 		return
@@ -658,6 +660,25 @@ func (a *API) plan(w http.ResponseWriter, r *http.Request) {
 	s, e := a.deploymentSnapshot(ctx, repo, r.PathValue("id"), q.Commit, nil)
 	if e != nil {
 		fail(w, e)
+		return
+	}
+	if q.SourcesOnly {
+		_, _, m, err := placement.ResolveRuntime(s)
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		b, err := a.binding(ctx, s.ID, m.ProjectName)
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		var sources stack.Plan
+		if err = a.Hub.Call(ctx, b.AgentID, protocol.MethodComposeImageSources, s, &sources); err != nil {
+			fail(w, err)
+			return
+		}
+		respond(w, http.StatusOK, sources)
 		return
 	}
 	plan, e := a.validate(ctx, s)
@@ -685,10 +706,11 @@ func (a *API) deploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var q struct {
-		Commit string            `json:"commit"`
-		Token  string            `json:"token"`
-		Pull   bool              `json:"pull"`
-		Images map[string]string `json:"images,omitempty"`
+		Commit   string            `json:"commit"`
+		Token    string            `json:"token"`
+		Pull     bool              `json:"pull"`
+		Recreate bool              `json:"recreate"`
+		Images   map[string]string `json:"images,omitempty"`
 	}
 	if !decode(w, r, &q) {
 		return
@@ -739,7 +761,7 @@ func (a *API) deploy(w http.ResponseWriter, r *http.Request) {
 	}
 	id := hex.EncodeToString(random)
 	raw, _ := json.Marshal(s)
-	_, e = a.Pool.Exec(ctx, `INSERT INTO stack_deployments(id,stack_id,agent_id,project_name,actor_id,actor_name,commit_id,configuration_digest,snapshot,plan_token,pull,status,images,tracking) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'queued',$12,$13)`, id, s.ID, b.AgentID, m.ProjectName, u.ID, u.Username, s.Commit, stack.Digest(s), raw, q.Token, q.Pull, imageBytes, trackingBytes)
+	_, e = a.Pool.Exec(ctx, `INSERT INTO stack_deployments(id,stack_id,agent_id,project_name,actor_id,actor_name,commit_id,configuration_digest,snapshot,plan_token,pull,status,images,tracking,recreate) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'queued',$12,$13,$14)`, id, s.ID, b.AgentID, m.ProjectName, u.ID, u.Username, s.Commit, stack.Digest(s), raw, q.Token, q.Pull, imageBytes, trackingBytes, q.Recreate)
 	if e != nil {
 		http.Error(w, "An active or uncertain deployment already exists, or the deployment could not be recorded. Refresh deployment history.", 409)
 		return
@@ -865,7 +887,7 @@ func (a *API) tick(ctx context.Context) {
 	a.reconcileImported(ctx, c)
 	var id, agent, token, stackID string
 	var raw, imageBytes []byte
-	var pull bool
+	var pull, recreate bool
 	unlockPolicy, e := a.updateLock(ctx)
 	if e != nil {
 		return
@@ -877,7 +899,7 @@ func (a *API) tick(ctx context.Context) {
 	}()
 	var automatic bool
 	var policyVersion *int64
-	e = c.QueryRow(ctx, `UPDATE stack_deployments SET status='running',stage='validate' WHERE id=(SELECT id FROM stack_deployments WHERE status='queued' ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING id,agent_id::text,snapshot,plan_token,pull,stack_id,images,automatic,policy_version`).Scan(&id, &agent, &raw, &token, &pull, &stackID, &imageBytes, &automatic, &policyVersion)
+	e = c.QueryRow(ctx, `UPDATE stack_deployments SET status='running',stage='validate' WHERE id=(SELECT id FROM stack_deployments WHERE status='queued' ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING id,agent_id::text,snapshot,plan_token,pull,stack_id,images,automatic,policy_version,recreate`).Scan(&id, &agent, &raw, &token, &pull, &stackID, &imageBytes, &automatic, &policyVersion, &recreate)
 	if e != nil {
 		return
 	}
@@ -897,7 +919,11 @@ func (a *API) tick(ctx context.Context) {
 		// jobs, and never interrupt an already dispatched Compose operation.
 		unlockPolicy()
 		unlockPolicy = nil
-		e = a.Hub.Call(callCtx, agent, protocol.MethodComposeDeploy, stack.DeployRequest{Job: stack.Job{ID: id, Snapshot: s, Pull: pull}, Token: token, Images: images}, &result)
+		method := protocol.MethodComposeDeploy
+		if recreate {
+			method = protocol.MethodComposeRecreate
+		}
+		e = a.Hub.Call(callCtx, agent, method, stack.DeployRequest{Job: stack.Job{ID: id, Snapshot: s, Pull: pull, Recreate: recreate}, Token: token, Images: images}, &result)
 		if e == nil {
 			result = correlatedResult(result, s, id, token, images)
 		}

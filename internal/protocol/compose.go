@@ -1,9 +1,12 @@
 package protocol
 
 const (
+	MethodComposeImageTags     = "compose.images.tags"
+	MethodComposeImageSources  = "compose.images.sources"
 	MethodComposeImagePlan     = "compose.images.plan"
 	MethodComposeValidate      = "compose.validate"
 	MethodComposeDeploy        = "compose.deploy"
+	MethodComposeRecreate      = "compose.recreate"
 	MethodComposeStatus        = "compose.status"
 	MethodComposeTargets       = "compose.targets"
 	MethodComposeCreate        = "compose.create"
@@ -15,9 +18,23 @@ const (
 )
 
 func init() {
+	channelMethodTiers[MethodComposeImageTags] = DockerModeDeploy
+	channelMethodTiers[MethodComposeImageSources] = DockerModeDeploy
+	channelMethodTiers[MethodComposeRecreate] = DockerModeDeploy
 	for _, method := range []string{MethodComposeImagePlan, MethodComposeValidate, MethodComposeDeploy, MethodComposeStatus, MethodComposeTargets, MethodComposeCreate, MethodComposeRecipient, MethodComposeDiscover, MethodComposeImportPreview, MethodComposeImportPrepare, MethodComposeImportConfirm} {
 		channelMethodTiers[method] = DockerModeDeploy
 	}
+}
+
+type ComposeImageTagsRequest struct {
+	Image string `json:"image"`
+	Last  string `json:"last,omitempty"`
+}
+
+type ComposeImageTags struct {
+	Repository string   `json:"repository"`
+	Tags       []string `json:"tags"`
+	Next       string   `json:"next,omitempty"`
 }
 
 type ComposeImportCandidate struct {

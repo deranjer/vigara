@@ -29,6 +29,14 @@ creates a new revision.
 
 For terminal recovery without the server, see [Starting deployed stacks without Vigara](compose-recovery.md). Explicit deployments generate a protected local `start.sh` and retain the environment inputs it needs.
 
+## Pulling and changing stack images
+
+Open a saved stack and choose **Pull and recreate stack** to refresh its configured image tags, including `latest`. The preview resolves the tags to exact registry digests. Confirming the preview downloads those reviewed images and runs Compose with `--force-recreate`, retaining existing data volumes. Digest-pinned references keep their exact content. Save draft changes before using this action; an active or uncertain deployment must finish or be reconciled first.
+
+**Browse image tags** lists the stack's services and their resolved image references. Choose a service to browse its registry tags, search the loaded tags, or load additional pages. A known tag can also be entered manually. Registry lookup uses Docker credentials for the agent's service account on the assigned device, including configured credential helpers. Registry failures are shown without exposing credentials.
+
+**Save tag and preview deployment** writes the selected image tag into the service's last Compose override and saves it to Git. It then opens a fresh deployment preview with image download and stack recreation enabled. Confirm that preview to redeploy. If Git sync fails, the selection remains in the draft for retry; containers are not changed. Shared YAML anchors and aliases must be edited in Compose files to avoid changing another service unintentionally. Both server and agent must include this feature.
+
 ## Portable repository layout
 
 The [Profiles and assignments editor](stack-profiles.md) implements authoring, Git persistence, initial device binding and exclusive epoch-1 assignment deployment. The agent checks the supported resource prerequisites before preview and apply. Fenced replacement, replicas, startup ordering and automatic resource provisioning remain pending. Direct deployments of stacks without an enabled assignment do not consume profile requirements.

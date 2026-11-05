@@ -65,6 +65,7 @@ type Job struct {
 	ID       string   `json:"id"`
 	Snapshot Snapshot `json:"snapshot"`
 	Pull     bool     `json:"pull"`
+	Recreate bool     `json:"recreate,omitempty"`
 }
 type Result struct {
 	Status                string            `json:"status"`
