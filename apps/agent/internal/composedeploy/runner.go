@@ -59,7 +59,7 @@ func validationFailure(err error) error {
 	if errors.As(err, &bindError) {
 		return &protocol.ChannelError{Code: protocol.ErrCodeBadRequest, Message: bindError.Error()}
 	}
-	for _, known := range []error{errTarget, errCompose, errJournal, errExternalNetwork, errExternalVolume, errBindMount, errUnsupportedStack, stack.ErrInvalid} {
+	for _, known := range []error{errRecovery, errTarget, errCompose, errJournal, errExternalNetwork, errExternalVolume, errBindMount, errUnsupportedStack, stack.ErrInvalid} {
 		if errors.Is(err, known) {
 			return &protocol.ChannelError{Code: protocol.ErrCodeBadRequest, Message: known.Error()}
 		}
@@ -453,6 +453,12 @@ func (r *Runner) model(ctx context.Context, s stack.Snapshot, t Target, m stack.
 
 func (r *Runner) modelWithImages(ctx context.Context, s stack.Snapshot, t Target, m stack.Manifest, images map[string]string) (Plan, error) {
 	plan := Plan{ProjectName: m.ProjectName, Services: []string{}}
+	if err := validateRecoveryPaths(s, m); err != nil {
+		return plan, err
+	}
+	if err := checkRecoveryTarget(t); err != nil {
+		return plan, err
+	}
 	p, _, _, e := placement.ResolveRuntime(s)
 	if e != nil {
 		return plan, e
@@ -786,23 +792,15 @@ func (r *Runner) Deploy(ctx context.Context, q Request) (stack.Result, error) {
 			return fail("write", "Could not save environment input.")
 		}
 	}
-	// Use the approved original project directory, not the validation workspace, for relative storage.
-	args = []string{"compose", "-p", m.ProjectName, "--project-directory", t.Directory}
-	for _, p := range m.Compose.Files {
-		args = append(args, "-f", filepath.Join(t.Directory, filepath.FromSlash(p)))
-	}
-	for i := range m.Compose.InterpolationFiles {
-		args = append(args, "--env-file", filepath.Join(dir, fmt.Sprintf(".vigara-input-%d", i)))
-	}
 	// Compose applies exactly the registry digests reviewed in the preview, even if tags moved.
 	// Keep this non-secret override beside the journal for post-deployment inspection.
 	override := filepath.Join(journal, q.Job.ID+".images.json")
 	if imageOverride(override, q.Images) != nil {
 		return stack.Result{}, errJournal
 	}
-	args = append(args, "-f", override)
-	if _, e = r.command(ctx, t.Directory, append(args, "config", "--quiet")...); e != nil {
-		return fail("validate", "Saved files did not pass Compose validation on this device.")
+	args, e = r.recovery(ctx, t, m, dir, override)
+	if e != nil {
+		return fail("write", "Could not prepare validated standalone recovery files on this device.")
 	}
 	if q.Job.Pull {
 		result.Stage = "pull"
