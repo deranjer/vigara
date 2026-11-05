@@ -30,6 +30,13 @@ describe('stack list', () => {
 
 const host = (states: string[], extra = {}) => [{ agentId: 'host-1', name: 'A', state: 'ok', dockerTier: 'manage', containers: states.map((state, index) => ({ id: String(index), project: 'media', state, service: 'svc-' + index })), ...extra }]
 describe('stack lifecycle status and targets', () => {
+ it('counts missing services in the ratio instead of showing a misleading 1/1', () => {
+  expect(stackRuntimeBadge(sample(), host(['running']))).toMatchObject({ count: '1/2', color: 'red' })
+  expect(stackRuntimeBadge(sample({ serviceCount: 1 }), host(['running']))).toMatchObject({ count: '1/1', color: 'green' })
+  expect(stackRuntimeBadge(sample(), host(['running', 'running']))).toMatchObject({ count: '2/2', color: 'green' })
+  expect(stackRuntimeBadge(sample(), host(['exited']))).toMatchObject({ count: '0/2', color: 'red' })
+  expect(stackRuntimeBadge(sample(), host([]))).toMatchObject({ count: '0/2', color: 'red' })
+ })
  it('shows red for partially and entirely stopped stacks, and green only for all running', () => {
   expect(stackRuntimeBadge(sample(), host(['running', 'exited'])).color).toBe('red')
   expect(stackRuntimeBadge(sample(), host(['exited', 'paused'])).color).toBe('red')
@@ -42,11 +49,14 @@ describe('stack lifecycle status and targets', () => {
   const badge = stackRuntimeBadge(sample({ deploymentStatus: 'succeeded', deploymentCommit: 'a' }), hosts)
   expect(badge.color).toBe('red')
   expect(badge.label).toContain('Missing containers')
+  expect(badge.count).toBe('2/3')
   expect(stackRuntimeBadge(sample({ deploymentStatus: 'succeeded', deploymentCommit: 'a' }), host([])).color).toBe('red')
  })
  it('keeps offline, truncated, and never deployed observations distinct', () => {
   expect(stackRuntimeBadge(sample(), []).color).toBe('gray')
+  expect(stackRuntimeBadge(sample(), []).count).toBe('—')
   expect(stackRuntimeBadge(sample(), host(['running', 'running'], { truncated: true })).color).toBe('yellow')
+  expect(stackRuntimeBadge(sample(), host(['running', 'running'], { truncated: true })).count).toBe('2/?')
   expect(stackRuntimeBadge(sample({ commit: '' }), host([])).color).toBe('gray')
  })
  it('protects Vigara and Caddy by stack ID and Compose project for bulk actions', () => {

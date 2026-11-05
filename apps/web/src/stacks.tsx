@@ -8,7 +8,8 @@ import { isComposeFile } from './compose-editor-utils'
 import { SecretEditor } from './secret-editor'
 import { StackDiff } from './stack-diff'
 import { StackLoading } from './stack-loading'
-import { StackRuntime } from './stack-runtime'
+import { StackContainersTab, StackRuntime } from './stack-runtime'
+import type { StackRuntimeStatus } from './stack-list-utils'
 
 const ComposeEditor = lazy(() => import('./compose-editor'))
 
@@ -48,6 +49,7 @@ function StackEditor({ id, projectName, onBack, role, onNavigate }: { id: string
   const [draft, setDraft] = useState<Draft>({ base: '', files: null, version: 0 })
   const [file, setFile] = useState<string | null>('compose.yaml')
   const [tab, setTab] = useState<string | null>('files')
+  const [containerStatus, setContainerStatus] = useState<StackRuntimeStatus>({ color: 'gray', label: 'Loading containers', count: '…' })
   const [history, setHistory] = useState<Revision[]>([])
   const [jobs, setJobs] = useState<Deployment[]>([])
   const [actionBusy, setBusy] = useState(false)
@@ -127,9 +129,9 @@ function StackEditor({ id, projectName, onBack, role, onNavigate }: { id: string
     <Group gap="xs"><Badge variant="light">Saved: {short(detail.snapshot.commit)}</Badge><Badge color="gray" variant="light">Last deployed: {deployed ? short(deployed.commit) : 'Never'}</Badge>{dirty && <Badge color="yellow">Draft changes</Badge>}{deployed && deployed.digest !== detail.digest && <Badge color="orange">Saved changes waiting to deploy</Badge>}</Group>
     {!detail.assigned && <Alert color="yellow">Configure an approved device and project folder for this stack before saving or deploying.</Alert>}
     {jobs[0]?.status === 'failed' && <Alert color="red" title="Last deployment failed">{jobs[0].stage} · {jobs[0].message || 'Open Deployments for the device result.'}</Alert>}
-    <StackRuntime id={id} role={role} deploymentStatus={jobs[0] ? `${jobs[0].id}:${jobs[0].status}` : ''} onNavigate={(route) => { if (unpersisted) { void action(async () => { await persistDraft(); onNavigate(route) }) } else onNavigate(route) }} />
     <Tabs value={tab} onChange={(value) => { setTab(value); if (value === 'history') void action(async () => setHistory(await request<Revision[]>(`${base(id)}/history`))) }}>
-      <Tabs.List mb="lg"><Tabs.Tab value="files">Compose files</Tabs.Tab><Tabs.Tab value="diff">Draft diff</Tabs.Tab><Tabs.Tab value="environment">Environment</Tabs.Tab><Tabs.Tab value="history">Revision history</Tabs.Tab><Tabs.Tab value="deployments">Deployments</Tabs.Tab><Tabs.Tab value="updates">Image updates</Tabs.Tab></Tabs.List>
+      <Tabs.List mb="lg"><Tabs.Tab value="files">Compose files</Tabs.Tab><StackContainersTab status={containerStatus} /><Tabs.Tab value="diff">Draft diff</Tabs.Tab><Tabs.Tab value="environment">Environment</Tabs.Tab><Tabs.Tab value="history">Revision history</Tabs.Tab><Tabs.Tab value="deployments">Deployments</Tabs.Tab><Tabs.Tab value="updates">Image updates</Tabs.Tab></Tabs.List>
+      <Tabs.Panel value="containers" keepMounted><StackRuntime id={id} role={role} deploymentStatus={jobs[0] ? `${jobs[0].id}:${jobs[0].status}` : ''} onStatusChange={setContainerStatus} onNavigate={(route) => { if (unpersisted) { void action(async () => { await persistDraft(); onNavigate(route) }) } else onNavigate(route) }} /></Tabs.Panel>
       <Tabs.Panel value="files"><Stack>
         <Group justify="space-between"><Select aria-label="Stack file" value={file} data={Object.keys(files).sort()} onChange={setFile} w={320} /><Button variant="light" onClick={() => setTab('diff')}>Review draft changes</Button></Group>
         {encrypted ? <Alert>Encrypted environment files are preserved without displaying their values. Use the Environment tab to replace their contents.</Alert> : file && <Suspense fallback={<StackLoading editor />}>

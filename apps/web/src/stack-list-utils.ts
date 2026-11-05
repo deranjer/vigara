@@ -36,15 +36,19 @@ export function excludedFromBulk(stack: StackSummary) {
   return [stack.id, stack.projectName].some((name) => ['vigara', 'vigara-caddy'].includes(name.toLowerCase()))
 }
 
-export function stackRuntimeBadge(stack: StackSummary, hosts: StackHost[]) {
+export type StackRuntimeStatus = { color: string; label: string; count: string }
+
+export function stackRuntimeBadge(stack: StackSummary, hosts: StackHost[]): StackRuntimeStatus {
   const count = stackContainers(stack, hosts)
-  if (!count.known) return { color: 'gray', label: 'Unavailable' }
+  if (!count.known) return { color: 'gray', label: 'Unavailable', count: '—' }
   const containers = hosts.find((host) => host.agentId === stack.agentId)?.containers.filter((container) => container.project === stack.projectName) ?? []
   const observedServices = containers.length && containers.every((container) => container.service) ? new Set(containers.map((container) => container.service)).size : count.total
-  const missing = ['Deployed', 'Imported'].includes(stackStatus(stack)) && observedServices < stack.serviceCount
-  if (!count.total && !isDeployedStack(stack, hosts)) return { color: 'gray', label: 'Not running' }
-  const incomplete = count.running < count.total || missing || !count.total
-  return { color: incomplete ? 'red' : count.partial ? 'yellow' : 'green', label: (count.partial ? 'At least ' : '') + count.running + ' / ' + count.total + ' running' + (missing ? ' · Missing containers' : '') }
+  const missing = stack.commit ? Math.max(0, stack.serviceCount - observedServices) : 0
+  const total = count.total + missing
+  const ratio = `${count.running}/${count.partial ? '?' : total}`
+  if (!count.total && !isDeployedStack(stack, hosts) && !missing) return { color: 'gray', label: 'Not running', count: ratio }
+  const incomplete = count.running < total || !total
+  return { color: incomplete ? 'red' : count.partial ? 'yellow' : 'green', label: (count.partial ? 'At least ' : '') + count.running + ' / ' + total + ' running' + (missing ? ' · Missing containers' : ''), count: ratio }
 }
 
 export type StackAction = 'start' | 'stop'
