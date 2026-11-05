@@ -309,3 +309,8 @@ No recursive ownership change is performed. Database files, bind mount data,
 volumes, existing unrelated files and directories, `.vigara-import` keys and
 registrations, and `.vigara-jobs` journals retain their ownership. Setting an
 owner or reinstalling the agent does not itself deploy or restart a stack.
+
+Generated standalone recovery files (`start.sh` and `.vigara-recovery/`) also
+remain private to the deploying service account. For a root-run deploy agent,
+run the launcher as root, for example `sudo ./start.sh`, even when the ordinary
+stack configuration belongs to your selected user.

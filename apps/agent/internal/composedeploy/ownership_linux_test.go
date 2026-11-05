@@ -100,6 +100,14 @@ func TestDeployAssignsConfigurationOwnerWithoutChangingDataOrPrivateFiles(t *tes
 		assertOwner(t, path, 12345, 12345)
 	}
 	assertOwner(t, filepath.Join(target, ".vigara-jobs"), 0, 0)
+	for _, name := range []string{recoveryDirectory, "start.sh"} {
+		path := filepath.Join(target, name)
+		assertOwner(t, path, 0, 0)
+		info, err := os.Stat(path)
+		if err != nil || info.Mode().Perm() != 0700 {
+			t.Fatalf("recovery file lost service-account protection: %s: %v", path, err)
+		}
+	}
 	if contents, _ := os.ReadFile(sentinel); string(contents) != "keep data" {
 		t.Fatal("application data changed")
 	}

@@ -12,7 +12,7 @@ Imports use native age ASCII-armored ciphertext (`age-dotenv`, `.age`) with sepa
 
 Builds, includes, file-based configs/secrets, optional service environment files, hooks, and shared-root interpolation needing unresolved variables require migration before import. Bind-mounted Caddy configuration remains at its existing host path; import does not copy mounted application data or configuration into Git. Keep those files backed up separately.
 
-An imported stack displays **Imported** until Vigara records an explicit deployment. If updating Vigara or Caddy disconnects the server, the accepted host deployment continues and Vigara checks its correlated durable result after reconnecting. A missing or unfinished device result remains unknown and blocks another deployment; the server never replays the job automatically. Keep host access available for recovery.
+An imported stack displays **Imported** until Vigara records an explicit deployment. If updating Vigara or Caddy disconnects the server, the accepted host deployment continues and Vigara checks its correlated durable result after reconnecting. A missing or unfinished device result remains unknown and blocks another deployment; the server never replays the job automatically. Keep host access available for recovery. Explicit deployments with the updated agent also generate `./start.sh` and protected local environment inputs in the original project directory; see [terminal recovery](compose-recovery.md). Import alone does not create this launcher.
 
 ## Command-line discovery and preparation API
 
