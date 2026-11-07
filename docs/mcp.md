@@ -126,6 +126,7 @@ Client interface names can change. The discovery documents are the source of tru
 | `create_stack`, `update_stack_draft`, `discard_stack_draft`, `save_stack` | `stacks.deploy` | Create and edit stacks with draft version checks and Git validation |
 | `preview_stack_deployment`, `deploy_stack`, `list_stack_deployments`, `reconcile_stack_deployment` | `stacks.deploy` | Preview exact revisions, queue deployment and check outcomes |
 | `edit_stack_environment` | `stacks.deploy` | Encrypt an environment input for use in a draft |
+| `generate_stack_secrets` | `stacks.deploy` | Generate passwords, JWT secrets, hex/base64 keys or UUIDs straight into an encrypted environment input. Values are created and encrypted on the server and are never returned to the AI client; the response lists variable names and whether each was created, replaced or kept |
 | `get_stack_settings`, `update_stack_settings` | `stacks.deploy` | Read or update Git repository configuration with version checks |
 | `get_stack_placements`, `save_stack_placements`, `bind_stack_profile` | `stacks.deploy` | Manage profiles and assignments with existing fencing checks |
 

@@ -129,6 +129,7 @@ func Register(mux *http.ServeMux, c Config) *API {
 	mux.HandleFunc("POST /api/stacks/{id}/save", a.save)
 	mux.HandleFunc("POST /api/stacks/{id}/environment", a.editEnvironment)
 	mux.HandleFunc("POST /api/stacks/{id}/environment/reveal", a.revealEnvironment)
+	mux.HandleFunc("POST /api/stacks/{id}/environment/generate", a.generateEnvironment)
 	mux.HandleFunc("POST /api/stacks/{id}/plan", a.plan)
 	mux.HandleFunc("POST /api/stacks/{id}/image-tags", a.imageTags)
 	mux.HandleFunc("POST /api/stacks/{id}/deploy", a.deploy)
