@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Alert, Button, Card, Group, Stack, Text, Textarea, TextInput, Title } from '@mantine/core'
+import { Alert, Button, Card, Checkbox, Group, NativeSelect, Stack, Text, Textarea, TextInput, Title } from '@mantine/core'
 
 type Source = { version: number; digest: string }
 type Encrypted = { path: string; ciphertext: string; manifest: string }
@@ -21,6 +21,11 @@ export function SecretEditor({ id, files, busy, persistDraft, onBusy, onEncrypte
   const [source, setSource] = useState<Source | null>(null)
   const [error, setError] = useState('')
   const [pending, setPending] = useState(false)
+  const [genName, setGenName] = useState('')
+  const [genKind, setGenKind] = useState('password')
+  const [genLength, setGenLength] = useState('')
+  const [genOverwrite, setGenOverwrite] = useState(false)
+  const [notice, setNotice] = useState('')
   const generation = useRef(0)
   const controller = useRef<AbortController | null>(null)
   const onBusyRef = useRef(onBusy)
@@ -110,6 +115,33 @@ export function SecretEditor({ id, files, busy, persistDraft, onBusy, onEncrypte
     } finally { if (generation.current === current) { setPending(false); onBusy(false) } }
   }
 
+  // Values are generated, merged and encrypted on the server; the browser only
+  // learns the variable name and whether it was created, replaced or kept.
+  async function generate() {
+    const name = genName.trim()
+    setNotice(''); setError('')
+    const current = ++generation.current
+    const abort = new AbortController()
+    controller.current = abort
+    setPending(true)
+    onBusy(true)
+    try {
+      const draft = await persistDraft()
+      if (!draft.digest) throw new Error('Reload before generating environment values.')
+      if (generation.current !== current) return
+      const variable: Record<string, unknown> = { name, kind: genKind, overwrite: genOverwrite }
+      if (genLength.trim()) variable.length = Number(genLength)
+      const result = await post<Encrypted & { generated: { name: string; status: string }[] }>('/generate', { path, source: { version: draft.version, digest: draft.digest }, variables: [variable] }, abort.signal)
+      if (generation.current !== current) return
+      setPath(result.path)
+      onEncrypted(result)
+      setNotice(result.generated.map((item) => `${item.name}: ${item.status}`).join(', ') + '. Save the revision to keep it.')
+      setGenName('')
+    } catch (cause) {
+      if (generation.current === current) setError(cause instanceof Error ? cause.message : 'Secret generation failed.')
+    } finally { if (generation.current === current) { setPending(false); onBusy(false) } }
+  }
+
   return <Card withBorder padding="lg"><Stack>
     <Title order={3}>Encrypted environment</Title>
     <Text size="sm" c="dimmed">Values are hidden. Reveal and edit explicitly decrypts the exact saved draft on the server and records an audit event. This works while the device is offline. Encrypting adds ciphertext to your draft; save the revision when ready.</Text>
@@ -118,6 +150,17 @@ export function SecretEditor({ id, files, busy, persistDraft, onBusy, onEncrypte
     <TextInput label="Encrypted file path" value={path} disabled={busy} onChange={(event) => { hide(); setPath(event.currentTarget.value) }} autoComplete="off" />
     <Group gap="xs">{Object.keys(files).filter((file) => file.endsWith('.age') || file.endsWith('.sops')).map((file) => <Button key={file} size="compact-xs" variant={file === path ? 'light' : 'subtle'} disabled={busy} onClick={() => { hide(); setPath(file) }}>{file}</Button>)}</Group>
     {error && <Alert color="red">{error}</Alert>}
+    {notice && <Alert color="green">{notice}</Alert>}
+    <Group align="flex-end" gap="xs">
+      <TextInput label="Generate variable" placeholder="DB_PASSWORD" value={genName} disabled={busy} onChange={(event) => setGenName(event.currentTarget.value)} autoComplete="off" />
+      <NativeSelect label="Type" value={genKind} disabled={busy} onChange={(event) => setGenKind(event.currentTarget.value)} data={[
+        { value: 'password', label: 'Password' }, { value: 'alphanumeric', label: 'Alphanumeric' }, { value: 'pin', label: 'PIN' },
+        { value: 'hex', label: 'Hex key' }, { value: 'base64', label: 'Base64 key' }, { value: 'jwt_secret', label: 'JWT secret' }, { value: 'uuid', label: 'UUID' }]} />
+      <TextInput label="Length (optional)" w={130} value={genLength} disabled={busy} onChange={(event) => setGenLength(event.currentTarget.value.replace(/\D/g, ''))} autoComplete="off" />
+      <Checkbox label="Replace existing" checked={genOverwrite} disabled={busy} onChange={(event) => setGenOverwrite(event.currentTarget.checked)} />
+      <Button disabled={busy || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(genName.trim())} onClick={() => void generate()}>Generate into environment</Button>
+    </Group>
+    <Text size="xs" c="dimmed">The value is created and encrypted on the server and is not shown here. Use Reveal and edit to view it later.</Text>
     {editing ? <>
       <Textarea label={source ? 'Revealed dotenv contents' : 'Replacement dotenv contents'} value={value} onChange={(event) => setValue(event.currentTarget.value)} rows={20} resize="vertical" styles={{ input: { height: 'clamp(320px, 50vh, 640px)', minHeight: 240, fontFamily: 'var(--mantine-font-family-monospace)', lineHeight: 1.5 } }} spellCheck={false} autoComplete="off" autoCorrect="off" autoCapitalize="off" data-1p-ignore data-lpignore="true" />
       <Text size="xs" c="dimmed">Hide or leave this tab to clear the form. Encryption clears it even if the request fails.</Text>
