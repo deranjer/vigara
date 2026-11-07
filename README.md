@@ -53,7 +53,7 @@ For bundled Restic, automatic device backup setup, editable paths, and web snaps
 
 For local Restic snapshot browsing, repository checks, alternate-destination restore, and retention planning, see the [snapshot recovery guide](docs/snapshot-recovery.md).
 
-For the native Android companion, its selected-file upload storage, and operator download API, see [Android companion setup](docs/android.md).
+For the Android operator app (devices, containers, stacks) see [mobile client](docs/mobile.md). For the native Android companion, its selected-file upload storage, and operator download API, see [Android companion setup](docs/android.md).
 
 Compose stack editing and deployment: [Git-backed stacks setup](docs/git-backed-stacks.md).
 

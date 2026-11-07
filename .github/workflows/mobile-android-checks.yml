@@ -1,0 +1,35 @@
+name: Mobile Android Checks
+
+on:
+  push:
+    branches: [main]
+    paths: ['apps/mobile/**', '.github/workflows/mobile-android-checks.yml']
+  pull_request:
+    paths: ['apps/mobile/**', '.github/workflows/mobile-android-checks.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    name: Lint, test and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+      - uses: android-actions/setup-android@v4
+      - run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+      - name: Lint, unit tests, debug and (unsigned) release builds
+        working-directory: apps/mobile
+        run: |
+          chmod +x ./gradlew
+          ./gradlew lintDebug testDebugUnitTest assembleDebug assembleRelease --no-daemon --stacktrace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vigara-mobile-debug
+          path: apps/mobile/app/build/outputs/apk/debug/app-debug.apk

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Compose drives the real colours; this only paints the window before the first frame. -->
+    <style name="Theme.Vigara" parent="android:Theme.Material.NoActionBar" />
+</resources>

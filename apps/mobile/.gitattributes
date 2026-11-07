@@ -1,0 +1,9 @@
+# The Gradle wrapper script must keep LF endings to run on CI (Linux) runners.
+gradlew text eol=lf
+*.kt text
+*.kts text
+
+# Binary assets — never normalize.
+gradle/wrapper/gradle-wrapper.jar binary
+*.png binary
+*.keystore binary
