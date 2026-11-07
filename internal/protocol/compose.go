@@ -15,9 +15,11 @@ const (
 	MethodComposeImportPreview = "compose.importPreview"
 	MethodComposeImportPrepare = "compose.importPrepare"
 	MethodComposeImportConfirm = "compose.importConfirm"
+	MethodComposeRemove        = "compose.remove"
 )
 
 func init() {
+	channelMethodTiers[MethodComposeRemove] = DockerModeDeploy
 	channelMethodTiers[MethodComposeImageTags] = DockerModeDeploy
 	channelMethodTiers[MethodComposeImageSources] = DockerModeDeploy
 	channelMethodTiers[MethodComposeRecreate] = DockerModeDeploy
@@ -69,6 +71,13 @@ type ComposeImportPrepared struct {
 	Target         ComposeTargetInfo `json:"target"`
 	Files          map[string]string `json:"files"`
 	AgentRecipient string            `json:"agentRecipient"`
+}
+
+// ComposeRemoveRequest asks the agent to stop and remove a project's containers
+// and networks. Volumes and host files are never deleted.
+type ComposeRemoveRequest struct {
+	StackID     string `json:"stackId"`
+	ProjectName string `json:"projectName"`
 }
 
 type ComposeCreateTarget struct {

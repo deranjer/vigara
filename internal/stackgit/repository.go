@@ -316,6 +316,48 @@ func (r *Repository) Save(ctx context.Context, s stack.Snapshot, actor string) (
 			return result, e
 		}
 	}
+	return r.publish(ctx, env, head, "Update "+s.ID+" through Vigara", actor)
+}
+
+// Remove deletes every file of a stack in a new commit. Removing a stack that is
+// already absent from the branch succeeds without a commit.
+func (r *Repository) Remove(ctx context.Context, id, actor string) (Saved, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !stack.ValidID(id) {
+		return Saved{}, ErrNotFound
+	}
+	head, e := r.sync(ctx)
+	if e != nil {
+		return Saved{}, e
+	}
+	current, e := r.read(ctx, id, head)
+	if errors.Is(e, ErrNotFound) {
+		return Saved{head, "saved"}, nil
+	}
+	if e != nil {
+		return Saved{}, e
+	}
+	dir, e := os.MkdirTemp("", "vigara-git-index-")
+	if e != nil {
+		return Saved{}, ErrGit
+	}
+	defer os.RemoveAll(dir)
+	env := []string{"GIT_INDEX_FILE=" + filepath.Join(dir, "index"), "GIT_AUTHOR_NAME=Vigara", "GIT_AUTHOR_EMAIL=vigara@localhost", "GIT_COMMITTER_NAME=Vigara", "GIT_COMMITTER_EMAIL=vigara@localhost"}
+	if _, e = r.run(ctx, "", env, "read-tree", head); e != nil {
+		return Saved{}, e
+	}
+	for p := range current.Files {
+		if _, e = r.run(ctx, "0 "+strings.Repeat("0", len(head))+"\tstacks/"+id+"/"+p+"\n", env, "update-index", "--index-info"); e != nil {
+			return Saved{}, e
+		}
+	}
+	return r.publish(ctx, env, head, "Delete "+id+" through Vigara", actor)
+}
+
+// publish commits the private index and pushes it with a fast-forward only push.
+func (r *Repository) publish(ctx context.Context, env []string, head, subject, actor string) (Saved, error) {
+	result := Saved{}
 	tree, e := r.run(ctx, "", env, "write-tree")
 	if e != nil {
 		return result, e
@@ -324,7 +366,7 @@ func (r *Repository) Save(ctx context.Context, s stack.Snapshot, actor string) (
 	if len(actor) > 128 {
 		actor = actor[:128]
 	}
-	commit, e := r.run(ctx, "Update "+s.ID+" through Vigara\n\nChanged by: "+actor+"\n", env, "commit-tree", strings.TrimSpace(tree), "-p", head)
+	commit, e := r.run(ctx, subject+"\n\nChanged by: "+actor+"\n", env, "commit-tree", strings.TrimSpace(tree), "-p", head)
 	if e != nil {
 		return result, e
 	}
