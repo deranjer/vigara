@@ -55,11 +55,24 @@ Requires JDK 17+ and Android SDK platform 36. The toolchain (Gradle 9.3.1, AGP 9
 
 ## Releasing through the personal F-Droid repo
 
-1. Add repository secrets to `deranjer/vigara`: `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`,
-   `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`. Keep this keystore forever: F-Droid clients refuse updates signed with a
-   different key.
-2. Tag and push: `git tag android-v0.1.0 && git push origin android-v0.1.0`. The *Mobile Android Release APK* workflow
-   builds `vigara-mobile-0.1.0.apk` (versionCode = major*10000 + minor*100 + patch) and attaches it to a GitHub release.
-3. The `deranjer/fdroid` daily workflow downloads the newest release with an APK and regenerates the index. Run it
-   manually from the Actions tab to publish immediately. Metadata lives in `metadata/org.vigara.mobile.yml` there.
-4. In F-Droid, add `https://deranjer.github.io/fdroid/repo` (already done for Domitara and BookOrbit) and install Vigara.
+Releases are automatic. Every push to `main` runs *Mobile Android Release*, which uses semantic-release
+(`.releaserc.json`) on **conventional commits scoped `mobile`**:
+
+| Commit | Release |
+| --- | --- |
+| `fix(mobile): ...`, `perf(mobile): ...` | patch |
+| `feat(mobile): ...` | minor |
+| `feat(mobile)!: ...` (any type with `!`) | major |
+| anything else (`docs(mobile):`, `chore(mobile):`, server commits, unscoped commits) | no release |
+
+Pull requests are squash-merged, so the **PR title** is the commit message: title mobile PRs like
+`feat(mobile): add widget`. A release creates the tag `android-vX.Y.Z` and a GitHub release, builds the signed APK in
+the same workflow (versionCode = major*10000 + minor*100 + patch) and attaches `vigara-mobile-X.Y.Z.apk`. The first
+release is `android-v1.0.0`. To rebuild an APK for an existing tag, run the workflow manually and enter the tag.
+
+The signing secrets are `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and
+`ANDROID_KEY_PASSWORD`. Keep this keystore forever: F-Droid clients refuse updates signed with a different key.
+
+The `deranjer/fdroid` daily workflow (06:00 UTC, or run it manually) downloads the newest release with an APK and
+regenerates the index. Metadata is `metadata/org.vigara.mobile.yml` there. In F-Droid, add
+`https://deranjer.github.io/fdroid/repo` and install Vigara.

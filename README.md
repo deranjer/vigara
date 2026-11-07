@@ -60,3 +60,7 @@ Compose stack editing and deployment: [Git-backed stacks setup](docs/git-backed-
 Claude and ChatGPT monitoring tools: [MCP and OAuth setup](docs/mcp.md).
 
 Container image checks and opt-in managed-stack updates: [image update monitoring](docs/image-updates.md).
+
+## License
+
+MIT. See [LICENSE](LICENSE).

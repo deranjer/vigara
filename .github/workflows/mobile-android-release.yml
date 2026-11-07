@@ -1,15 +1,23 @@
-name: Mobile Android Release APK
+name: Mobile Android Release
 
-# Builds the signed Vigara mobile APK and attaches it to a GitHub release named after the tag, so the
-# self-hosted F-Droid repo (deranjer/fdroid) can pick it up. Tag format: android-vX.Y.Z
-# (kept separate from the server's v* container tags and the agents-sha-* releases).
+# Fully automatic: every push to main is analysed by semantic-release (see .releaserc.json). Only
+# conventional commits scoped "mobile" (feat(mobile): ..., fix(mobile): ..., perf(mobile): ...,
+# type(mobile)!: ...) create a release, tagged android-vX.Y.Z. The signed APK is built in this same
+# workflow (tags created with GITHUB_TOKEN do not trigger other workflows) and attached to that
+# release, where the personal F-Droid repo (deranjer/fdroid) picks it up.
+#
+# Manual run: give an existing tag (for example android-v1.0.0) to rebuild and re-attach its APK.
 on:
   push:
-    tags: ['android-v*']
+    branches: [main]
+    paths:
+      - 'apps/mobile/**'
+      - '.releaserc.json'
+      - '.github/workflows/mobile-android-release.yml'
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing tag to (re)build, for example android-v0.1.0
+        description: Existing tag to rebuild, for example android-v1.0.0
         required: true
 
 permissions:
@@ -20,25 +28,54 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
-    name: Build and attach signed APK
+  release:
+    name: Semantic release
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      TAG: ${{ inputs.tag || github.ref_name }}
+    outputs:
+      released: ${{ steps.sr.outputs.new_release_published }}
+      version: ${{ steps.sr.outputs.new_release_version }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - id: sr
+        uses: cycjimmy/semantic-release-action@v4
+        with:
+          semantic_version: 24
+          extra_plugins: |
+            conventional-changelog-conventionalcommits@8
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Derive versionName and versionCode from the tag
+  build:
+    name: Build and attach signed APK
+    needs: release
+    if: always() && (github.event_name == 'workflow_dispatch' || needs.release.outputs.released == 'true')
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Resolve tag and version
         id: ver
         run: |
-          V="${TAG#android-v}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG='${{ inputs.tag }}'
+            V="${TAG#android-v}"
+          else
+            V='${{ needs.release.outputs.version }}'
+            TAG="android-v$V"
+          fi
           IFS=. read -r MA MI PA <<< "$V"
           PA=${PA%%-*}
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "name=$V" >> "$GITHUB_OUTPUT"
           echo "code=$((MA * 10000 + MI * 100 + PA))" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ver.outputs.tag }}
 
       - uses: actions/setup-java@v4
         with:
@@ -74,9 +111,4 @@ jobs:
         run: |
           APK="vigara-mobile-${{ steps.ver.outputs.name }}.apk"
           cp apps/mobile/app/build/outputs/apk/release/app-release.apk "$APK"
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --title "Vigara mobile ${{ steps.ver.outputs.name }}" \
-              --notes "Android client for Vigara. Install through the F-Droid repo or sideload this APK." \
-              --prerelease --latest=false
-          fi
-          gh release upload "$TAG" "$APK" --clobber
+          gh release upload "${{ steps.ver.outputs.tag }}" "$APK" --clobber
