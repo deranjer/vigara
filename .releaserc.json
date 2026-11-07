@@ -1,0 +1,27 @@
+{
+  "branches": ["main"],
+  "tagFormat": "android-v${version}",
+  "plugins": [
+    ["@semantic-release/commit-analyzer", {
+      "preset": "conventionalcommits",
+      "parserOpts": {
+        "headerPattern": "^(\\w*)\\((mobile)\\)(!)?: (.*)$",
+        "headerCorrespondence": ["type", "scope", "bang", "subject"]
+      },
+      "releaseRules": [
+        { "scope": "mobile", "type": "feat", "release": "minor" },
+        { "scope": "mobile", "type": "fix", "release": "patch" },
+        { "scope": "mobile", "type": "perf", "release": "patch" },
+        { "scope": "mobile", "bang": "!", "release": "major" }
+      ]
+    }],
+    ["@semantic-release/release-notes-generator", {
+      "preset": "conventionalcommits",
+      "parserOpts": {
+        "headerPattern": "^(\\w*)\\((mobile)\\)(!)?: (.*)$",
+        "headerCorrespondence": ["type", "scope", "bang", "subject"]
+      }
+    }],
+    ["@semantic-release/github", { "successComment": false, "failComment": false, "releasedLabels": false, "labels": false }]
+  ]
+}

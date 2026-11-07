@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Vigara is self-hosted, often on a LAN without TLS. HTTPS is strongly recommended: when the
+     server marks its session cookie Secure the app will not send it over plain HTTP. Cleartext
+     is therefore permitted but flagged on the sign-in screen. User-installed CAs are trusted so
+     private PKIs work. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

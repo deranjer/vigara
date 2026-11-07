@@ -1,0 +1,114 @@
+name: Mobile Android Release
+
+# Fully automatic: every push to main is analysed by semantic-release (see .releaserc.json). Only
+# conventional commits scoped "mobile" (feat(mobile): ..., fix(mobile): ..., perf(mobile): ...,
+# type(mobile)!: ...) create a release, tagged android-vX.Y.Z. The signed APK is built in this same
+# workflow (tags created with GITHUB_TOKEN do not trigger other workflows) and attached to that
+# release, where the personal F-Droid repo (deranjer/fdroid) picks it up.
+#
+# Manual run: give an existing tag (for example android-v1.0.0) to rebuild and re-attach its APK.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/mobile/**'
+      - '.releaserc.json'
+      - '.github/workflows/mobile-android-release.yml'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to rebuild, for example android-v1.0.0
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mobile-android-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Semantic release
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      released: ${{ steps.sr.outputs.new_release_published }}
+      version: ${{ steps.sr.outputs.new_release_version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: sr
+        uses: cycjimmy/semantic-release-action@v4
+        with:
+          semantic_version: 24
+          extra_plugins: |
+            conventional-changelog-conventionalcommits@8
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build:
+    name: Build and attach signed APK
+    needs: release
+    if: always() && (github.event_name == 'workflow_dispatch' || needs.release.outputs.released == 'true')
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Resolve tag and version
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG='${{ inputs.tag }}'
+            V="${TAG#android-v}"
+          else
+            V='${{ needs.release.outputs.version }}'
+            TAG="android-v$V"
+          fi
+          IFS=. read -r MA MI PA <<< "$V"
+          PA=${PA%%-*}
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "name=$V" >> "$GITHUB_OUTPUT"
+          echo "code=$((MA * 10000 + MI * 100 + PA))" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ver.outputs.tag }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install SDK platform
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Decode release keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+
+      - name: Assemble signed release APK
+        working-directory: apps/mobile
+        env:
+          RELEASE_STORE_FILE: ${{ runner.temp }}/release.jks
+          RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleRelease --no-daemon --stacktrace \
+            -PversionName="${{ steps.ver.outputs.name }}" \
+            -PversionCode="${{ steps.ver.outputs.code }}"
+
+      - name: Attach APK to the release
+        run: |
+          APK="vigara-mobile-${{ steps.ver.outputs.name }}.apk"
+          cp apps/mobile/app/build/outputs/apk/release/app-release.apk "$APK"
+          gh release upload "${{ steps.ver.outputs.tag }}" "$APK" --clobber
