@@ -123,6 +123,7 @@ func Register(mux *http.ServeMux, c Config) *API {
 	mux.HandleFunc("POST /api/stacks/settings/test", func(w http.ResponseWriter, r *http.Request) { a.editSettings(w, r, false) })
 	mux.HandleFunc("GET /api/stacks/setup", a.setup)
 	mux.HandleFunc("GET /api/stacks/{id}", a.detail)
+	mux.HandleFunc("DELETE /api/stacks/{id}", a.remove)
 	mux.HandleFunc("GET /api/stacks/{id}/history", a.history)
 	mux.HandleFunc("PUT /api/stacks/{id}/draft", a.putDraft)
 	mux.HandleFunc("DELETE /api/stacks/{id}/draft", a.deleteDraft)

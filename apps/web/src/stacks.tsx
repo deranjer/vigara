@@ -67,6 +67,9 @@ function StackEditor({ id, projectName, onBack, role, onNavigate }: { id: string
   const [recreate, setRecreate] = useState(false)
   const [tagImages, setTagImages] = useState<Record<string, string> | null>(null)
   const [discarding, setDiscarding] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteConfirm, setDeleteConfirm] = useState('')
+  const [skipDevice, setSkipDevice] = useState(false)
   const [remote, setRemote] = useState<Snapshot | null>(null)
   const filesRef = useRef(files)
   filesRef.current = files
@@ -179,6 +182,15 @@ function StackEditor({ id, projectName, onBack, role, onNavigate }: { id: string
     </Tabs>
     <Group justify="space-between"><Group><Button variant="subtle" color="red" disabled={busy || (!dirty && !draft.files)} onClick={() => setDiscarding(true)}>Discard draft</Button><Button variant="default" disabled={busy || !unpersisted} onClick={() => void action(async () => { await persistDraft(); setNotice('Draft stored in Vigara. Git and running services are unchanged.') })}>Keep draft</Button><Button loading={busy} disabled={!dirty || !detail.assigned} onClick={() => void action(save)}>Save to {detail.branch}</Button><Button variant="subtle" disabled={busy} onClick={() => void action(async () => { await load(false); setTab('diff') })}>Fetch saved version</Button></Group><Button variant="light" disabled={busy || !detail.snapshot.commit || !!activeJob || !detail.assigned || dirty} onClick={() => void action(() => preview(false))}>Preview deployment</Button></Group>
     {dirty && <Text size="sm" c="dimmed">Save your draft before deploying. Saving does not restart services.</Text>}
+    <Group><Button variant="outline" color="red" disabled={busy || !!activeJob} onClick={() => { setDeleteConfirm(''); setSkipDevice(false); setDeleting(true) }}>Delete stack</Button>{activeJob && <Text size="xs" c="dimmed">Wait for the active deployment to finish before deleting.</Text>}</Group>
+    <Modal opened={deleting} onClose={() => { if (!busy) setDeleting(false) }} title="Delete stack entirely?" centered><Stack>
+      <Text>This stops and removes the containers and networks of project <Code>{detail.projectName || projectName}</Code>, deletes <Code>{id}</Code> from {detail.branch} in Git, and removes its drafts and deployment history from Vigara.</Text>
+      <Text size="sm" c="dimmed">Named volumes, bind-mounted data and the project folder on the device are kept. Earlier Git revisions remain in repository history.</Text>
+      <Checkbox label="The device is unavailable: forget the stack without stopping its containers" checked={skipDevice} onChange={(event) => setSkipDevice(event.currentTarget.checked)} />
+      <TextInput label={<>Type <Code>{id}</Code> to confirm</>} value={deleteConfirm} onChange={(event) => setDeleteConfirm(event.currentTarget.value)} />
+      {error && <Alert color="red">{error}</Alert>}
+      <Button color="red" loading={actionBusy} disabled={deleteConfirm !== id} onClick={() => void action(async () => { await request(base(id), 'DELETE', { confirm: deleteConfirm, skipDevice }); setDeleting(false); onBack() })}>Delete stack</Button>
+    </Stack></Modal>
     <Modal opened={tagImages !== null} onClose={() => { if (!busy) setTagImages(null) }} closeOnEscape={!busy} closeOnClickOutside={!busy} title="Choose an image tag" size="lg" centered>
       {error && <Alert color="red" mb="sm">{error}</Alert>}
       {tagImages && <StackImageTags id={id} images={tagImages} busy={busy} onSelect={(service, image) => void action(() => selectTag(service, image))} />}

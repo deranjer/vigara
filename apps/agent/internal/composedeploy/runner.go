@@ -219,6 +219,13 @@ func Register(c *channel.Client, r *Runner) {
 	// A distinct method lets older agents reject recreation explicitly instead
 	// of silently ignoring the newer Job.Recreate field.
 	c.Calls[protocol.MethodComposeRecreate] = c.Calls[protocol.MethodComposeDeploy]
+	c.Calls[protocol.MethodComposeRemove] = func(ctx context.Context, p json.RawMessage) (any, error) {
+		var q protocol.ComposeRemoveRequest
+		if json.Unmarshal(p, &q) != nil {
+			return nil, stack.ErrInvalid
+		}
+		return struct{}{}, validationFailure(r.Remove(context.WithoutCancel(ctx), q))
+	}
 	c.Calls[protocol.MethodComposeStatus] = func(ctx context.Context, p json.RawMessage) (any, error) {
 		var q struct {
 			StackID string `json:"stackId"`
@@ -881,6 +888,31 @@ func (r *Runner) Deploy(ctx context.Context, q Request) (stack.Result, error) {
 		return stack.Result{}, errJournal
 	}
 	return result, nil
+}
+
+// Remove stops and removes the project's containers, networks and orphans.
+// Named volumes, bind-mounted data and the project directory are left in place.
+func (r *Runner) Remove(ctx context.Context, q protocol.ComposeRemoveRequest) error {
+	if !stack.ValidID(q.StackID) || !stack.ValidProject(q.ProjectName) {
+		return stack.ErrInvalid
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t, ok := r.lookup(q.StackID)
+	if !ok || t.ProjectName != q.ProjectName {
+		return errTarget
+	}
+	// Compose finds the project by its name and labels, so run from an empty
+	// directory instead of interpolating the stack's files and encrypted inputs.
+	empty, e := os.MkdirTemp("", "vigara-compose-down-")
+	if e != nil {
+		return errTarget
+	}
+	defer os.RemoveAll(empty)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	_, e = r.command(ctx, empty, "compose", "-p", q.ProjectName, "down", "--remove-orphans", "--timeout", "30")
+	return e
 }
 
 func deploymentUpArgs(recreate bool) []string {
