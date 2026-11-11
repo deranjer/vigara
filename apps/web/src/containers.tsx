@@ -3,7 +3,9 @@ import { Alert, Badge, Button, Card, Checkbox, Group, Loader, Pagination, Select
 import { BulkBar } from './container-actions'
 import { ContainerDetail } from './container-detail'
 import { canManage, filterRows, fleetRows, groupRows, paginate, portSummary, stateColors, stateCounts, type FleetRow, type HostEntry } from './container-utils'
+import { useAtom } from 'jotai'
 import { route as routeOf, type Route } from './route'
+import { deviceScopeAtom } from './scope'
 import { StatusText } from './status'
 
 const pageSize = 25
@@ -47,7 +49,7 @@ export function Containers({ route, role, onNavigate }: Props) {
 
 function Fleet({ hosts, error, role, refresh, onNavigate }: { hosts: HostEntry[] | null; error: string; role: string; refresh: () => Promise<void>; onNavigate: (route: Route) => void }) {
   const [search, setSearch] = useState('')
-  const [hostId, setHostId] = useState<string | null>(null)
+  const [hostId, setHostId] = useAtom(deviceScopeAtom)
   const [state, setState] = useState<string | null>(null)
   const [grouped, setGrouped] = useState(false)
   const [page, setPage] = useState(1)

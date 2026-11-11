@@ -34,7 +34,6 @@ export function Account({ user, onChanged, onSessionExpired }: { user: AccountUs
   }
 
   return <section className="account-page"><Stack gap="lg">
-    <div><Text size="sm" c="dimmed" tt="uppercase">Your account</Text><Title order={1}>Account settings</Title><Text c="dimmed" mt="xs">Your profile and sign-in details.</Text></div>
     <Card withBorder radius="md" padding="lg"><Stack gap="md">
       <Group justify="space-between"><Title order={3}>{user.displayName || user.username}</Title><Badge variant="light">{user.role}</Badge></Group>
       <TextInput label="Username" value={user.username} readOnly autoComplete="username" />

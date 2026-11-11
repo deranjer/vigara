@@ -17,6 +17,6 @@ describe('scheduled task administration', () => {
     expect(html).toContain('Last finished')
     expect(html).toContain('Next run')
     expect(html).toContain('server startup')
-    expect(parseRoute('#/admin').section).toBe('admin')
+    expect(parseRoute('#/admin')).toMatchObject({ section: 'settings', id: 'server' })
   })
 })

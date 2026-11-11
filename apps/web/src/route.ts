@@ -1,5 +1,8 @@
-export const sections = ['devices', 'monitoring', 'backups', 'containers', 'stacks', 'updates', 'images', 'networks', 'volumes', 'account', 'admin'] as const
+export const sections = ['overview', 'alerts', 'devices', 'containers', 'images', 'networks', 'volumes', 'stacks', 'updates', 'backups', 'settings'] as const
 export type Section = (typeof sections)[number]
+
+// Pages that moved in the redesign. Their old links still parse and land on the new place.
+const legacySections = ['monitoring', 'account', 'admin'] as const
 
 /**
  * A page in the app. `id` is the first selection (a device, or a container's host),
@@ -12,11 +15,18 @@ export type Route = { section: Section; id: string | null; sub: string | null; t
 const idPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 const tabPattern = /^[a-z]{1,16}$/
 
-export const defaultRoute: Route = { section: 'devices', id: null, sub: null, tab: null }
+export const defaultRoute: Route = { section: 'overview', id: null, sub: null, tab: null }
 
 export function route(section: Section, id: string | null = null, sub: string | null = null, tab: string | null = null): Route {
   return { section, id, sub, tab }
 }
+
+/** Settings tabs, addressed as #/settings/<tab>. */
+export const settingsTabs = ['account', 'server', 'about'] as const
+export type SettingsTab = (typeof settingsTabs)[number]
+
+/** Docker resource pages shown as tabs of Containers. */
+export const containerTabs = ['containers', 'images', 'networks', 'volumes'] as const satisfies readonly Section[]
 
 function decodeSegment(raw: string | undefined, pattern: RegExp): string | null {
   if (!raw) return null
@@ -29,13 +39,23 @@ function decodeSegment(raw: string | undefined, pattern: RegExp): string | null 
 /** Reads a location hash such as "#/containers/host/web/logs" into a route, falling back to the default. */
 export function parseRoute(hash: string): Route {
   const [rawSection, rawId, rawSub, rawTab] = hash.replace(/^#\/?/, '').split('/')
+  const id = decodeSegment(rawId, idPattern)
+  const legacy = legacySections.find((candidate) => candidate === rawSection)
+  if (legacy === 'monitoring') return route('overview', id)
+  if (legacy === 'account') return route('settings', 'account')
+  if (legacy === 'admin') return route('settings', 'server')
   const section = sections.find((candidate) => candidate === rawSection)
   if (!section) return defaultRoute
-  const id = decodeSegment(rawId, idPattern)
   // Later segments only mean something when the earlier ones are valid.
   const sub = id ? decodeSegment(rawSub, idPattern) : null
   const tab = sub ? decodeSegment(rawTab, tabPattern) : null
   return { section, id, sub, tab }
+}
+
+/** True when the hash is an old address that parseRoute rewrote, so the address bar should be updated. */
+export function isLegacyHash(hash: string): boolean {
+  const first = hash.replace(/^#\/?/, '').split('/')[0]
+  return legacySections.some((candidate) => candidate === first)
 }
 
 /** The location hash for a route; the inverse of parseRoute for valid routes. */
@@ -53,4 +73,9 @@ export function formatRoute(value: Route): string {
 
 export function sameRoute(a: Route, b: Route): boolean {
   return a.section === b.section && a.id === b.id && a.sub === b.sub && a.tab === b.tab
+}
+
+/** The navigation item a section belongs to (Images, Networks and Volumes live under Containers). */
+export function navSection(section: Section): Section {
+  return (containerTabs as readonly Section[]).includes(section) ? 'containers' : section
 }

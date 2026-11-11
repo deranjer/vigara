@@ -24,7 +24,6 @@ const interval = (seconds: number) => seconds >= 3600 ? `${seconds / 3600} hours
 export function Admin({ role }: { role: string }) {
   if (role !== 'admin') return <Alert title="Administrator access required">Sign in as an administrator to manage scheduled tasks.</Alert>
   return <section><Stack gap="lg">
-    <div><Title order={1}>Administration</Title><Text c="dimmed">Server maintenance and scheduling.</Text></div>
     <Tabs defaultValue="scheduled-tasks"><Tabs.List><Tabs.Tab value="scheduled-tasks">Scheduled tasks</Tabs.Tab></Tabs.List>
       <Tabs.Panel value="scheduled-tasks" pt="lg"><ScheduledTasks /></Tabs.Panel>
     </Tabs>
