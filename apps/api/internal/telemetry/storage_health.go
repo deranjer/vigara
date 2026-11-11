@@ -12,13 +12,14 @@ import (
 func (s postgresStore) LogStorageHealth(ctx context.Context, cfg RetentionConfig, logger *slog.Logger) {
 	now := time.Now().UTC()
 	var oldest *time.Time
-	var raw, rollups, dedup int64
+	var raw, rollups, dedup, unrolled int64
 	err := s.pool.QueryRow(ctx, `SELECT
 		(SELECT observed_at FROM agent_telemetry ORDER BY observed_at LIMIT 1),
 		(SELECT count(*) FROM (SELECT 1 FROM agent_telemetry WHERE observed_at < $1 LIMIT 10001) t),
 		(SELECT count(*) FROM (SELECT 1 FROM telemetry_metric_rollups WHERE bucket_start < $2 LIMIT 10001) t),
-		(SELECT count(*) FROM (SELECT 1 FROM telemetry_report_dedup WHERE received_at < $3 LIMIT 10001) t)`,
-		now.Add(-cfg.RawAge), now.Add(-cfg.RollupAge), now.Add(-(48*time.Hour+5*time.Minute))).Scan(&oldest, &raw, &rollups, &dedup)
+		(SELECT count(*) FROM (SELECT 1 FROM telemetry_report_dedup WHERE received_at < $3 LIMIT 10001) t),
+		(SELECT count(*) FROM (SELECT 1 FROM agent_telemetry WHERE rolled_at IS NULL AND observed_at < $4 LIMIT 10001) t)`,
+		now.Add(-cfg.RawAge), now.Add(-cfg.RollupAge), now.Add(-(48*time.Hour+5*time.Minute)), now.Truncate(time.Hour)).Scan(&oldest, &raw, &rollups, &dedup, &unrolled)
 	if err != nil {
 		logger.Error("telemetry storage health unavailable", "error", err)
 		return
@@ -27,8 +28,8 @@ func (s postgresStore) LogStorageHealth(ctx context.Context, cfg RetentionConfig
 	if oldest != nil && oldest.Before(now.Add(-cfg.RawAge)) {
 		lag = now.Add(-cfg.RawAge).Sub(*oldest)
 	}
-	attrs := []any{"raw_backlog_capped", raw, "rollup_backlog_capped", rollups, "dedup_backlog_capped", dedup, "backlog_count_cap", 10001, "retention_lag_seconds", lag.Seconds()}
-	if lag > 5*time.Minute || raw == 10001 || rollups == 10001 || dedup == 10001 {
+	attrs := []any{"raw_backlog_capped", raw, "rollup_backlog_capped", rollups, "dedup_backlog_capped", dedup, "unrolled_backlog_capped", unrolled, "backlog_count_cap", 10001, "retention_lag_seconds", lag.Seconds()}
+	if lag > 5*time.Minute || raw == 10001 || rollups == 10001 || dedup == 10001 || unrolled == 10001 {
 		logger.Warn("telemetry retention backlog", attrs...)
 	} else {
 		logger.Info("telemetry retention healthy", attrs...)

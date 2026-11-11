@@ -146,5 +146,9 @@ with hourly summaries after the raw window. The checked-in 48h/90d figures above
 describe the old policy and are not capacity evidence for the longer defaults.
 The existing short synthetic matrix still exercises shorter configurations; use
 representative retained data with audit mode before making capacity claims.
+Hourly summaries are now built continuously (see the telemetry document), so the
+synthetic cases that call only `Store.Retain` no longer measure the whole summary
+path. The measured production-shaped month and year figures behind that change
+are in the pull request that introduced it.
 See [telemetry retention](telemetry.md#retention-and-intake-limits) for sizing
 and storage-health logs.

@@ -15,16 +15,19 @@ import (
 )
 
 type Handler struct {
-	pool *pgxpool.Pool
-	auth *auth.Service
+	pool       *pgxpool.Pool
+	auth       *auth.Service
+	now        func() time.Time
+	trendCache resultCache
 }
 
 func NewHandler(pool *pgxpool.Pool, service *auth.Service) *Handler {
-	return &Handler{pool: pool, auth: service}
+	return &Handler{pool: pool, auth: service, now: time.Now}
 }
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/inventory/devices", h.devices)
 	mux.HandleFunc("GET /api/inventory/devices/{deviceID}/history", h.history)
+	mux.HandleFunc("GET /api/inventory/devices/{deviceID}/trends", h.trends)
 }
 
 func (h *Handler) authorized(w http.ResponseWriter, r *http.Request) bool {
@@ -250,7 +253,7 @@ func (h *Handler) history(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid metric name", 400)
 		return
 	}
-	metricRows, err := h.pool.Query(r.Context(), `SELECT DISTINCT metric_name FROM telemetry_metric_series s JOIN agent_identities i ON i.id=s.agent_id WHERE i.device_id=$1 AND i.revoked_at IS NULL UNION SELECT DISTINCT metric_name FROM telemetry_metric_rollups r JOIN agent_identities i ON i.id=r.agent_id WHERE i.device_id=$1 AND i.revoked_at IS NULL UNION SELECT DISTINCT m->>'name' FROM agent_telemetry_latest t JOIN agent_identities i ON i.id=t.agent_id CROSS JOIN LATERAL jsonb_array_elements(COALESCE(t.payload->'metrics','[]'::jsonb)) m WHERE i.device_id=$1 AND i.revoked_at IS NULL ORDER BY 1 LIMIT 129`, deviceID)
+	metricRows, err := h.pool.Query(r.Context(), metricNamesSQL, deviceID)
 	if err != nil {
 		http.Error(w, "could not load history", 500)
 		return
@@ -296,14 +299,22 @@ func (h *Handler) history(w http.ResponseWriter, r *http.Request) {
 	var seriesCount int64
 	if err := h.pool.QueryRow(r.Context(), `SELECT count(*) FROM (SELECT DISTINCT s.metric_name,s.labels
 		FROM telemetry_metric_series s JOIN agent_identities i ON i.id=s.agent_id
-		WHERE i.device_id=$1 AND i.revoked_at IS NULL AND s.metric_name=ANY($2::text[])) s`, deviceID, metricNames).Scan(&seriesCount); err != nil {
+		WHERE i.device_id=$1 AND i.revoked_at IS NULL AND s.metric_name=ANY($2::text[]) AND s.last_observed_at >= $3) s`, deviceID, metricNames, windowStart).Scan(&seriesCount); err != nil {
 		http.Error(w, "could not load history", 500)
 		return
 	}
 	if seriesCount < int64(len(metricNames)) {
 		seriesCount = int64(len(metricNames))
 	}
+	if seriesCount > maxHistorySeries {
+		// Known from the registry, so there is no reason to run the query first.
+		http.Error(w, "selected metrics produce too many label series; select fewer metrics", 422)
+		return
+	}
 	binSeconds := historyBinSeconds(duration, seriesCount)
+	// Summaries cover whole hours. Below that, raw samples give the detail and an
+	// hourly row is only used where no summarised raw sample overlaps it.
+	hourly := binSeconds >= 3600
 	var hasRollup bool
 	if err := h.pool.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM telemetry_metric_rollups r JOIN agent_identities i ON i.id=r.agent_id WHERE i.device_id=$1 AND i.revoked_at IS NULL AND r.bucket_start < $3 AND r.bucket_start + interval '1 hour' > $2 AND r.metric_name=ANY($4::text[]))`, deviceID, windowStart, windowEnd, metricNames).Scan(&hasRollup); err != nil {
 		http.Error(w, "could not load history", 500)
@@ -313,10 +324,18 @@ func (h *Handler) history(w http.ResponseWriter, r *http.Request) {
 	if custom && binSeconds == 60 {
 		binOrigin = windowStart
 	}
-	rows, err := h.pool.Query(r.Context(), `WITH device_agents AS (SELECT id FROM agent_identities WHERE device_id=$1 AND revoked_at IS NULL), raw AS (
+	rawFilter, rollupFilter, withRolledHours := "", "", ""
+	if hourly {
+		// Rolled samples are already inside the hourly rows; only unrolled ones add to them.
+		rawFilter = " AND t.rolled_at IS NULL"
+	} else {
+		withRolledHours = `, rolled_hours AS (SELECT DISTINCT date_bin('1 hour', t.observed_at, TIMESTAMPTZ '2000-01-01 00:00:00+00') AS hour FROM agent_telemetry t JOIN device_agents a ON a.id=t.agent_id WHERE t.rolled_at IS NOT NULL AND t.observed_at >= $2 AND t.observed_at <= $3)`
+		rollupFilter = " AND NOT EXISTS (SELECT 1 FROM rolled_hours h WHERE h.hour=r.bucket_start)"
+	}
+	rows, err := h.pool.Query(r.Context(), `WITH device_agents AS (SELECT id FROM agent_identities WHERE device_id=$1 AND revoked_at IS NULL)`+withRolledHours+`, raw AS (
 		SELECT t.observed_at AS at,m->>'name' name,COALESCE(m->>'unit',CASE m->>'name' WHEN 'cpu_used_percent' THEN '%' WHEN 'memory_available_bytes' THEN 'By' WHEN 'memory_total_bytes' THEN 'By' WHEN 'memory_used_percent' THEN '%' WHEN 'uptime_seconds' THEN 's' WHEN 'filesystem_total_bytes' THEN 'By' WHEN 'filesystem_free_bytes' THEN 'By' WHEN 'network_receive_bytes_per_second' THEN 'By/s' WHEN 'network_send_bytes_per_second' THEN 'By/s' WHEN 'disk_read_bytes_per_second' THEN 'By/s' WHEN 'disk_write_bytes_per_second' THEN 'By/s' ELSE '' END) unit,COALESCE(NULLIF(m->'labels','null'::jsonb),'{}'::jsonb) labels,(m->>'value')::double precision value,NULL::double precision min,NULL::double precision max,1::bigint samples,$4::bigint source_resolution
-	 FROM agent_telemetry t JOIN device_agents a ON a.id=t.agent_id CROSS JOIN LATERAL jsonb_array_elements(COALESCE(t.payload->'metrics','[]'::jsonb)) m WHERE t.observed_at >= $2 AND t.observed_at <= $3 AND m->>'name'=ANY($5::text[])
-		UNION ALL SELECT r.bucket_start,r.metric_name,CASE r.metric_name WHEN 'cpu_used_percent' THEN '%' WHEN 'memory_available_bytes' THEN 'By' WHEN 'memory_total_bytes' THEN 'By' WHEN 'memory_used_percent' THEN '%' WHEN 'uptime_seconds' THEN 's' WHEN 'filesystem_total_bytes' THEN 'By' WHEN 'filesystem_free_bytes' THEN 'By' WHEN 'network_receive_bytes_per_second' THEN 'By/s' WHEN 'network_send_bytes_per_second' THEN 'By/s' WHEN 'disk_read_bytes_per_second' THEN 'By/s' WHEN 'disk_write_bytes_per_second' THEN 'By/s' WHEN 'docker_cpu_capacity_used_percent' THEN '%' WHEN 'docker_memory_usage_bytes' THEN 'By' WHEN 'docker_memory_limit_bytes' THEN 'By' WHEN 'docker_memory_used_percent' THEN '%' WHEN 'docker_network_receive_bytes_per_second' THEN 'By/s' WHEN 'docker_network_transmit_bytes_per_second' THEN 'By/s' ELSE '' END,r.labels,r.sum_value/r.sample_count,r.min_value,r.max_value,r.sample_count,3600::bigint FROM telemetry_metric_rollups r JOIN device_agents a ON a.id=r.agent_id WHERE r.bucket_start >= $2 AND r.bucket_start + interval '1 hour' <= $3 AND r.metric_name=ANY($5::text[])
+	 FROM agent_telemetry t JOIN device_agents a ON a.id=t.agent_id CROSS JOIN LATERAL jsonb_array_elements(COALESCE(t.payload->'metrics','[]'::jsonb)) m WHERE t.observed_at >= $2 AND t.observed_at <= $3 AND m->>'name'=ANY($5::text[])`+rawFilter+`
+		UNION ALL SELECT r.bucket_start,r.metric_name,CASE r.metric_name WHEN 'cpu_used_percent' THEN '%' WHEN 'memory_available_bytes' THEN 'By' WHEN 'memory_total_bytes' THEN 'By' WHEN 'memory_used_percent' THEN '%' WHEN 'uptime_seconds' THEN 's' WHEN 'filesystem_total_bytes' THEN 'By' WHEN 'filesystem_free_bytes' THEN 'By' WHEN 'network_receive_bytes_per_second' THEN 'By/s' WHEN 'network_send_bytes_per_second' THEN 'By/s' WHEN 'disk_read_bytes_per_second' THEN 'By/s' WHEN 'disk_write_bytes_per_second' THEN 'By/s' WHEN 'docker_cpu_capacity_used_percent' THEN '%' WHEN 'docker_memory_usage_bytes' THEN 'By' WHEN 'docker_memory_limit_bytes' THEN 'By' WHEN 'docker_memory_used_percent' THEN '%' WHEN 'docker_network_receive_bytes_per_second' THEN 'By/s' WHEN 'docker_network_transmit_bytes_per_second' THEN 'By/s' ELSE '' END,r.labels,r.sum_value/r.sample_count,r.min_value,r.max_value,r.sample_count,3600::bigint FROM telemetry_metric_rollups r JOIN device_agents a ON a.id=r.agent_id WHERE r.bucket_start >= $2 AND r.bucket_start + interval '1 hour' <= $3 AND r.metric_name=ANY($5::text[])`+rollupFilter+`
 	), binned AS (SELECT CASE WHEN raw.source_resolution=3600 AND $4<3600 THEN raw.at ELSE GREATEST(date_bin(($4 * interval '1 second'),raw.at,$6::timestamptz),$2::timestamptz) END at,name,unit,labels,sum(value*samples)/sum(samples) value,min(COALESCE(min,value)) min,max(COALESCE(max,value)) max,sum(samples)::bigint samples,GREATEST(max(source_resolution),$4)::bigint source_resolution FROM raw GROUP BY 1,2,3,4)
 	SELECT at,name,unit,labels,value,min,max,samples,source_resolution FROM binned WHERE at <= $3 ORDER BY name,labels,at LIMIT 20001`, deviceID, windowStart, windowEnd, binSeconds, metricNames, binOrigin)
 	if err != nil {
@@ -385,23 +404,57 @@ func (h *Handler) history(w http.ResponseWriter, r *http.Request) {
 // Storage keeps hourly detail for a year. Wide charts may combine hours to
 // stay within the existing response limit; weighted sums and min/max survive.
 func historyBinSeconds(duration time.Duration, series int64) int64 {
-	if duration <= 24*time.Hour {
-		return 60
-	}
 	if series < 1 {
 		series = 1
 	}
-	if series > 64 {
-		series = 64
+	if series > maxHistorySeries {
+		series = maxHistorySeries
 	}
-	pointsPerSeries := int64(20000)/series - 2
 	seconds := int64((duration + time.Second - 1) / time.Second)
+	if duration <= 24*time.Hour {
+		// Minute detail for the last few hours, five minutes for the day, coarser
+		// only when many label series would exceed the point limit.
+		minimum := int64(60)
+		if duration > 6*time.Hour {
+			minimum = 300
+		}
+		for _, bin := range []int64{60, 300, 900, 1800} {
+			if bin >= minimum && series*(seconds/bin+2) <= maxHistoryPoints {
+				return bin
+			}
+		}
+		return 3600
+	}
+	pointsPerSeries := int64(maxHistoryPoints)/series - 2
 	hours := (seconds + pointsPerSeries*3600 - 1) / (pointsPerSeries * 3600)
 	if hours < 1 {
 		hours = 1
 	}
 	return hours * 3600
 }
+
+const (
+	maxHistorySeries = 64
+	maxHistoryPoints = 20000
+)
+
+// metricNamesSQL lists the metric names a device has ever reported within
+// retention. The rollup table is read with a skip scan over its primary key, one
+// index probe per distinct name, because DISTINCT over every hourly row grows
+// with a year of history and ran on every request.
+const metricNamesSQL = `SELECT metric_name FROM (
+	SELECT s.metric_name FROM telemetry_metric_series s JOIN agent_identities i ON i.id=s.agent_id WHERE i.device_id=$1 AND i.revoked_at IS NULL
+	UNION
+	SELECT n.metric_name FROM agent_identities i CROSS JOIN LATERAL (
+		WITH RECURSIVE names AS (
+			(SELECT r.metric_name FROM telemetry_metric_rollups r WHERE r.agent_id=i.id ORDER BY r.metric_name LIMIT 1)
+			UNION ALL
+			SELECT (SELECT r.metric_name FROM telemetry_metric_rollups r WHERE r.agent_id=i.id AND r.metric_name > names.metric_name ORDER BY r.metric_name LIMIT 1) FROM names WHERE names.metric_name IS NOT NULL
+		) SELECT metric_name FROM names WHERE metric_name IS NOT NULL
+	) n WHERE i.device_id=$1 AND i.revoked_at IS NULL
+	UNION
+	SELECT m->>'name' FROM agent_telemetry_latest t JOIN agent_identities i ON i.id=t.agent_id CROSS JOIN LATERAL jsonb_array_elements(COALESCE(t.payload->'metrics','[]'::jsonb)) m WHERE i.device_id=$1 AND i.revoked_at IS NULL
+) names ORDER BY 1 LIMIT 129`
 
 var uuidRE = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 var metricRE = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)

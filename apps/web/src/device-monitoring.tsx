@@ -2,11 +2,13 @@ import { useEffect, useMemo, useState } from 'react'
 import { Alert, Badge, Button, Card, Group, Loader, Progress, SegmentedControl, Select, SimpleGrid, Stack, Tabs, Text, Title } from '@mantine/core'
 import { LineChart } from '@mantine/charts'
 import { type Device } from './devices'
-import { chartRows, formatMetric, type MetricSeries, type RateUnit } from './metric-utils'
+import { chartRows, formatMetric, type RateUnit } from './metric-utils'
 import { labelKey, measurementName, monitoringSections, type MonitoringCard } from './monitoring-utils'
+import { trendRefreshMs, trendToHistory, type TrendHistory, type TrendResponse } from './trend-utils'
 
-type TrendHistory = { series: MetricSeries[]; resolutionSeconds: number; windowStart: string; windowEnd: string }
-type TrendState = { key: string; history: TrendHistory | null; loading: boolean; error: string }
+// `range` ties the held history to the interval it was loaded for, so a different
+// interval never shows the previous one's points while it loads.
+type TrendState = { range: string; history: TrendHistory | null; loading: boolean; error: string }
 const colors = ['cyan.6', 'grape.5', 'teal.6', 'orange.6']
 const intervals = [{ label: '1h', value: '1h' }, { label: '6h', value: '6h' }, { label: '24h', value: '24h' }, { label: '7d', value: '7d' }, { label: '30d', value: '30d' }, { label: '90d', value: '90d' }, { label: '1y', value: '365d' }]
 
@@ -15,7 +17,7 @@ function Trend({ card, history, loading, failed, rateUnit }: { card: MonitoringC
   // Keep original units in chart rows; apply the selected rate units once, in the formatter.
   const rows = useMemo(() => chartRows(series, history?.resolutionSeconds || 60, false, 'B/s'), [series, history])
   const hasPoints = series.some(item => item.points.some(point => point.value !== null))
-  const unit = series[0]?.unit ?? card.trends[0]?.unit ?? ''
+  const unit = series[0]?.unit || card.trends[0]?.unit || ''
   return <div className="monitoring-trend">
     <Group gap="xs" justify="space-between" mb={6}><Text size="xs" c="dimmed">{card.trends.map(metric => measurementName(metric.name)).join(' / ')} trend</Text>{loading && <Loader size={12} aria-label="Loading trend" />}</Group>
     {hasPoints ? <div role="img" aria-label={`${card.title}: ${card.trends.map(metric => measurementName(metric.name)).join(' and ')} over the selected interval`}>
@@ -52,52 +54,45 @@ function ResourceCard({ card, history, loading, failed, rateUnit, logicalCpus }:
   </Card>
 }
 
-export function DeviceMonitoring({ device, refresh, rateUnit, onRateUnitChange }: { device: Device; refresh: number; rateUnit: RateUnit; onRateUnitChange: (unit: RateUnit) => void }) {
+export function DeviceMonitoring({ device, rateUnit, onRateUnitChange }: { device: Device; rateUnit: RateUnit; onRateUnitChange: (unit: RateUnit) => void }) {
   const [range, setRange] = useState('24h')
   const [retry, setRetry] = useState(0)
   const [selectedSection, setSelectedSection] = useState<string | null>(null)
   const sections = useMemo(() => monitoringSections(device.latest?.metrics ?? [], device.latest?.dockerContainers), [device.latest])
   const activeSection = sections.some(section => section.id === selectedSection) ? selectedSection : sections[0]?.id ?? null
-  const names = JSON.stringify([...new Set(sections.flatMap(section => section.groups.flatMap(group => group.cards.flatMap(card => card.trends.map(metric => metric.name)))))].sort())
-  const requestKey = `${device.id}:${range}:${names}:${refresh}:${retry}`
-  const [state, setState] = useState<TrendState>({ key: '', history: null, loading: true, error: '' })
+  const [state, setState] = useState<TrendState>({ range: '24h', history: null, loading: true, error: '' })
   useEffect(() => {
+    // One request returns every current series for this interval. Refreshing keeps
+    // the charts on screen and swaps the data in place; only a new interval or
+    // device clears them, because the old points belong to a different grid.
     const controller = new AbortController()
-    const metricNames = JSON.parse(names) as string[]
-    setState({ key: requestKey, history: null, loading: true, error: '' })
+    let timer: number | undefined
+    let loadedAt = 0
+    const period = trendRefreshMs(range)
+    setState(current => current.range === range && current.history ? { ...current, error: '' } : { range, history: null, loading: true, error: '' })
     async function load() {
-      // The history API accepts five metric names per request. Bound concurrent work.
-      const batches: string[][] = []
-      for (let index = 0; index < metricNames.length; index += 5) batches.push(metricNames.slice(index, index + 5))
-      const results: TrendHistory[] = []; let failures = 0
-      async function readBatch(batch: string[]): Promise<TrendHistory[]> {
-        const query = new URLSearchParams({ range })
-        batch.forEach(name => query.append('metrics', name))
-        const response = await fetch(`/api/inventory/devices/${encodeURIComponent(device.id)}/history?${query}`, { credentials: 'same-origin', signal: controller.signal })
-        // Many interfaces or containers may exceed the API's point/series limit
-        // even with five names. Retry smaller batches without losing other trends.
-        if (response.status === 422 && batch.length > 1) {
-          const middle = Math.ceil(batch.length / 2)
-          const parts: TrendHistory[] = []
-          for (const half of [batch.slice(0, middle), batch.slice(middle)]) {
-            try { parts.push(...await readBatch(half)) } catch { if (!controller.signal.aborted) failures++ }
-          }
-          return parts
-        }
+      window.clearTimeout(timer)
+      try {
+        const response = await fetch(`/api/inventory/devices/${encodeURIComponent(device.id)}/trends?range=${encodeURIComponent(range)}`, { credentials: 'same-origin', signal: controller.signal })
         if (!response.ok) throw new Error('Could not load trends.')
-        return [await response.json() as TrendHistory]
-      }
-      for (let index = 0; index < batches.length; index += 3) {
-        const responses = await Promise.allSettled(batches.slice(index, index + 3).map(readBatch))
+        const history = trendToHistory(await response.json() as TrendResponse)
         if (controller.signal.aborted) return
-        responses.forEach(result => { if (result.status === 'fulfilled') results.push(...result.value); else failures++ })
+        loadedAt = Date.now()
+        setState({ range, history, loading: false, error: '' })
+      } catch {
+        if (controller.signal.aborted) return
+        setState(current => ({ range, history: current.range === range ? current.history : null, loading: false, error: 'Trends could not be loaded. Latest measurements are still shown.' }))
       }
-      if (!controller.signal.aborted) setState({ key: requestKey, loading: false, error: failures ? 'Some trends could not be loaded. Try a shorter interval or retry. Latest measurements are still shown.' : '', history: results[0] ? { ...results[0], series: results.flatMap(result => result.series) } : null })
+      timer = window.setTimeout(() => { if (document.hidden) schedule(); else void load() }, period)
     }
+    function schedule() { timer = window.setTimeout(() => { if (document.hidden) schedule(); else void load() }, period) }
+    // Background tabs skip refreshes; returning shows fresh data without waiting a full period.
+    function onVisible() { if (!document.hidden && Date.now() - loadedAt >= period) void load() }
+    document.addEventListener('visibilitychange', onVisible)
     void load()
-    return () => controller.abort()
-  }, [device.id, range, names, requestKey])
-  const current = state.key === requestKey ? state : { history: null, loading: true, error: '' }
+    return () => { controller.abort(); window.clearTimeout(timer); document.removeEventListener('visibilitychange', onVisible) }
+  }, [device.id, range, retry])
+  const current = state.range === range ? state : { range, history: null, loading: true, error: '' }
   return <Stack gap="xl">
     <Group justify="space-between" align="flex-end">
       <div><Title order={3}>Resource overview</Title><Text size="sm" c="dimmed" mt={4}>Latest values · observed {device.telemetryObservedAt ? new Date(device.telemetryObservedAt).toLocaleString() : 'time not reported'}</Text></div>
@@ -116,6 +111,6 @@ export function DeviceMonitoring({ device, refresh, rateUnit, onRateUnitChange }
       </div>)}</div>
       </Tabs.Panel>)}
     </Tabs>}
-    {current.history && <Text size="xs" c="dimmed">Trends: {new Date(current.history.windowStart).toLocaleString()} – {new Date(current.history.windowEnd).toLocaleString()}. Hover for values. Gaps indicate missing measurements.</Text>}
+    {current.history && <Text size="xs" c="dimmed">Trends: {new Date(current.history.windowStart).toLocaleString()} – {new Date(Math.min(new Date(current.history.windowEnd).getTime(), Date.now())).toLocaleString()}, {current.history.resolutionSeconds >= 3600 ? `${current.history.resolutionSeconds / 3600}-hour` : `${current.history.resolutionSeconds / 60}-minute`} averages. Hover for values. Gaps indicate missing measurements.</Text>}
   </Stack>
 }

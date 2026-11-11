@@ -314,7 +314,7 @@ func inventoryTestPool(t *testing.T) *pgxpool.Pool {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	for _, name := range []string{"000001_initial_schema.up.sql", "000003_telemetry_series_freshness.up.sql", "000004_telemetry_delivery.up.sql"} {
+	for _, name := range []string{"000001_initial_schema.up.sql", "000003_telemetry_series_freshness.up.sql", "000004_telemetry_delivery.up.sql", "000009_telemetry_rollup_flag.up.sql"} {
 		migration, readErr := os.ReadFile(filepath.Join("..", "..", "migrations", name))
 		if readErr != nil {
 			t.Fatal(readErr)
