@@ -23,7 +23,7 @@ describe('route', () => {
 
   it('sends old links to the pages that replaced them', () => {
     expect(parseRoute('#/monitoring')).toEqual(route('overview'))
-    expect(parseRoute('#/monitoring/0b1f3c2e-aaaa-4bbb-8ccc-123456789abc')).toEqual(route('overview', '0b1f3c2e-aaaa-4bbb-8ccc-123456789abc'))
+    expect(parseRoute('#/monitoring/0b1f3c2e-aaaa-4bbb-8ccc-123456789abc')).toEqual(route('devices', '0b1f3c2e-aaaa-4bbb-8ccc-123456789abc'))
     expect(parseRoute('#/account')).toEqual(route('settings', 'account'))
     expect(parseRoute('#/admin')).toEqual(route('settings', 'server'))
     for (const hash of ['#/monitoring', '#/account', '#admin']) expect(isLegacyHash(hash)).toBe(true)
