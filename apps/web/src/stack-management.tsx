@@ -6,6 +6,7 @@ import { runStackActions } from './stack-actions'
 import { StackProfiles } from './stack-profiles'
 import { GitSettings } from './git-settings'
 import { StackImport } from './stack-import'
+import { StatusText } from './status'
 
 async function request<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
   const response = await fetch(path, { method, credentials: 'same-origin', headers: body === undefined ? undefined : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })
@@ -63,7 +64,7 @@ export function StackList({ onOpen, role }: { onOpen: (id: string) => void; role
   }, [])
   function runtimeBadge(stack: StackSummary) {
     const badge = stackRuntimeBadge(stack, hosts)
-    return <Badge color={badge.color} variant="light">{badge.label}</Badge>
+    return <StatusText color={badge.color}>{badge.label}</StatusText>
   }
   async function changeStacks(action: StackAction, selected?: StackSummary) {
     if (actionLock.current) return

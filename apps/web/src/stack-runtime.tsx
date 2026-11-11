@@ -5,6 +5,7 @@ import { portSummary, runLimited, stateColors, type ContainerInfo, type HostEntr
 import { runStackActions } from './stack-actions'
 import { stackActionBlocker, stackActionTargets, stackRuntimeBadge, type StackAction, type StackSummary, type StackRuntimeStatus } from './stack-list-utils'
 import { route as routeOf, type Route } from './route'
+import { StatusText } from './status'
 
 type ContainerRuntime = { container: ContainerInfo; inspect?: InspectResult; error?: string }
 export type RuntimeData = { stack: StackSummary; hosts: HostEntry[]; containers: ContainerRuntime[] }
@@ -109,7 +110,7 @@ export function StackRuntimeView({ data, role, busy, loading, error, outcomes, o
       const state = inspect?.state
       const status = state?.status || container.state
       return <Card withBorder key={container.id} radius="md" padding="md"><Stack gap="xs">
-        <Group justify="space-between"><Text fw={600}>{container.name || container.id.slice(0, 12)}</Text><Group gap="xs"><Badge color={stateColors[status] ?? 'gray'}>{status}</Badge>{state?.health && <Badge color={state.health === 'healthy' ? 'green' : 'red'}>{state.health}</Badge>}</Group></Group>
+        <Group justify="space-between"><Text fw={600}>{container.name || container.id.slice(0, 12)}</Text><Group gap="xs"><StatusText color={stateColors[status]}>{status}</StatusText>{state?.health && <StatusText color={state.health === 'healthy' ? 'green' : 'red'}>{state.health}</StatusText>}</Group></Group>
         <Text size="sm">Service: {container.service || 'Unknown'}</Text><Text size="xs" c="dimmed" style={{ overflowWrap: 'anywhere' }}>{inspect?.image || container.image}</Text>
         <Text size="sm">{container.status}</Text>
         {state && <Text size="sm">Exit code: {state.exitCode} · Restarts: {inspect?.restartCount ?? 0}</Text>}

@@ -14,6 +14,13 @@ import { Admin } from './admin'
 import { PasswordWhitespaceWarning } from './password-warning'
 import { defaultRoute, formatRoute, parseRoute, route as routeOf, sameRoute, type Route, type Section } from './route'
 import { compareSemver } from './semver'
+import { cssVariablesResolver, theme } from './theme'
+import '@fontsource/inter/400.css'
+import '@fontsource/inter/500.css'
+import '@fontsource/inter/600.css'
+import '@fontsource/inter/700.css'
+import '@fontsource/jetbrains-mono/400.css'
+import '@fontsource/jetbrains-mono/500.css'
 import '@mantine/core/styles.css'
 import '@mantine/charts/styles.css'
 import './styles.css'
@@ -184,7 +191,7 @@ function App() {
         <div className="sidebar-footer">
           <UnstyledButton className="sidebar-account" w="100%" p="xs" mb="sm" onClick={() => navigate('account')} aria-label={`Account settings for ${user?.displayName || user?.username}`} aria-current={section === 'account' ? 'page' : undefined}>
           <Group wrap="nowrap" gap="sm">
-            <Avatar name={user?.displayName || user?.username || 'Administrator'} color="blue" radius="xl" size={36} />
+            <Avatar name={user?.displayName || user?.username || 'Administrator'} color="blue" variant="filled" radius="xl" size={32} />
             <div className="sidebar-user"><Text size="sm" fw={600} truncate>{user?.displayName || user?.username}</Text><Text size="xs" c="dimmed" truncate>{user?.username} · {user?.role}</Text></div>
             <Text c="dimmed" aria-hidden="true">›</Text>
           </Group>
@@ -262,4 +269,4 @@ function ReleaseStatus() {
   return <><Text size="sm" fw={600}>{serverVersion}</Text><Text size="xs" c="dimmed" mt={4}>{status}</Text><Button variant="subtle" size="compact-xs" mt="xs" disabled={status.startsWith('Checking')} onClick={() => setCheckAttempt((value) => value + 1)}>Check for updates</Button></>
 }
 
-ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><MantineProvider defaultColorScheme="light"><App /></MantineProvider></React.StrictMode>)
+ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><MantineProvider theme={theme} cssVariablesResolver={cssVariablesResolver} defaultColorScheme="light"><App /></MantineProvider></React.StrictMode>)

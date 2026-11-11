@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Alert, Badge, Button, Card, Group, NumberInput, Stack, Switch, Table, Tabs, Text, Title } from '@mantine/core'
+import { Alert, Button, Card, Group, NumberInput, Stack, Switch, Table, Tabs, Text, Title } from '@mantine/core'
+import { StatusText } from './status'
 
 type Task = {
   id: string; name: string; description: string; available: boolean; enabled: boolean
@@ -71,7 +72,7 @@ function ScheduledTasks() {
         <Table.Td><Text fw={600}>{task.name}</Text><Text size="xs" c="dimmed">{task.description}</Text>{task.lastError && <Text size="xs" c="red">{task.lastError}</Text>}</Table.Td>
         <Table.Td>{interval(task.intervalSeconds)}</Table.Td>
         <Table.Td>{when(task.lastStartedAt)}</Table.Td><Table.Td>{when(task.lastFinishedAt)}</Table.Td><Table.Td>{when(task.nextRunAt)}</Table.Td>
-        <Table.Td><Badge color={!task.available ? 'gray' : task.status === 'failed' ? 'red' : task.status === 'running' ? 'blue' : task.status === 'succeeded' ? 'green' : 'gray'}>{!task.available ? 'Not configured' : task.status}</Badge></Table.Td>
+        <Table.Td><StatusText color={!task.available ? 'gray' : task.status === 'failed' ? 'red' : task.status === 'running' ? 'blue' : task.status === 'succeeded' ? 'green' : 'gray'}>{!task.available ? 'Not configured' : task.status}</StatusText></Table.Td>
         <Table.Td><Stack gap="xs"><Button size="xs" loading={busy === task.id} disabled={!task.available || task.status === 'running'} onClick={() => void run(task)}>Run now</Button>
           <Switch label="Scheduled" checked={task.enabled} disabled={!task.available || busy === task.id} onChange={(event) => { void configure(task, event.currentTarget.checked, task.settings).catch(() => {}) }} /></Stack></Table.Td>
       </Table.Tr>)}</Table.Tbody>
