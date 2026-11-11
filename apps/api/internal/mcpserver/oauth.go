@@ -128,7 +128,8 @@ func (h *Handler) authorization(r *http.Request) (authorization, error) {
 	}
 	a.Scopes = strings.Fields(q.Get("scope"))
 	if len(a.Scopes) == 0 {
-		a.Scopes = slices.Clone(supportedScopes)
+		// Device commands are never part of the default grant; a client must ask for them.
+		a.Scopes = slices.DeleteFunc(slices.Clone(supportedScopes), func(s string) bool { return s == "devices.exec" })
 	}
 	for _, s := range a.Scopes {
 		if !slices.Contains(supportedScopes, s) {

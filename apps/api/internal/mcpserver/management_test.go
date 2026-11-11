@@ -187,3 +187,33 @@ func TestConsentDescribesWriteAccessAndReadOnlyBackups(t *testing.T) {
 		t.Fatal("write consent misrepresented as read only")
 	}
 }
+
+func TestHostCommandBridgeSendsOnlyCommandAndPath(t *testing.T) {
+	h, _ := testHandler(t)
+	h.management = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if r.Method != "POST" || r.URL.Path != "/api/containers/00000000-0000-0000-0000-000000000001/host-run" || r.URL.RawQuery != "" ||
+			len(body) != 2 || body["command"] != "ls" || body["path"] != "/srv" {
+			t.Fatalf("unexpected request: %s %s %v", r.Method, r.URL, body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"exitCode":0,"stdout":"ok"}`))
+	})
+	input := managementInput{AgentID: "00000000-0000-0000-0000-000000000001", Command: "ls", Path: "/srv", Body: map[string]any{"command": "sh", "extra": true}}
+	for _, tc := range []struct {
+		name   string
+		role   string
+		scopes []string
+		ok     bool
+	}{
+		{"operator with device commands", auth.RoleOperator, []string{"devices.exec"}, true},
+		{"operator without consent", auth.RoleOperator, []string{"containers.read", "containers.manage"}, false},
+		{"viewer", auth.RoleViewer, []string{"devices.exec"}, false},
+	} {
+		w := rpc(managementTransport(h, principal{User: auth.User{Role: tc.role}, Scopes: tc.scopes}), "", "tools/call", map[string]any{"name": "run_host_command", "arguments": input})
+		if failed := strings.Contains(w.Body.String(), `"isError":true`); failed == tc.ok {
+			t.Fatalf("%s: %s", tc.name, w.Body)
+		}
+	}
+}

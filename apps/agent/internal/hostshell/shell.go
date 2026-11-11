@@ -19,6 +19,7 @@ type terminal interface {
 }
 
 func Register(c *channel.Client) {
+	registerRun(c)
 	c.Interactive[protocol.MethodHostExec] = func(ctx context.Context, raw json.RawMessage, stream *channel.StreamIO) error {
 		if err := protocol.CheckHostExec(protocol.MethodHostExec, c.Capabilities()); err != nil {
 			return err

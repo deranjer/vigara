@@ -12,7 +12,7 @@ const CapabilityHostExec = "host.exec"
 func init() { channelMethodTiers[MethodHostExec] = "" }
 
 func CheckHostExec(method string, capabilities []string) error {
-	if method == MethodHostExec && !slices.Contains(capabilities, CapabilityHostExec) {
+	if (method == MethodHostExec || method == MethodHostRun) &&!slices.Contains(capabilities, CapabilityHostExec) {
 		return &ChannelError{Code: ErrCodeTierInsufficient, Message: "Device shells are not enabled. Reinstall the agent with device shell access enabled."}
 	}
 	return nil
