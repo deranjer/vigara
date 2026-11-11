@@ -162,7 +162,8 @@ function StackEditor({ id, projectName, onBack, role, onNavigate }: { id: string
       <Text size="xs" c="dimmed">Pull refreshes configured tags, including latest, and recreates all services. Data volumes are retained.</Text>
     </Group>
     {!detail.assigned && <Alert color="yellow">Configure an approved device and project folder for this stack before saving or deploying.</Alert>}
-    {jobs[0]?.status === 'failed' && <Alert color="red" title="Last deployment failed">{jobs[0].stage} · {jobs[0].message || 'Open Deployments for the device result.'}</Alert>}
+    {activeJob?.status === 'unknown' && <Alert color="yellow" title="Check deployment">The last deployment result could not be confirmed, so pulling and recreating is disabled. {activeJob.message || 'Open Deployments to check the device result.'}</Alert>}
+    {jobs[0]?.status === 'failed' &&<Alert color="red" title="Last deployment failed">{jobs[0].stage} · {jobs[0].message || 'Open Deployments for the device result.'}</Alert>}
     <Tabs value={tab} onChange={(value) => { setTab(value); if (value === 'history') void action(async () => setHistory(await request<Revision[]>(`${base(id)}/history`))) }}>
       <Tabs.List mb="lg"><Tabs.Tab value="files">Compose files</Tabs.Tab><StackContainersTab status={containerStatus} /><Tabs.Tab value="diff">Draft diff</Tabs.Tab><Tabs.Tab value="environment">Environment</Tabs.Tab><Tabs.Tab value="history">Revision history</Tabs.Tab><Tabs.Tab value="deployments">Deployments</Tabs.Tab><Tabs.Tab value="updates">Image updates</Tabs.Tab></Tabs.List>
       <Tabs.Panel value="containers" keepMounted><StackRuntime id={id} role={role} deploymentStatus={jobs[0] ? `${jobs[0].id}:${jobs[0].status}` : ''} onStatusChange={setContainerStatus} onNavigate={(route) => { if (unpersisted) { void action(async () => { await persistDraft(); onNavigate(route) }) } else onNavigate(route) }} /></Tabs.Panel>
