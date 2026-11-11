@@ -4,6 +4,7 @@ import { BulkBar } from './container-actions'
 import { ContainerDetail } from './container-detail'
 import { canManage, filterRows, fleetRows, groupRows, paginate, portSummary, stateColors, stateCounts, type FleetRow, type HostEntry } from './container-utils'
 import { route as routeOf, type Route } from './route'
+import { StatusText } from './status'
 
 const pageSize = 25
 const tierLabels: Record<string, { label: string; color: string; hint: string }> = {
@@ -86,7 +87,7 @@ function Fleet({ hosts, error, role, refresh, onNavigate }: { hosts: HostEntry[]
     {showSelect && <Table.Td onClick={(event) => event.stopPropagation()} w={36}>{selectable(row) && <Checkbox size="xs" aria-label={`Select ${row.name}`} checked={selected.has(key(row))} onChange={(event) => toggle(row, event.currentTarget.checked)} />}</Table.Td>}
     <Table.Td><Text fw={600} size="sm">{row.name || row.id.slice(0, 12)}</Text>{row.service && <Text size="xs" c="dimmed">{row.service}</Text>}</Table.Td>
     <Table.Td><Text size="sm" style={{ wordBreak: 'break-all' }}>{row.image}</Text></Table.Td>
-    <Table.Td><Badge color={stateColors[row.state] ?? 'gray'} variant="light">{row.state}</Badge><Text size="xs" c="dimmed" mt={2}>{row.status}</Text></Table.Td>
+    <Table.Td><StatusText color={stateColors[row.state]}>{row.state}</StatusText><Text size="xs" c="dimmed" mt={2}>{row.status}</Text></Table.Td>
     <Table.Td><Text size="sm">{portSummary(row.ports) || '–'}</Text></Table.Td>
     {showHost && <Table.Td><Text size="sm">{row.hostName}</Text></Table.Td>}
   </Table.Tr>
@@ -107,7 +108,7 @@ function Fleet({ hosts, error, role, refresh, onNavigate }: { hosts: HostEntry[]
           const result = pings[host.agentId]
           return <Group key={host.agentId} justify="space-between" wrap="nowrap" align="flex-start">
             <div>
-              <Group gap="xs"><Text fw={600} size="sm">{host.name}</Text><Badge color={hostStateColors[host.state] ?? 'gray'} variant="light">{hostStateLabels[host.state] ?? host.state}</Badge>
+              <Group gap="xs"><Text fw={600} size="sm">{host.name}</Text><StatusText color={hostStateColors[host.state]}>{hostStateLabels[host.state] ?? host.state}</StatusText>
                 {tier && <Badge color={tier.color} variant="outline" title={tier.hint}>{tier.label}</Badge>}
                 {host.state === 'ok' && <Text size="xs" c="dimmed">{host.containers.length} container{host.containers.length === 1 ? '' : 's'}{host.truncated ? ' (list truncated)' : ''}</Text>}</Group>
               {host.message && host.state !== 'ok' && <Text size="xs" c="dimmed" mt={2}>{host.message}</Text>}

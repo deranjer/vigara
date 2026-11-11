@@ -1,8 +1,33 @@
-:root { font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: var(--mantine-color-text); background: var(--mantine-color-body); font-synthesis: none; text-rendering: optimizeLegibility; }
-body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--mantine-color-body); }
+/* Colours, fonts and radii come from theme.ts; --vg-* tokens are defined there too. */
+:root { font-family: var(--mantine-font-family); color: var(--mantine-color-text); background: var(--vg-canvas); font-synthesis: none; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; }
+body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--vg-canvas); }
+code, kbd, pre, samp { font-family: var(--mantine-font-family-monospace); }
+.mantine-AppShell-main { background: var(--vg-canvas); }
 .topbar { display: flex; align-items: center; justify-content: space-between; padding: 0 20px; border-bottom: 1px solid var(--mantine-color-default-border); background: var(--mantine-color-body); }
-.sidebar { display: flex; flex-direction: column; border-right: 1px solid var(--mantine-color-default-border); background: var(--mantine-color-body); }
-.sidebar-footer { border-top: 1px solid var(--mantine-color-default-border); padding: 14px 12px 8px; }
+
+/* Navy brand sidebar in both themes. Orange marks only the active item. */
+.sidebar {
+  display: flex; flex-direction: column; border-right: 0; background: var(--vg-rail); color: var(--vg-rail-text);
+  --mantine-color-text: var(--vg-rail-text); --mantine-color-dimmed: var(--vg-rail-dim); --mantine-color-default-hover: var(--vg-rail-2);
+}
+.sidebar .mantine-NavLink-root { position: relative; border-radius: var(--mantine-radius-sm); color: var(--vg-rail-text); }
+.sidebar .mantine-NavLink-root:hover { background-color: var(--vg-rail-2); }
+.sidebar .mantine-NavLink-root[data-active] { background-color: var(--vg-rail-2); color: #fff; font-weight: 600; }
+.sidebar .mantine-NavLink-root[data-active]::before { content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px; border-radius: 0 3px 3px 0; background: var(--vg-brand); }
+.sidebar .mantine-NavLink-label { font-size: var(--mantine-font-size-sm); }
+.sidebar .mantine-NavLink-root:focus-visible, .sidebar-account:focus-visible { outline: 2px solid #fff; outline-offset: -2px; }
+.sidebar-footer { border-top: 1px solid var(--vg-rail-2); padding: 14px 12px 8px; }
+.sidebar-footer .mantine-Button-root[data-variant="subtle"] { color: #9DC1EC; }
+
+/* Status as a coloured dot plus a word (tables and lists). Tinted pills stay for a few summary states. */
+.vg-status { display: inline-flex; align-items: center; gap: 6px; font-size: var(--mantine-font-size-sm); line-height: 1.3; white-space: nowrap; color: var(--mantine-color-text); }
+.vg-status-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--vg-idle); }
+.vg-status-label { display: inline-block; }
+.vg-status-label::first-letter { text-transform: uppercase; }
+.vg-status[data-tone="ok"] .vg-status-dot { background: var(--vg-ok); }
+.vg-status[data-tone="warn"] .vg-status-dot { background: var(--vg-warn); }
+.vg-status[data-tone="crit"] .vg-status-dot { background: var(--vg-crit); }
+.vg-status[data-tone="info"] .vg-status-dot { background: var(--vg-info); }
 .welcome { max-width: 900px; margin: 56px auto; }
 .empty-state { margin-top: 36px; padding: 28px; border: 1px dashed var(--mantine-color-default-border); border-radius: 12px; background: var(--mantine-color-body); }
 .auth-card { width: min(100%, 480px); margin: 56px auto; padding: 32px; border: 1px solid var(--mantine-color-default-border); border-radius: 16px; background: var(--mantine-color-body); box-shadow: 0 10px 32px #1720330a; }
@@ -15,7 +40,7 @@ body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--mantine
 .checkin { min-width: 150px; text-align: right; }
 .host-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 18px; margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--mantine-color-default-border); }
 .metric-value { min-width: 0; padding: 12px 14px; border-radius: 8px; background: var(--mantine-color-default-hover); }
-.cpu-estimate { margin-top: 16px; padding: 12px 14px; border-left: 3px solid var(--mantine-color-blue-6); background: var(--mantine-color-default-hover); }
+.cpu-estimate { margin-top: 16px; padding: 12px 14px; border-left: 3px solid var(--mantine-primary-color-filled); background: var(--mantine-color-default-hover); }
 .chart-frame { min-height: 320px; overflow: hidden; }
 .chart-frame .recharts-wrapper { touch-action: pan-y; }
 .monitoring-groups { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
@@ -32,7 +57,7 @@ body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--mantine
 .monitoring-series-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 .monitoring-history { border-top: 1px solid var(--mantine-color-default-border); padding-top: 20px; }
 .monitoring-history > summary { cursor: pointer; font-weight: 600; padding: 8px 0; }
-.monitoring-history > summary:focus-visible { outline: 2px solid var(--mantine-color-blue-6); outline-offset: 4px; }
+.monitoring-history > summary:focus-visible { outline: 2px solid var(--mantine-primary-color-filled); outline-offset: 4px; }
 @media (max-width: 640px) { .monitoring-resource-group { padding: 10px; } }
 .metric-select { min-width: 200px; padding: 7px 10px; border: 1px solid var(--mantine-color-default-border); border-radius: 6px; background: var(--mantine-color-body); color: var(--mantine-color-text); }
 @media (max-width: 640px) {
@@ -50,9 +75,9 @@ body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--mantine
 .sidebar-user { min-width: 0; flex: 1; }
 .sidebar-account { display: block; border-radius: var(--mantine-radius-md); }
 .sidebar-account:hover, .sidebar-account[aria-current="page"] { background: var(--mantine-color-default-hover); }
-.sidebar-account:focus-visible { outline: 2px solid var(--mantine-color-blue-6); outline-offset: 2px; }
+.sidebar-account:focus-visible { outline: 2px solid var(--mantine-primary-color-filled); outline-offset: 2px; }
 .account-page { max-width: 640px; margin: 12px auto; }
-.device-row:focus-visible { outline: 2px solid var(--mantine-color-blue-6); outline-offset: -2px; }
+.device-row:focus-visible { outline: 2px solid var(--mantine-primary-color-filled); outline-offset: -2px; }
 
 .inventory-card table { width: 100%; }
 .inventory-card th, .inventory-card td { white-space: normal; overflow-wrap: anywhere; }

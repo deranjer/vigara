@@ -11,6 +11,7 @@ import { AddDevice } from './add-device'
 import { TerminalPanel } from './terminal-panel'
 import { DeviceBackups } from './backup-config'
 import { chartRows, formatMetric, type MetricSeries, type RateUnit } from './metric-utils'
+import { StatusText } from './status'
 
 type Metric = { name: string; value: number; unit: string; labels?: Record<string, string> }
 type DockerContainer = { id: string; name?: string; image?: string; state: string }
@@ -179,7 +180,7 @@ function BackupHistory({ refresh, deviceId }: { refresh: number; deviceId?: stri
 <Table.Tbody>{jobs.map((job) => <Table.Tr key={job.id}>
 <Table.Td>{timeLabel(job.scheduledFor)}</Table.Td>
 <Table.Td>
-<Badge color={['running', 'succeeded'].includes(job.executionStatus) ? 'green' : ['stale', 'unknown'].includes(job.executionStatus) ? 'yellow' : ['failed', 'partial', 'interrupted', 'canceled', 'timed_out'].includes(job.executionStatus) ? 'red' : 'gray'} variant="light">{job.executionStatus}</Badge>
+<StatusText color={['running', 'succeeded'].includes(job.executionStatus) ? 'green' : ['stale', 'unknown'].includes(job.executionStatus) ? 'yellow' : ['failed', 'partial', 'interrupted', 'canceled', 'timed_out'].includes(job.executionStatus) ? 'red' : 'gray'}>{job.executionStatus}</StatusText>
 </Table.Td>
 <Table.Td>{job.outcome || job.status}</Table.Td>
 <Table.Td>{job.progress ? <Text size="sm">{job.progress.phase}{job.progress.percentDone ? ` · ${job.progress.percentDone.toFixed(1)}%` : ''}{job.progress.filesTotal ? ` · ${job.progress.filesDone ?? 0}/${job.progress.filesTotal} files` : ''}{job.progress.bytesTotal ? ` · ${formatValue(job.progress.bytesDone ?? 0, 'By')}/${formatValue(job.progress.bytesTotal, 'By')}` : ''}</Text> : '—'}</Table.Td>
@@ -372,7 +373,7 @@ export function Devices({ section, selectedId, onSelect, role = '' }: { section:
 <Table.Td>{container.name || '—'}</Table.Td>
 <Table.Td>{container.image || '—'}</Table.Td>
 <Table.Td>
-<Badge size="sm" variant="light" color={container.state === 'running' ? 'green' : 'gray'}>{container.state}</Badge>
+<StatusText color={container.state === 'running' ? 'green' : 'gray'}>{container.state}</StatusText>
 </Table.Td>
 <Table.Td>
 <Text size="xs" ff="monospace">{container.id.slice(0, 12)}</Text>
@@ -396,7 +397,7 @@ export function Devices({ section, selectedId, onSelect, role = '' }: { section:
           <Stack gap="md" h="100%">
             <Group justify="space-between" align="flex-start" wrap="nowrap">
               <div className="device-card-identity"><Text fw={600} className="device-name">{device.name}</Text><Text size="xs" c="dimmed">{[device.platform, device.architecture].filter(Boolean).join(' · ') || 'Platform not reported'}</Text></div>
-              <Badge color={statusColor[device.status]} variant="light" style={{ flexShrink: 0 }}>{statusLabel[device.status]}</Badge>
+              <StatusText color={statusColor[device.status]}>{statusLabel[device.status]}</StatusText>
             </Group>
             <SimpleGrid cols={2} spacing="md">
               <ResourceMeter device={device} name="cpu_used_percent" label="CPU" />
@@ -430,7 +431,7 @@ export function Devices({ section, selectedId, onSelect, role = '' }: { section:
 </Table.Td>
 <Table.Td>{[device.platform, device.architecture].filter(Boolean).join(' · ') || 'Unknown'}</Table.Td>
 <Table.Td>
-<Badge title={device.status === 'stale' ? staleReason(device) : undefined} color={statusColor[device.status]} variant="light">{statusLabel[device.status]}</Badge><TelemetryDeliveryChip device={device} />
+<StatusText title={device.status === 'stale' ? staleReason(device) : undefined} color={statusColor[device.status]}>{statusLabel[device.status]}</StatusText><TelemetryDeliveryChip device={device} />
 </Table.Td>
 <Table.Td>
 <Text size="sm">{relativeLabel(device.lastSeenAt)}</Text>
