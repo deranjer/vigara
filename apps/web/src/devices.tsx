@@ -260,13 +260,13 @@ export function Devices({ section, selectedId, onSelect, role = '' }: { section:
     <Group justify="space-between" align="center" mb="xl">
 <div>
 <Text c="dimmed" size="sm" fw={600} tt="uppercase">Home infrastructure</Text>
-<Title order={1} mt={4}>{selected ? selected.name : section === 'backups' ? 'Backup history' : section === 'monitoring' ? 'Monitoring' : 'Devices'}</Title>
+<Title order={1} mt={4}>{selected ? selected.name : section === 'backups' ? 'Backup history' : section === 'monitoring' ? 'Overview' : 'Devices'}</Title>
 <Text c="dimmed" mt={6}>{selected ? 'Device information, monitoring, backups and settings.' : section === 'backups' ? 'Execution state and recent snapshots for configured backup policies.' : section === 'monitoring' ? 'Compare current measurements across devices. Open a device to explore its history.' : 'Your enrolled and discovered devices. Open a device for information, monitoring, backups and settings.'}</Text>
 </div>
 <Group>
 {!selected && section === 'devices' && <Button onClick={() => setAddDeviceOpen(true)}>Add device</Button>}
 <Button variant="default" onClick={() => setRefresh((value) => value + 1)}>Refresh</Button>
-{selected && <Button variant="subtle" onClick={backToList}>{section === 'monitoring' ? '← Back to monitoring' : '← All devices'}</Button>}
+{selected && <Button variant="subtle" onClick={backToList}>{section === 'monitoring' ? '← Back to overview' : '← All devices'}</Button>}
 </Group>
 </Group>
     {error && <Alert color="red" mb="md" title="Unable to load information" onClose={() => setError('')} withCloseButton>{error}</Alert>}

@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { useAtom } from 'jotai'
 import { Alert, Badge, Button, Card, Checkbox, Code, Group, Modal, MultiSelect, NumberInput, Select, Stack, Table, Tabs, Text, TextInput, Title } from '@mantine/core'
 import { route as routeOf, type Route } from './route'
+import { deviceScopeAtom } from './scope'
 import { defaultImageUpdateFilters, selectImageUpdates, type ImageUpdateSort } from './image-update-list'
 
 type Window = { days: number[]; start: string; minutes: number; timezone: string }
@@ -29,7 +31,11 @@ function WindowFields({ value, onChange, disabled }: { value: Window; onChange: 
 export function ImageUpdates({ role, onNavigate }: { role: string; onNavigate: (route: Route) => void }) {
   const [items, setItems] = useState<Item[]>([])
   const [activeTab, setActiveTab] = useState<string | null>('updates')
-  const [filters, setFilters] = useState({ ...defaultImageUpdateFilters })
+  const [scope, setScope] = useAtom(deviceScopeAtom)
+  const [filterState, setFilterState] = useState({ ...defaultImageUpdateFilters })
+  // The device filter is the shared device switcher; the other filters are local to this page.
+  const filters = useMemo(() => ({ ...filterState, device: scope ?? '' }), [filterState, scope])
+  const setFilters = (next: typeof filterState) => { setFilterState(next); setScope(next.device || null) }
   const [trackingItem, setTrackingItem] = useState<Item | null>(null)
   const [trackingTag, setTrackingTag] = useState('')
   const [hosts, setHosts] = useState<Host[]>([])
