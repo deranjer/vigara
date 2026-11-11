@@ -317,7 +317,7 @@ export function Devices({ section, selectedId, onSelect, role = '' }: { section:
         <Tabs.Tab value="overview">Resource overview</Tabs.Tab>
         <Tabs.Tab value="history">Compare metrics &amp; explore history</Tabs.Tab>
       </Tabs.List>
-      <Tabs.Panel value="overview"><DeviceMonitoring key={selected.id} device={selected} refresh={refresh} rateUnit={rateUnit} onRateUnitChange={setRateUnit} /></Tabs.Panel>
+      <Tabs.Panel value="overview"><DeviceMonitoring key={selected.id} device={selected} rateUnit={rateUnit} onRateUnitChange={setRateUnit} /></Tabs.Panel>
       <Tabs.Panel value="history"><Card withBorder radius="md" padding="lg">
 <Group justify="space-between" align="flex-start" mb="md">
 <div>
