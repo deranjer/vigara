@@ -108,7 +108,8 @@ describe('container actions', () => {
   })
 
   it('asks for confirmation only on destructive actions', () => {
-    expect(['start', 'stop', 'restart', 'pause', 'unpause'].some((action) => needsConfirmation(action as ActionName))).toBe(false)
+    expect(['start', 'stop', 'restart', 'unpause'].some((action) => needsConfirmation(action as ActionName))).toBe(false)
+    expect(needsConfirmation('pause')).toBe(true)
     expect(needsConfirmation('kill')).toBe(true)
     expect(needsConfirmation('remove')).toBe(true)
     expect(needsConfirmation('recreate')).toBe(true)

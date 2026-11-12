@@ -234,3 +234,31 @@ code, kbd, pre, samp { font-family: var(--mantine-font-family-monospace); }
 .vg-section > summary::before { content: "▸"; color: var(--mantine-color-dimmed); transition: transform 0.15s; }
 .vg-section[open] > summary::before { transform: rotate(90deg); }
 .vg-section:not([open]) > summary { margin-bottom: 0; }
+
+/* Containers (P5): filter bar, stack-grouped table and the side panel. */
+.vg-mono { font-family: var(--mantine-font-family-monospace); font-size: 12.5px; }
+.vg-nowrap { white-space: nowrap; }
+.vg-grow { flex: 1; }
+.vg-filterbar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.vg-filter { flex: 0 1 280px; min-width: 180px; }
+.vg-container-table td .vg-ellipsis { max-width: 300px; }
+.vg-container-table tr[data-open] { background: var(--mantine-primary-color-light); }
+.vg-group-row td { padding-top: 10px !important; padding-bottom: 6px !important; background: var(--vg-canvas); }
+.vg-group-toggle { display: inline-flex; align-items: center; gap: 8px; font-size: var(--mantine-font-size-sm); }
+.vg-group-toggle .vg-caret { color: var(--mantine-color-dimmed); transition: transform 0.15s; }
+.vg-group-toggle[aria-expanded="true"] .vg-caret { transform: rotate(90deg); }
+.vg-group-toggle .vg-dim { font-size: var(--mantine-font-size-xs); }
+.vg-group-link { float: right; }
+.vg-sidepanel { position: fixed; top: 52px; right: 0; bottom: 0; z-index: 150; display: flex; width: min(600px, 100vw); flex-direction: column; border-left: 1px solid var(--mantine-color-default-border); background: var(--mantine-color-body); box-shadow: -8px 0 24px rgba(15, 23, 42, 0.10); }
+.vg-sidepanel-h { display: flex; align-items: flex-start; gap: 8px; padding: 14px 16px 6px; }
+.vg-sidepanel-title { min-width: 0; flex: 1; }
+.vg-sidepanel-title h2 { margin: 0; overflow: hidden; font-size: 18px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.vg-sidepanel-actions { padding: 6px 16px 12px; border-bottom: 1px solid var(--mantine-color-default-border); }
+.vg-sidepanel-facts { font-size: var(--mantine-font-size-sm); row-gap: 4px; }
+.vg-sidepanel-facts code { max-width: 220px; }
+.vg-sidepanel-tabs { display: flex; min-height: 0; flex: 1; flex-direction: column; }
+.vg-sidepanel-tabs .mantine-Tabs-list { padding-top: 4px; }
+.vg-sidepanel-body { min-height: 0; flex: 1; overflow: auto; padding: 12px 16px 16px; }
+.vg-inspect { max-height: none; font-size: 11.5px; }
+@media (min-width: 75em) { .vg-containers[data-panel] { padding-right: 600px; } }
+@media (max-width: 47.99em) { .vg-sidepanel { top: 0; bottom: var(--app-shell-footer-offset, 0px); z-index: 210; } .vg-filterbar { flex-wrap: wrap; } .vg-filter { flex: 1 1 100%; } }

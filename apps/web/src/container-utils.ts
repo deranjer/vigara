@@ -151,13 +151,13 @@ export function canManage(role: string, hostTier: string | undefined): boolean {
 /** Why management is unavailable, or null when it is available. */
 export function manageBlocker(role: string, hostTier: string | undefined): string | null {
   if (role !== 'operator' && role !== 'admin') return 'Your account can view containers but not change them.'
-  if ((tierRank[hostTier ?? 'read'] ?? 0) < tierRank.manage) return 'Container management is not enabled for this host. Open Device info > Reinstall agent and configure Docker management. Manual setup uses VIGIRA_DOCKER_MODE=manage on the agent with matching enrollment permission.'
+  if ((tierRank[hostTier ?? 'read'] ?? 0) < tierRank.manage) return 'Container management is not enabled for this host. Open the device’s Settings tab, choose Reinstall agent and configure Docker management. Manual setup uses VIGIRA_DOCKER_MODE=manage on the agent with matching enrollment permission.'
   return null
 }
 
 /** Actions that destroy or interrupt work and so ask for confirmation. */
 export function needsConfirmation(action: ActionName | 'recreate'): boolean {
-  return action === 'kill' || action === 'remove' || action === 'recreate'
+  return action === 'pause' || action === 'kill' || action === 'remove' || action === 'recreate'
 }
 
 export type RecreateStep = { step: string; message?: string; layer?: string; current?: number; total?: number; result?: RecreateResult }
