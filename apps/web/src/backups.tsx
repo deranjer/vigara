@@ -132,18 +132,19 @@ export function Backups({ role }: { role: string }) {
     </Panel> : <>
       <Panel title="Policies" count={policies.length} flush>
         <div className="table-scroll"><Table className="vg-table" highlightOnHover verticalSpacing="sm">
-          <Table.Thead><Table.Tr><Table.Th>Policy</Table.Th><Table.Th>Schedule</Table.Th><Table.Th>Last 14 days</Table.Th><Table.Th>Last run</Table.Th><Table.Th ta="right">Next</Table.Th></Table.Tr></Table.Thead>
+          <Table.Thead><Table.Tr><Table.Th>Policy</Table.Th><Table.Th className="vg-wide">Schedule</Table.Th><Table.Th>Last 14 days</Table.Th><Table.Th className="vg-wide">Last run</Table.Th><Table.Th ta="right" className="vg-wide">Next</Table.Th></Table.Tr></Table.Thead>
           <Table.Tbody>{policies.map((p) => {
             const list = runs[p.id] ?? []
             const last = lastRun(list)
             const state = last && runState(last)
             return <Table.Tr key={p.id} aria-selected={current?.id === p.id} className={current?.id === p.id ? 'vg-row-selected' : undefined} onClick={() => setSelected(p.id)} style={{ cursor: 'pointer' }}>
               <Table.Td><UnstyledButton onClick={() => setSelected(p.id)} fw={600} fz="sm">{policyLabel(p, deviceName(p.deviceId))}</UnstyledButton>
-                <Text size="xs" c="dimmed" truncate maw={280}>{p.includedPaths.length === 1 ? p.includedPaths[0] : `${p.includedPaths.length} folders`}</Text></Table.Td>
-              <Table.Td>{scheduleText(p)}</Table.Td>
+                <Text size="xs" c="dimmed" truncate maw={280}>{p.includedPaths.length === 1 ? p.includedPaths[0] : `${p.includedPaths.length} folders`}</Text>
+                <div className="vg-narrow">{state ? <StatusText tone={state.tone}>{state.text}</StatusText> : <Text size="xs" c="dimmed">No runs yet</Text>}</div></Table.Td>
+              <Table.Td className="vg-wide">{scheduleText(p)}</Table.Td>
               <Table.Td><RunStrip runs={list} /></Table.Td>
-              <Table.Td>{state ? <StatusText tone={state.tone}>{state.text}{runDuration(last) ? ` · ${runDuration(last)}` : ''}</StatusText> : <Text size="sm" c="dimmed">No runs yet</Text>}</Table.Td>
-              <Table.Td ta="right"><Text size="sm" c="dimmed">{p.enabled ? untilTime(p.nextRunAt) : '—'}</Text></Table.Td>
+              <Table.Td className="vg-wide">{state ? <StatusText tone={state.tone}>{state.text}{runDuration(last) ? ` · ${runDuration(last)}` : ''}</StatusText> : <Text size="sm" c="dimmed">No runs yet</Text>}</Table.Td>
+              <Table.Td ta="right" className="vg-wide"><Text size="sm" c="dimmed">{p.enabled ? untilTime(p.nextRunAt) : '—'}</Text></Table.Td>
             </Table.Tr>
           })}</Table.Tbody>
         </Table></div>
@@ -179,9 +180,9 @@ function RunsPanel({ policy, label, runs, admin, onEdit }: { policy: BackupPolic
           const s = runState(r)
           const size = r.progress?.bytesTotal
           return [<Table.Tr key={r.id}>
-            <Table.Td><StatusText tone={s.tone}>{new Date(r.scheduledFor).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</StatusText></Table.Td>
-            <Table.Td><Text size="sm" c={s.kind === 'fail' ? undefined : 'dimmed'}>{s.text}{runDuration(r) ? ` · ${runDuration(r)}` : ''}</Text></Table.Td>
-            <Table.Td className="vg-num"><Text size="sm" c="dimmed">{size ? formatBytes(size) : ''}</Text></Table.Td>
+            <Table.Td><StatusText tone={s.tone}>{new Date(r.scheduledFor).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</StatusText><Text size="xs" c={s.kind === 'fail' ? 'red' : 'dimmed'} className="vg-narrow">{s.text}</Text></Table.Td>
+            <Table.Td className="vg-wide"><Text size="sm" c={s.kind === 'fail' ? undefined : 'dimmed'}>{s.text}{runDuration(r) ? ` · ${runDuration(r)}` : ''}</Text></Table.Td>
+            <Table.Td className="vg-num vg-wide"><Text size="sm" c="dimmed">{size ? formatBytes(size) : ''}</Text></Table.Td>
             <Table.Td className="vg-num">
               {s.kind === 'fail' && (r.errorMessage || r.errorCode) && <Button size="xs" variant="subtle" onClick={() => setOpen(open === r.id ? null : r.id)}>{open === r.id ? 'Hide error' : 'Show error'}</Button>}
               {browsable && r.snapshotIds?.length ? <Button size="xs" variant="subtle" component="a" href={formatRoute(route('backups', policy.deviceId, r.snapshotIds[0]))}>Browse files</Button> : null}

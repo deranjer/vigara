@@ -148,11 +148,11 @@ function RulesTab({ rules, windows, devices, deviceName, act }: { rules: AlertRu
   return <Stack gap="lg">
     <Panel title="Rules" actions={<Button size="xs" leftSection={<IconPlus size={14} />} onClick={() => setEditing('new')}>New rule</Button>} flush>
       {!rules ? <Group justify="center" p="xl"><Loader size="sm" /></Group> : <div className="table-scroll"><Table verticalSpacing="sm" highlightOnHover className="vg-rule-table">
-        <Table.Thead><Table.Tr><Table.Th>Rule</Table.Th><Table.Th>Applies to</Table.Th><Table.Th>Condition</Table.Th><Table.Th>Severity</Table.Th><Table.Th className="vg-num">On</Table.Th></Table.Tr></Table.Thead>
+        <Table.Thead><Table.Tr><Table.Th>Rule</Table.Th><Table.Th className="vg-wide">Applies to</Table.Th><Table.Th className="vg-wide">Condition</Table.Th><Table.Th>Severity</Table.Th><Table.Th className="vg-num">On</Table.Th></Table.Tr></Table.Thead>
         <Table.Tbody>{rules.map((rule) => <Table.Tr key={rule.id} className="vg-click-row" onClick={() => setEditing(rule)}>
-          <Table.Td><UnstyledButton className="vg-row-link" onClick={(e) => { e.stopPropagation(); setEditing(rule) }}><b>{rule.name}</b></UnstyledButton></Table.Td>
-          <Table.Td c="dimmed">{ruleScope(rule, deviceName)}</Table.Td>
-          <Table.Td>{ruleCondition(rule)}</Table.Td>
+          <Table.Td><UnstyledButton className="vg-row-link" onClick={(e) => { e.stopPropagation(); setEditing(rule) }}><b>{rule.name}</b></UnstyledButton><Text size="xs" c="dimmed" className="vg-narrow">{ruleCondition(rule)} · {ruleScope(rule, deviceName)}</Text></Table.Td>
+          <Table.Td c="dimmed" className="vg-wide">{ruleScope(rule, deviceName)}</Table.Td>
+          <Table.Td className="vg-wide">{ruleCondition(rule)}</Table.Td>
           <Table.Td><StatusText tone={severityTone(rule.severity)}>{rule.severity === 'critical' ? 'Critical' : 'Warning'}</StatusText></Table.Td>
           <Table.Td className="vg-num" onClick={(e) => e.stopPropagation()}><Switch size="sm" aria-label={`${rule.enabled ? 'Switch off' : 'Switch on'} ${rule.name}`} checked={rule.enabled} onChange={() => act(call('POST', `/api/alerts/rules/${rule.id}/${rule.enabled ? 'disable' : 'enable'}`))} styles={{ body: { justifyContent: 'flex-end' } }} /></Table.Td>
         </Table.Tr>)}</Table.Tbody>

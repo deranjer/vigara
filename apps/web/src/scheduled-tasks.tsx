@@ -24,6 +24,8 @@ async function api<T>(path = '', method = 'GET', body?: unknown): Promise<T> {
 const interval = (seconds: number) => seconds >= 3600 ? `${seconds / 3600} h` : seconds >= 60 ? `${seconds / 60} min` : `${seconds} s`
 // Tasks run every few seconds, so "due now" is too coarse below a minute.
 const next = (at: string) => { const s = Math.round((Date.parse(at) - Date.now()) / 1000); return s <= 0 ? 'due now' : s < 60 ? `in ${s} s` : untilTime(at) }
+const tone = (task: Task) => !task.available ? 'idle' as const : task.status === 'failed' ? 'crit' as const : task.status === 'running' ? 'info' as const : task.status === 'succeeded' ? 'ok' as const : 'idle' as const
+const label = (task: Task) => !task.available ? 'Not configured' : statusName[task.status] ?? task.status
 const exact = (value: string | null) => value ? new Date(value).toLocaleString() : undefined
 const statusName: Record<string, string> = { succeeded: 'Succeeded', failed: 'Failed', running: 'Running', idle: 'Not run yet' }
 
@@ -65,13 +67,13 @@ export function ScheduledTasks() {
     {error && <Alert color="red" role="alert" withCloseButton onClose={() => setError('')}>{error}</Alert>}
     <Panel flush>
       {!loaded && !error ? <Text c="dimmed" size="sm" p="md">Loading scheduled tasks…</Text> : <div className="table-scroll"><Table className="vg-table" verticalSpacing={8}>
-        <Table.Thead><Table.Tr><Table.Th>Task</Table.Th><Table.Th>Every</Table.Th><Table.Th>Last run</Table.Th><Table.Th>Next</Table.Th><Table.Th>Status</Table.Th><Table.Th ta="right">Enabled</Table.Th><Table.Th aria-label="Actions" /></Table.Tr></Table.Thead>
+        <Table.Thead><Table.Tr><Table.Th>Task</Table.Th><Table.Th className="vg-wide">Every</Table.Th><Table.Th className="vg-wide">Last run</Table.Th><Table.Th className="vg-wide">Next</Table.Th><Table.Th className="vg-wide">Status</Table.Th><Table.Th ta="right">Enabled</Table.Th><Table.Th aria-label="Actions" /></Table.Tr></Table.Thead>
         <Table.Tbody>{tasks.map((task) => <Table.Tr key={task.id}>
-          <Table.Td style={{ minWidth: 240 }}><b>{task.name}</b><Text size="xs" c="dimmed">{task.description}</Text>{task.lastError && <Text size="xs" c="red">{task.lastError}</Text>}</Table.Td>
-          <Table.Td className="vg-num vg-nowrap">{interval(task.intervalSeconds)}</Table.Td>
-          <Table.Td className="vg-dim vg-nowrap" title={exact(task.lastStartedAt)}>{relativeTime(task.lastStartedAt)}</Table.Td>
-          <Table.Td className="vg-dim vg-nowrap" title={exact(task.nextRunAt)}>{task.enabled && task.available && task.nextRunAt ? next(task.nextRunAt) : '—'}</Table.Td>
-          <Table.Td className="vg-nowrap"><StatusText tone={!task.available ? 'idle' : task.status === 'failed' ? 'crit' : task.status === 'running' ? 'info' : task.status === 'succeeded' ? 'ok' : 'idle'}>{!task.available ? 'Not configured' : statusName[task.status] ?? task.status}</StatusText></Table.Td>
+          <Table.Td className="vg-task-cell"><b>{task.name}</b><Text size="xs" c="dimmed" className="vg-wide">{task.description}</Text><div className="vg-narrow"><StatusText tone={tone(task)}>{label(task)}{task.enabled && task.available && task.nextRunAt ? ` · next ${next(task.nextRunAt)}` : ''}</StatusText></div>{task.lastError && <Text size="xs" c="red">{task.lastError}</Text>}</Table.Td>
+          <Table.Td className="vg-num vg-nowrap vg-wide">{interval(task.intervalSeconds)}</Table.Td>
+          <Table.Td className="vg-dim vg-nowrap vg-wide" title={exact(task.lastStartedAt)}>{relativeTime(task.lastStartedAt)}</Table.Td>
+          <Table.Td className="vg-dim vg-nowrap vg-wide" title={exact(task.nextRunAt)}>{task.enabled && task.available && task.nextRunAt ? next(task.nextRunAt) : '—'}</Table.Td>
+          <Table.Td className="vg-nowrap vg-wide"><StatusText tone={tone(task)}>{label(task)}</StatusText></Table.Td>
           <Table.Td ta="right"><Switch aria-label={`Run ${task.name} on schedule`} checked={task.enabled} disabled={!task.available || busy === task.id} onChange={(event) => { void configure(task, event.currentTarget.checked, task.settings).catch(() => {}) }} style={{ display: 'inline-block' }} /></Table.Td>
           <Table.Td ta="right"><Button size="xs" variant="subtle" loading={busy === task.id} disabled={!task.available || task.status === 'running'} onClick={() => void run(task)}>Run now</Button></Table.Td>
         </Table.Tr>)}</Table.Tbody>

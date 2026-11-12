@@ -116,13 +116,13 @@ export function Overview({ userName, onNavigate }: { userName: string; onNavigat
 
         <Panel title="Devices" actions={<SegmentedControl size="xs" value={range} onChange={(v) => setRange(v as Range)} data={['1h', '24h', '7d']} aria-label="CPU trend range" />} flush>
           {!data.devices ? <div className="vg-panel-body"><Loader size="sm" /></div> : <div className="table-scroll"><Table className="vg-table" highlightOnHover verticalSpacing={8}>
-            <Table.Thead><Table.Tr><Table.Th>Device</Table.Th><Table.Th>CPU · {range}</Table.Th><Table.Th>Memory</Table.Th><Table.Th>Disk (fullest)</Table.Th><Table.Th ta="right">Containers</Table.Th><Table.Th ta="right">Check-in</Table.Th></Table.Tr></Table.Thead>
+            <Table.Thead><Table.Tr><Table.Th>Device</Table.Th><Table.Th>CPU · {range}</Table.Th><Table.Th className="vg-wide">Memory</Table.Th><Table.Th className="vg-wide">Disk (fullest)</Table.Th><Table.Th ta="right" className="vg-wide">Containers</Table.Th><Table.Th ta="right">Check-in</Table.Th></Table.Tr></Table.Thead>
             <Table.Tbody>{rows.map((row) => <Table.Tr key={row.id} className="device-row" tabIndex={0} onClick={() => onNavigate(route('devices', row.id))} onKeyDown={(e) => { if (e.key === 'Enter') onNavigate(route('devices', row.id)) }} aria-label={`Open device ${row.name}`}>
               <Table.Td><span className="vg-cell-name"><span className="vg-status-dot" data-tone={row.tone} title={row.status} /><span><b>{row.name}</b><small>{row.detail || row.status}</small></span></span></Table.Td>
               <Table.Td><span className="vg-metric"><Sparkline width={72} values={trends[row.id] ?? []} label={`${row.name} CPU over ${range}`} /><span className="vg-num">{row.cpu === null ? '—' : `${row.cpu.toFixed(1)}%`}</span></span></Table.Td>
-              <Table.Td><MetricBar width={56} value={row.memory} label={`${row.name} memory used`} /></Table.Td>
-              <Table.Td><span title={row.diskMount ?? undefined}><MetricBar width={56} value={row.disk} label={`${row.name} fullest disk used`} /></span></Table.Td>
-              <Table.Td ta="right" className="vg-num">{row.containers ?? '—'}</Table.Td>
+              <Table.Td className="vg-wide"><MetricBar width={56} value={row.memory} label={`${row.name} memory used`} /></Table.Td>
+              <Table.Td className="vg-wide"><span title={row.diskMount ?? undefined}><MetricBar width={56} value={row.disk} label={`${row.name} fullest disk used`} /></span></Table.Td>
+              <Table.Td ta="right" className="vg-num vg-wide">{row.containers ?? '—'}</Table.Td>
               <Table.Td ta="right"><Text size="sm" c="dimmed">{relativeTime(row.lastSeenAt)}</Text></Table.Td>
             </Table.Tr>)}</Table.Tbody>
           </Table></div>}

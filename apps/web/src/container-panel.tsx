@@ -57,9 +57,11 @@ export function ContainerPanel({ hostId, reference, row, hosts, usage, role, onN
         onRecreated={(newName) => { refreshFleet(); if (newName !== reference) onNavigate(routeOf('containers', hostId, newName)); else void load(false) }}
         extra={<>
           <Button size="xs" variant="default" leftSection={<IconTerminal2 size={14} />} onClick={() => full('terminal')}>Shell</Button>
-          <Button size="xs" variant="subtle" leftSection={<IconArrowsMaximize size={14} />} onClick={() => full(tab ?? 'logs')}>Open full page</Button>
+          <Button size="xs" variant="subtle" className="vg-wide" leftSection={<IconArrowsMaximize size={14} />} onClick={() => full(tab ?? 'logs')}>Open full page</Button>
         </>} />
-      <Group gap="lg" mt={8} className="vg-sidepanel-facts">
+    </div>
+    <div className="vg-sidepanel-summary">
+      <Group gap="lg" className="vg-sidepanel-facts">
         {statusRow && <StatusText tone={rowTone(statusRow)}>{stateText(statusRow)}</StatusText>}
         <span><Text span size="xs" c="dimmed">CPU </Text><b className="vg-num">{live?.cpu == null ? '—' : `${live.cpu.toFixed(1)}%`}</b></span>
         <span><Text span size="xs" c="dimmed">Memory </Text><b className="vg-num">{live?.memoryBytes == null ? '—' : formatBytes(live.memoryBytes)}</b></span>

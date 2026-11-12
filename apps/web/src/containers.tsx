@@ -121,10 +121,10 @@ function Fleet({ hosts, error, role, refresh, onNavigate, open }: { hosts: HostE
       {showSelect && <Table.Td onClick={(event) => event.stopPropagation()} w={36}>{selectable(row) && <Checkbox size="xs" aria-label={`Select ${row.name}`} checked={selected.has(key(row))} onChange={(event) => toggle(row, event.currentTarget.checked)} />}</Table.Td>}
       <Table.Td><span className="vg-cell-name"><span className="vg-status-dot" data-tone={rowTone(row)} aria-hidden="true" /><span><b>{row.name || row.id.slice(0, 12)}</b>{layout === 'flat' && row.project ? <small>{row.project}</small> : row.service && row.service !== row.name ? <small>{row.service}</small> : null}</span></span></Table.Td>
       <Table.Td><Text size="sm" c={rowTone(row) === 'warn' ? 'orange.7' : rowTone(row) === 'idle' ? 'dimmed' : undefined} className="vg-nowrap">{stateText(row)}</Text></Table.Td>
-      <Table.Td><span className="vg-mono vg-ellipsis" title={row.image}>{imageRef(row.image)}</span></Table.Td>
-      <Table.Td><span className="vg-mono vg-dim">{portSummary(row.ports) || '—'}</span></Table.Td>
-      {showDevice && <Table.Td><Text size="sm" c="dimmed" className="vg-nowrap">{row.hostName}</Text></Table.Td>}
-      {columns.cpu && <Table.Td ta="right" className="vg-num">{use?.cpu == null ? '—' : `${use.cpu.toFixed(1)}%`}</Table.Td>}
+      <Table.Td className="vg-wide"><span className="vg-mono vg-ellipsis" title={row.image}>{imageRef(row.image)}</span></Table.Td>
+      <Table.Td className="vg-wide"><span className="vg-mono vg-dim">{portSummary(row.ports) || '—'}</span></Table.Td>
+      {showDevice && <Table.Td className="vg-wide"><Text size="sm" c="dimmed" className="vg-nowrap">{row.hostName}</Text></Table.Td>}
+      {columns.cpu && <Table.Td ta="right" className="vg-num vg-wide">{use?.cpu == null ? '—' : `${use.cpu.toFixed(1)}%`}</Table.Td>}
       {columns.memory && <Table.Td ta="right" className="vg-num">{use?.memoryBytes == null ? '—' : formatBytes(use.memoryBytes)}</Table.Td>}
     </Table.Tr>
   }
@@ -171,7 +171,7 @@ function Fleet({ hosts, error, role, refresh, onNavigate, open }: { hosts: HostE
       : <div className="vg-panel"><div className="table-scroll"><Table className="vg-table vg-container-table" highlightOnHover verticalSpacing={7}>
         <Table.Thead><Table.Tr>
           {showSelect && <Table.Th w={36}><Checkbox size="xs" aria-label="Select all shown" checked={rows.filter(selectable).length > 0 && rows.filter(selectable).every((row) => selected.has(key(row)))} onChange={(event) => toggleMany(rows, event.currentTarget.checked)} /></Table.Th>}
-          <Table.Th>Name</Table.Th><Table.Th>State</Table.Th><Table.Th>Image</Table.Th><Table.Th>Ports</Table.Th>{showDevice && <Table.Th>Device</Table.Th>}{columns.cpu && <Table.Th ta="right">CPU</Table.Th>}{columns.memory && <Table.Th ta="right">Memory</Table.Th>}
+          <Table.Th>Name</Table.Th><Table.Th>State</Table.Th><Table.Th className="vg-wide">Image</Table.Th><Table.Th className="vg-wide">Ports</Table.Th>{showDevice && <Table.Th className="vg-wide">Device</Table.Th>}{columns.cpu && <Table.Th ta="right" className="vg-wide">CPU</Table.Th>}{columns.memory && <Table.Th ta="right">Memory</Table.Th>}
         </Table.Tr></Table.Thead>
         <Table.Tbody>
           {rows.length === 0 && <Table.Tr><Table.Td colSpan={columnCount}><Text c="dimmed" size="sm" py="sm">{scoped.length ? 'No containers match these filters.' : 'No containers.'}</Text></Table.Td></Table.Tr>}

@@ -58,10 +58,10 @@ export function NotificationSettingsPanel() {
         <Text size="sm">No channels set up. Channels are configured on the server; restart it after setting them.</Text>
         <Text size="sm" c="dimmed">ntfy: <Code>VIGIRA_NTFY_URL</Code>, <Code>VIGIRA_NTFY_TOPIC</Code> and optionally <Code>VIGIRA_NTFY_TOKEN</Code>. Gotify: <Code>VIGIRA_GOTIFY_URL</Code> and <Code>VIGIRA_GOTIFY_TOKEN</Code>. Discord: <Code>VIGIRA_DISCORD_WEBHOOK_URL</Code>.</Text>
       </Stack> : <div className="table-scroll"><Table verticalSpacing="sm">
-        <Table.Thead><Table.Tr><Table.Th>Channel</Table.Th><Table.Th>Target</Table.Th><Table.Th>Status</Table.Th><Table.Th /></Table.Tr></Table.Thead>
+        <Table.Thead><Table.Tr><Table.Th>Channel</Table.Th><Table.Th className="vg-wide">Target</Table.Th><Table.Th>Status</Table.Th><Table.Th /></Table.Tr></Table.Thead>
         <Table.Tbody>{channels.map((c) => { const s = channelStatus(c, (at) => relativeTime(at)); return <Table.Tr key={c.id}>
-          <Table.Td fw={600}>{kindLabels[c.kind] ?? c.kind}</Table.Td>
-          <Table.Td><Text size="sm" c="dimmed" ff="monospace">{c.target}</Text></Table.Td>
+          <Table.Td><Text size="sm" fw={600}>{kindLabels[c.kind] ?? c.kind}</Text><Text size="xs" c="dimmed" ff="monospace" className="vg-narrow vg-break">{c.target}</Text></Table.Td>
+          <Table.Td className="vg-wide"><Text size="sm" c="dimmed" ff="monospace">{c.target}</Text></Table.Td>
           <Table.Td><StatusText tone={s.tone}>{s.text}</StatusText>{tests[c.id] && <Text size="xs" c="dimmed" mt={2}>{tests[c.id]}</Text>}</Table.Td>
           <Table.Td className="vg-num">{manage && <Button size="xs" variant="default" onClick={() => test(c.id)} loading={tests[c.id] === 'Sending…'}>Send test</Button>}</Table.Td>
         </Table.Tr> })}</Table.Tbody>

@@ -253,7 +253,8 @@ code, kbd, pre, samp { font-family: var(--mantine-font-family-monospace); }
 .vg-sidepanel-h { display: flex; align-items: flex-start; gap: 8px; padding: 14px 16px 6px; }
 .vg-sidepanel-title { min-width: 0; flex: 1; }
 .vg-sidepanel-title h2 { margin: 0; overflow: hidden; font-size: 18px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
-.vg-sidepanel-actions { padding: 6px 16px 12px; border-bottom: 1px solid var(--mantine-color-default-border); }
+.vg-sidepanel-actions { padding: 6px 16px 0; }
+.vg-sidepanel-summary { padding: 8px 16px 12px; border-bottom: 1px solid var(--mantine-color-default-border); }
 .vg-sidepanel-facts { font-size: var(--mantine-font-size-sm); row-gap: 4px; }
 .vg-sidepanel-facts code { max-width: 220px; }
 .vg-sidepanel-tabs { display: flex; min-height: 0; flex: 1; flex-direction: column; }
@@ -387,3 +388,21 @@ code, kbd, pre, samp { font-family: var(--mantine-font-family-monospace); }
 .vg-settings-body { min-width: 0; }
 @media (max-width: 47.99em) { .vg-settings { grid-template-columns: minmax(0, 1fr); gap: 12px; } .vg-snav { display: none; } .vg-snav-select { display: block; } }
 .vg-nav-dot { width: 7px; height: 7px; margin-left: auto; border-radius: 50%; background: var(--vg-brand); }
+
+/* P11 Phone pass */
+/* vg-wide: a column or detail that phones leave out. vg-narrow: its short form, shown only on phones. */
+.vg-narrow { display: none; }
+@media (max-width: 47.99em) {
+  .vg-wide { display: none !important; }
+  .vg-narrow { display: block; }
+  .vg-break { overflow-wrap: anywhere; }
+  /* Two-line rows: subtitles and statuses wrap instead of widening the table. */
+  .vg-table .vg-status { white-space: normal; }
+  .vg-table .vg-cell-name small, .vg-device-table .vg-cell-name small { max-width: none; white-space: normal; }
+  .vg-table .vg-metric .vg-spark, .vg-table .vg-metric .vg-spark-empty { display: none; }
+  .vg-group-toggle { display: inline-flex; flex-wrap: wrap; max-width: calc(100% - 52px); text-align: left; }
+  .vg-table td, .vg-table th { padding-left: 8px; padding-right: 8px; }
+  /* Container detail fills the screen with its actions in a bar along the bottom. */
+  .vg-sidepanel-actions { order: 10; padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); border-top: 1px solid var(--mantine-color-default-border); border-bottom: 0; background: var(--mantine-color-body); }
+}
+@media (min-width: 48em) { .vg-task-cell { min-width: 240px; } }

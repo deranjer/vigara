@@ -138,12 +138,12 @@ function DeviceContainers({ device, host, onNavigate }: { device: Device; host: 
     {groups.map((group) => <Panel key={group.project || 'standalone'} title={group.project || 'Standalone containers'} count={group.rows.length} flush
       actions={group.project ? <Button size="xs" variant="subtle" onClick={() => onNavigate(route('stacks'))}>Stacks</Button> : undefined}>
       <div className="table-scroll"><Table className="vg-table" highlightOnHover verticalSpacing={8}>
-        <Table.Thead><Table.Tr><Table.Th>Container</Table.Th><Table.Th>Image</Table.Th><Table.Th>Status</Table.Th><Table.Th>Ports</Table.Th></Table.Tr></Table.Thead>
+        <Table.Thead><Table.Tr><Table.Th>Container</Table.Th><Table.Th className="vg-wide">Image</Table.Th><Table.Th>Status</Table.Th><Table.Th className="vg-wide">Ports</Table.Th></Table.Tr></Table.Thead>
         <Table.Tbody>{group.rows.map((c) => <Table.Tr key={c.id} className="device-row" tabIndex={0} onClick={() => onNavigate(route('containers', host.agentId, c.name))} onKeyDown={(e) => { if (e.key === 'Enter') onNavigate(route('containers', host.agentId, c.name)) }} aria-label={`Open container ${c.name}`}>
           <Table.Td><span className="vg-cell-name"><span className="vg-status-dot" data-tone={containerTone(c)} aria-hidden="true" /><span><b>{c.name}</b>{c.service && <small>{c.service}</small>}</span></span></Table.Td>
-          <Table.Td><Text size="sm" ff="monospace" className="vg-ellipsis" title={c.image}>{c.image}</Text></Table.Td>
+          <Table.Td className="vg-wide"><Text size="sm" ff="monospace" className="vg-ellipsis" title={c.image}>{c.image}</Text></Table.Td>
           <Table.Td><Text size="sm" c={containerTone(c) === 'warn' ? 'orange' : undefined}>{c.status || c.state}</Text></Table.Td>
-          <Table.Td><Text size="xs" c="dimmed" className="vg-num">{c.ports?.filter((p) => p.publicPort).map((p) => `${p.publicPort}→${p.privatePort}`).join(', ') || '—'}</Text></Table.Td>
+          <Table.Td className="vg-wide"><Text size="xs" c="dimmed" className="vg-num">{c.ports?.filter((p) => p.publicPort).map((p) => `${p.publicPort}→${p.privatePort}`).join(', ') || '—'}</Text></Table.Td>
         </Table.Tr>)}</Table.Tbody>
       </Table></div>
     </Panel>)}
