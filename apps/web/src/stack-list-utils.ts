@@ -51,7 +51,7 @@ export function stackRuntimeBadge(stack: StackSummary, hosts: StackHost[]): Stac
   return { color: incomplete ? 'red' : count.partial ? 'yellow' : 'green', label: (count.partial ? 'At least ' : '') + count.running + ' / ' + total + ' running' + (missing ? ' · Missing containers' : ''), count: ratio }
 }
 
-export type StackAction = 'start' | 'stop'
+export type StackAction = 'start' | 'stop' | 'restart'
 export function stackActionBlocker(stack: StackSummary, hosts: StackHost[], role: string) {
   const host = hosts.find((item) => item.agentId === stack.agentId)
   if (!isDeployedStack(stack, hosts)) return 'Deploy this stack first.'
@@ -65,5 +65,73 @@ export function stackActionBlocker(stack: StackSummary, hosts: StackHost[], role
 
 export function stackActionTargets(stack: StackSummary, hosts: StackHost[], action: StackAction) {
   const containers = hosts.find((host) => host.agentId === stack.agentId)?.containers ?? []
-  return containers.filter((container) => container.project === stack.projectName && (action === 'start' ? container.state !== 'running' && container.state !== 'restarting' : ['running', 'restarting', 'paused'].includes(container.state)))
+  return containers.filter((container) => container.project === stack.projectName && (
+    action === 'start' ? container.state !== 'running' && container.state !== 'restarting'
+      : action === 'restart' ? container.state === 'running'
+        : ['running', 'restarting', 'paused'].includes(container.state)))
+}
+
+export type LabelKey = 'draft' | 'update' | 'drift' | 'failed' | 'check' | 'review' | 'saved' | 'deploying' | 'unassigned'
+export type StackLabel = { key: LabelKey; text: string; tone: 'warn' | 'crit' | 'info' | 'idle'; detail?: string }
+
+/**
+ * Services running for a deployed stack that do not match its saved Compose file: some are
+ * missing, or more are running than it defines. Null when the stack is not deployed as saved,
+ * or when the device's list is unavailable or incomplete.
+ */
+export function stackDrift(stack: StackSummary, hosts: StackHost[]): string | null {
+  if (stackStatus(stack) !== 'Deployed') return null
+  const host = hosts.find((item) => item.agentId === stack.agentId)
+  if (!host || host.state !== 'ok' || host.truncated) return null
+  const containers = host.containers.filter((container) => container.project === stack.projectName)
+  if (!containers.every((container) => container.service)) return null
+  const observed = new Set(containers.map((container) => container.service)).size
+  if (observed < stack.serviceCount) return `${stack.serviceCount - observed} of ${stack.serviceCount} saved services have no container`
+  if (observed > stack.serviceCount) return `${observed - stack.serviceCount} more service${observed - stack.serviceCount === 1 ? '' : 's'} running than the saved Compose file defines`
+  return null
+}
+
+/** Stack IDs with an image update waiting, from GET /api/image-updates. */
+export function stacksWithUpdates(items: { stackId?: string; ignored?: boolean; result?: { status?: string } }[]) {
+  return new Set(items.filter((item) => item.stackId && !item.ignored && item.result?.status === 'available').map((item) => item.stackId as string))
+}
+
+/** What differs about a stack, most urgent first. A stack with no labels is simply deployed. */
+export function stackLabels(stack: StackSummary, hosts: StackHost[], updates: Set<string>): StackLabel[] {
+  const labels: StackLabel[] = []
+  const status = stackStatus(stack)
+  if (status === 'Deployment failed') labels.push({ key: 'failed', text: 'Last deploy failed', tone: 'crit' })
+  if (status === 'Needs review') labels.push({ key: 'review', text: 'Needs review', tone: 'crit', detail: 'The saved stack files are not valid.' })
+  if (status === 'Check deployment') labels.push({ key: 'check', text: 'Check deployment', tone: 'warn', detail: 'The last deployment result could not be confirmed.' })
+  const drift = stackDrift(stack, hosts)
+  if (drift) labels.push({ key: 'drift', text: 'Drift', tone: 'warn', detail: drift })
+  if (stack.draft || !stack.commit) labels.push({ key: 'draft', text: 'Draft', tone: 'warn', detail: stack.commit ? 'Unsaved edits' : 'Never saved' })
+  if (updates.has(stack.id)) labels.push({ key: 'update', text: 'Update available', tone: 'info' })
+  if (status === 'Saved changes') labels.push({ key: 'saved', text: 'Not deployed yet', tone: 'info', detail: 'The saved revision differs from the last deployment.' })
+  if (status === 'Deploying') labels.push({ key: 'deploying', text: 'Deploying', tone: 'info' })
+  if (status === 'No target') labels.push({ key: 'unassigned', text: 'No device', tone: 'idle' })
+  return labels
+}
+
+export type StackFilter = 'all' | 'attention' | 'draft' | 'update' | 'drift' | 'failed'
+const attention: LabelKey[] = ['failed', 'review', 'check', 'drift', 'draft', 'update']
+export function matchesStackFilter(labels: StackLabel[], filter: StackFilter) {
+  if (filter === 'all') return true
+  if (filter === 'attention') return labels.some((label) => attention.includes(label.key))
+  if (filter === 'failed') return labels.some((label) => label.key === 'failed' || label.key === 'review' || label.key === 'check')
+  return labels.some((label) => label.key === filter)
+}
+export function stackFilterCounts(labels: StackLabel[][]): Record<StackFilter, number> {
+  const filters: StackFilter[] = ['all', 'attention', 'draft', 'update', 'drift', 'failed']
+  return Object.fromEntries(filters.map((filter) => [filter, labels.filter((item) => matchesStackFilter(item, filter)).length])) as Record<StackFilter, number>
+}
+
+/** A stack that fronts other sites, so stopping it takes them offline too. */
+export function isReverseProxy(stack: StackSummary) {
+  return /(^|[-_])(caddy|traefik|nginx-proxy|npm|haproxy|proxy)([-_]|$)/i.test(stack.id) || /(^|[-_])(caddy|traefik|nginx-proxy|haproxy)([-_]|$)/i.test(stack.projectName)
+}
+
+/** Deployed stacks that Start all / Stop all would change. Vigara's own stacks stay out unless asked. */
+export function bulkStacks(stacks: StackSummary[], hosts: StackHost[], includeVigara: boolean) {
+  return stacks.filter((stack) => isDeployedStack(stack, hosts) && (includeVigara || !excludedFromBulk(stack)))
 }
