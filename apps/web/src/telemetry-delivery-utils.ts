@@ -1,4 +1,4 @@
-import type { Device } from './devices'
+import type { Device } from './device-types'
 
 export type TelemetryDelivery = {
  lastAttemptAt?: string | null; lastStatusCode?: number | null; retryAt?: string | null; lastAcceptedAt?: string | null

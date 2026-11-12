@@ -2,7 +2,7 @@ import { MantineProvider } from '@mantine/core'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { DeviceInfo } from './device-panels'
-import type { Device } from './devices'
+import type { Device } from './device-types'
 
 describe('Device info rendering', () => {
   const renderVM = (reported = false) => {

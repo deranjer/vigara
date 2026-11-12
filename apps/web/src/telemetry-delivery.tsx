@@ -1,5 +1,5 @@
 import { Alert, Badge, Group, SimpleGrid, Stack, Text } from '@mantine/core'
-import type { Device } from './devices'
+import type { Device } from './device-types'
 import { deliverySummary, recent } from './telemetry-delivery-utils'
 
 const age = (value: string) => {

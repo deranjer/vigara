@@ -123,9 +123,11 @@ function Breadcrumbs({ route, summary, onNavigate }: { route: Route; summary: Su
   if (route.id) {
     const device = summary.devices?.find((d) => d.id === route.id || d.agentId === route.id)
     const label = route.section === 'settings' ? { account: 'Account', server: 'Server', about: 'About' }[route.id] ?? route.id : device?.name ?? route.id
-    crumbs.push({ label, to: route.sub ? routeOf(route.section, route.id) : undefined })
+    // A device's tab is shown by its tab bar, so the device is the last crumb.
+    const sub = route.section === 'devices' ? null : route.sub
+    crumbs.push({ label, to: sub ? routeOf(route.section, route.id) : undefined })
+    if (sub) crumbs.push({ label: sub })
   }
-  if (route.sub) crumbs.push({ label: route.sub })
   return <nav className="vg-crumbs" aria-label="Breadcrumb">{crumbs.map((crumb, index) => {
     const last = index === crumbs.length - 1
     return <span key={index} className="vg-crumb">{index > 0 && <span className="vg-crumb-sep" aria-hidden="true">/</span>}{last || !crumb.to ? <b aria-current={last ? 'page' : undefined}>{crumb.label}</b> : <a href="#" onClick={(event) => { event.preventDefault(); onNavigate(crumb.to!) }}>{crumb.label}</a>}</span>

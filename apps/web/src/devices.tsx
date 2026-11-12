@@ -1,466 +1,152 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { Alert, LoadingOverlay, Badge, Button, Card, Checkbox, Group, Loader, Progress, SegmentedControl, Select, SimpleGrid, Stack, Tabs, Table, Text, TextInput, Title } from '@mantine/core'
+import { useEffect, useMemo, useState } from 'react'
+import { Alert, Button, Group, Loader, SegmentedControl, Table, Text, Title } from '@mantine/core'
 import { LineChart } from '@mantine/charts'
-import { ReferenceArea } from 'recharts'
-import { DeviceInfo, DeviceSettings, MonitoringOverview } from './device-panels'
-import { DeviceMonitoring } from './device-monitoring'
-import { type HardwareInventory } from './device-info-utils'
-import { TelemetryDeliveryChip, TelemetryDeliveryPanel } from './telemetry-delivery'
-import { staleReason, type TelemetryDelivery } from './telemetry-delivery-utils'
 import { AddDevice } from './add-device'
-import { TerminalPanel } from './terminal-panel'
-import { DeviceBackups } from './backup-config'
-import { chartRows, formatMetric, type MetricSeries, type RateUnit } from './metric-utils'
-import { StatusText } from './status'
+import { DevicePage } from './device-page'
+import { getJson, loadAllDevices, type Device } from './device-types'
+import { agentHealth, compareRows, compareValues, osName, type CompareMetric } from './device-utils'
+import { formatMetric } from './metric-utils'
+import { deviceRows, relativeTime } from './overview-utils'
+import { route, type Route } from './route'
+import type { TrendResponse } from './trend-utils'
+import { MetricBar, Panel, Sparkline } from './ui'
 
-type Metric = { name: string; value: number; unit: string; labels?: Record<string, string> }
-type DockerContainer = { id: string; name?: string; image?: string; state: string }
-type Snapshot = { observedAt?: string; host?: { os?: string; osVersion?: string; architecture?: string; agentVersion?: string; cpuModel?: string; logicalCpus?: number; totalMemoryBytes?: number; uptimeSeconds?: number; hardwareInventory?: HardwareInventory }; metrics?: Metric[]; dockerContainers?: DockerContainer[]; errors?: { capability: string; message: string }[] }
-export type Device = { telemetryDelivery?: TelemetryDelivery | null; id: string; name: string; platformId?: string | null; status: 'healthy' | 'stale' | 'failed' | 'unsupported'; agentId?: string | null; platform: string; architecture: string; agentVersion: string; capabilities: string[]; lastSeenAt?: string | null; latest?: Snapshot; telemetryObservedAt?: string | null; collectionErrors?: Snapshot['errors'] }
-type Point = { at: string; value: number | null; min?: number; max?: number; samples: number; resolutionSeconds?: number }
-type Series = { name: string; unit: string; labels: Record<string, string>; points: Point[] }
-type History = { range: string; windowStart: string; windowEnd: string; metrics: string[]; series: Series[]; resolutionSeconds: number; resolution: string }
-type DevicePage = { devices: Device[]; total: number; offset: number; limit: number }
-type Availability = { expectedAwake: boolean; maintenanceActive: boolean }
-type BackupProgress = { observedAt: string; phase: string; filesDone?: number; filesTotal?: number; bytesDone?: number; bytesTotal?: number; percentDone?: number }
-type BackupJob = { id: string; profileId: string; scheduledFor: string; status: string; executionStatus: string; outcome?: string; snapshotIds?: string[]; errorCode?: string; errorMessage?: string; progress?: BackupProgress }
-type BackupPolicy = { deviceId: string; id: string; name: string; profileId: string }
+type View = 'table' | 'compare'
+type CompareRange = '6h' | '24h' | '7d' | '30d'
+const lineColors = ['blue.6', 'teal.6', 'orange.6', 'grape.6', 'red.6', 'cyan.6', 'lime.7', 'pink.6', 'indigo.6', 'yellow.7']
 
-async function get<T>(path: string): Promise<T> {
-  const response = await fetch(path, { credentials: 'same-origin' })
-  if (!response.ok) {
-    const detail = (await response.text()).slice(0, 300).trim()
-    throw new Error(response.status === 401 ? 'Your session expired. Log in again.' : detail || 'Could not load device information.')
-  }
-  return response.json() as Promise<T>
+function storedView(): View {
+  try { return window.localStorage.getItem('vigara-device-view') === 'compare' ? 'compare' : 'table' } catch { return 'table' }
 }
 
-const statusColor = { healthy: 'green', stale: 'yellow', failed: 'red', unsupported: 'gray' } as const
-const statusLabel = { healthy: 'Healthy', stale: 'Stale', failed: 'Failed', unsupported: 'Unsupported' } as const
-const ranges = [{ label: '1 hour', value: '1h' }, { label: '6 hours', value: '6h' }, { label: '24 hours', value: '24h' }, { label: '7 days', value: '7d' }, { label: '30 days', value: '30d' }, { label: '90 days', value: '90d' }, { label: '1 year', value: '365d' }]
-
-function timeLabel(value?: string | null) { return value ? new Date(value).toLocaleString() : 'Never' }
-function relativeLabel(value?: string | null) {
-  if (!value) return 'Never checked in'
-  const minutes = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 60_000))
-  if (minutes < 1) return 'Just now'
-  if (minutes < 60) return `${minutes}m ago`
-  const hours = Math.floor(minutes / 60)
-  return hours < 48 ? `${hours}h ago` : `${Math.floor(hours / 24)}d ago`
-}
-const metricLabels: Record<string, string> = {
-  docker_cpu_capacity_used_percent: 'Container CPU capacity use', docker_memory_usage_bytes: 'Container memory use', docker_memory_limit_bytes: 'Container memory limit', docker_memory_used_percent: 'Container memory use', docker_processes: 'Container processes', docker_network_receive_bytes_per_second: 'Container network receive rate', docker_network_transmit_bytes_per_second: 'Container network send rate',
-  cpu_used_percent: 'CPU use', memory_used_percent: 'Memory use', memory_available_bytes: 'Available memory', memory_total_bytes: 'Total memory',
-  filesystem_free_bytes: 'Free disk space', filesystem_total_bytes: 'Total disk space',
-  network_receive_bytes_per_second: 'Network receive rate', network_send_bytes_per_second: 'Network send rate',
-  disk_read_bytes_per_second: 'Disk read rate', disk_write_bytes_per_second: 'Disk write rate', uptime_seconds: 'Uptime',
-}
-function prettyName(name: string) { return metricLabels[name] ?? name.replaceAll('_', ' ').replace(/\b\w/g, (part) => part.toUpperCase()) }
-function formatValue(value: number, unit: string, rateUnit: RateUnit = 'B/s') { return formatMetric(value, unit, rateUnit) }
-
-export function summaryMetric(device: Device, name: string, rateUnit: RateUnit = 'B/s') {
-  const metrics = device.latest?.metrics?.filter((metric) => metric.name === name) ?? []
-  return metrics.length ? metrics.map((metric) => `${formatValue(metric.value, metric.unit, rateUnit)}${metric.labels && Object.keys(metric.labels).length ? ` (${Object.values(metric.labels).join(', ')})` : ''}`).join(' · ') : '—'
-}
-
-function ResourceMeter({ device, name, label }: { device: Device; name: string; label: string }) {
-  const metrics = device.latest?.metrics?.filter((metric) => metric.name === name) ?? []
-  return <Stack gap={4} className="device-resource-meter">
-    {metrics.length ? metrics.map((metric, index) => {
-      const percent = Math.max(0, Math.min(100, metric.value))
-      const scope = Object.values(metric.labels ?? {}).join(' · ')
-      return <div key={`${name}:${scope}:${index}`}>
-        <Group justify="space-between" gap="xs" wrap="nowrap" mb={3}>
-          <Text size="xs" c="dimmed" truncate title={scope || label}>{scope || label}</Text>
-          <Text size="xs" fw={600} style={{ flexShrink: 0 }}>{formatValue(metric.value, metric.unit)}</Text>
-        </Group>
-        <Progress value={percent} size={6} color={percent >= 90 ? 'red' : percent >= 80 ? 'orange' : 'cyan'} aria-label={`${label}${scope ? ` ${scope}` : ''}: ${percent.toFixed(1)}%`} />
-      </div>
-    }) : <div><Text size="xs" c="dimmed">{label}</Text><Text size="sm" c="dimmed">No data</Text></div>}
-  </Stack>
-}
-
-function NetworkRates({ device }: { device: Device }) {
-  const directions = [
-    { label: '↓ Receive', name: 'network_receive_bytes_per_second' },
-    { label: '↑ Send', name: 'network_send_bytes_per_second' },
-  ]
-  return <SimpleGrid cols={2} spacing="xs">{directions.map(({ label, name }) => {
-    const metrics = device.latest?.metrics?.filter(metric => metric.name === name) ?? []
-    const first = metrics[0]
-    const scope = Object.values(first?.labels ?? {}).join(' · ')
-    return <div className="metric-value" key={name}>
-      <Text size="xs" c="dimmed">{label}</Text>
-      <Text size="sm" fw={600} truncate title={first ? `${formatValue(first.value, first.unit, 'MB/s')}${scope ? ` · ${scope}` : ''}` : 'No data'}>{first ? formatValue(first.value, first.unit, 'MB/s') : '—'}</Text>
-      {metrics.length > 1 && <Text size="xs" c="dimmed">+{metrics.length - 1} interfaces</Text>}
-    </div>
-  })}</SimpleGrid>
-}
-
-function labelValueForChart(key: string, value: string) { return key === 'container_id' ? value.slice(0, 12) : value }
-
-function toLocalInput(value: Date) { const local = new Date(value.getTime() - value.getTimezoneOffset() * 60_000); return local.toISOString().slice(0, 23) }
-
-function LineChartWrapper({ loading, series, history, normalized, onZoom, rateUnit }: { loading: boolean; series: Series[]; range: string; history: History; normalized: boolean; onZoom: (start: Date, end: Date) => void; rateUnit: RateUnit }) {
-  const windowStart = history.windowStart; const windowEnd = history.windowEnd; const resolutionSeconds = history.resolutionSeconds
-  const hasMixedUnits = new Set(series.map((item) => item.unit)).size > 1
-  const useNormalized = normalized || hasMixedUnits
-  const container = useMemo(() => chartRows(series as MetricSeries[], resolutionSeconds || 60, useNormalized, rateUnit), [series, resolutionSeconds, useNormalized, rateUnit])
-  const [dragStart, setDragStart] = useState<number | null>(null)
-  const [dragEnd, setDragEnd] = useState<number | null>(null)
-  const tooltip = (props: { active?: boolean; payload?: Array<{ dataKey: string; value: number | null; payload: Record<string, number | null> }> }) => {
-    if (!props.active || !props.payload?.length) return null
-    return <Card withBorder shadow="sm" p="xs">{props.payload.map((item) => { const keyIndex = Number(item.dataKey.replace('series_', '')); const original = item.payload[`actual_${keyIndex}`]; const itemSeries = series[keyIndex]; return original == null || !itemSeries ? null : <Text key={item.dataKey} size="xs">{prettyName(itemSeries.name)}{Object.keys(itemSeries.labels).length ? ` · ${Object.entries(itemSeries.labels).map(([key, value]) => `${key}=${value}`).join(', ')}` : ''}: {formatMetric(original, itemSeries.unit, rateUnit)} · {new Date(Number(item.payload.timestamp)).toLocaleString()}</Text> })}</Card>
-  }
-  if (!series.length) return <Stack h={300} pos="relative" align="center" justify="center"><LoadingOverlay visible={loading} /><Text c="dimmed">No samples selected or available for this interval.</Text><Text size="xs" c="dimmed">Select metrics above. Older history contains complete hourly summaries only.</Text></Stack>
-  return <Stack gap="xs" pos="relative">
-<LoadingOverlay visible={loading} overlayProps={{ blur: 1 }} />
-<LineChart h={300} data={container.data} dataKey="timestamp" series={container.chartSeries.map((value) => ({ name: value.name, label: prettyName(series[Number(value.name.replace('series_', ''))]!.name) + (Object.keys(series[Number(value.name.replace('series_', ''))]!.labels).length ? ` · ${Object.entries(series[Number(value.name.replace('series_', ''))]!.labels).map(([key, label]) => labelValueForChart(key, label)).join(', ')}` : ''), color: value.color }))} withLegend withDots dotProps={{ r: 2 }} activeDotProps={{ r: 5 }} connectNulls={false} yAxisLabel={useNormalized ? 'Normalized scale (%)' : series[0]?.unit === 'By/s' ? rateUnit : series[0]?.unit} xAxisProps={{ type: 'number', domain: [new Date(windowStart).getTime(), new Date(windowEnd).getTime()], tickFormatter: (value: number) => new Date(windowEnd).getTime() - new Date(windowStart).getTime() > 86400000 ? new Date(value).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit' }) : new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }} yAxisProps={{ domain: useNormalized ? [0, 100] : ['auto', 'auto'], tickFormatter: (value: number) => useNormalized ? `${value}%` : String(value) }} tooltipProps={{ content: tooltip as never }} lineChartProps={{ onMouseDown: (state) => { const at = Number(state?.activeLabel); if (Number.isFinite(at)) { setDragStart(at); setDragEnd(at) } }, onMouseMove: (state) => { const at = Number(state?.activeLabel); if (dragStart !== null && Number.isFinite(at)) setDragEnd(at) }, onMouseUp: (state) => { const at = Number(state?.activeLabel ?? dragEnd); if (dragStart !== null && Number.isFinite(at) && Math.abs(at - dragStart) > 5000) onZoom(new Date(Math.min(at, dragStart)), new Date(Math.max(at, dragStart))); setDragStart(null); setDragEnd(null) }, onMouseLeave: () => { setDragStart(null); setDragEnd(null) } }}>
-<ReferenceArea yAxisId="left" x1={dragStart ?? undefined} x2={dragEnd ?? undefined} fill="var(--mantine-color-blue-5)" fillOpacity={0.18} stroke="var(--mantine-color-blue-6)" strokeOpacity={0.7} />
-</LineChart>
-    <Group justify="space-between">
-<Text size="xs" c="dimmed">{timeLabel(windowStart)}</Text>
-<Text size="xs" c="dimmed">{timeLabel(windowEnd)}</Text>
-</Group>
-<Text size="xs" c="dimmed">Drag across the plot to zoom. {useNormalized ? 'Each line is normalized to its own 0–100% range; tooltip values retain original units.' : 'Lines share the same unit.'}</Text>
-</Stack>
-}
-
-function BackupHistory({ refresh, deviceId }: { refresh: number; deviceId?: string }) {
-  const [rows, setRows] = useState<{ policy: BackupPolicy; jobs: BackupJob[] }[]>([])
-  const [error, setError] = useState('')
-  const [loading, setLoading] = useState(true)
+/** One trends request per device (fine for a home fleet), shared by the sparklines and the Compare chart. */
+function useTrends(devices: Device[] | null, range: CompareRange): Record<string, TrendResponse> {
+  const [trends, setTrends] = useState<Record<string, TrendResponse>>({})
+  const ids = devices?.slice(0, 24).map((d) => d.id).join(',') ?? ''
   useEffect(() => {
+    if (!ids) return
     let active = true
-    const load = async () => {
-      try {
-        const policies: BackupPolicy[] = []
-        for (let offset = 0; ; offset += 100) {
-          const response = await fetch(`/api/backups/policies?limit=100&offset=${offset}`, { credentials: 'same-origin' })
-          if (!response.ok) throw new Error('Could not load backup policies.')
-          policies.push(...await response.json() as BackupPolicy[])
-          if (response.headers.get('X-Has-More') !== 'true') break
-        }
-        const result = await Promise.all(policies.filter((policy) => !deviceId || policy.deviceId === deviceId).map(async (policy) => ({ policy, jobs: await get<BackupJob[]>(`/api/backups/policies/${encodeURIComponent(policy.id)}/history?limit=20`) })))
-        if (active) { setRows(result); setError('') }
-      } catch (cause) { if (active) setError(cause instanceof Error ? cause.message : 'Could not load backup history.') }
-      finally { if (active) setLoading(false) }
+    setTrends({})
+    const load = () => {
+      for (const id of ids.split(',')) void getJson<TrendResponse>(`/api/inventory/devices/${encodeURIComponent(id)}/trends?range=${range}`).then((value) => { if (active) setTrends((current) => ({ ...current, [id]: value })) }).catch(() => undefined)
     }
-    void load()
-    const timer = window.setInterval(() => { void load() }, 15_000)
+    load()
+    const timer = window.setInterval(load, 120_000)
     return () => { active = false; window.clearInterval(timer) }
-  }, [refresh, deviceId])
-  return <Card withBorder radius="md" padding="lg" mb="lg">
-    <Group justify="space-between" mb="md">
-<div>
-<Title order={3}>Backup history</Title>
-<Text size="sm" c="dimmed">Execution state and recent snapshots for configured backup policies</Text>
-</div>
-<Badge variant="light">Refreshes every 15 seconds</Badge>
-</Group>
-    {error ? <Alert color="red" title="Backup history could not be loaded">{error}</Alert> : loading ? <Group>
-<Loader size="xs" />
-<Text size="sm" c="dimmed">Loading backup history…</Text>
-</Group> : rows.length === 0 ? <Text c="dimmed">{deviceId ? 'No backup policies are configured for this device.' : 'No backup policies are configured.'}</Text> : <Stack gap="md">{rows.map(({ policy, jobs }) => <div key={policy.id}>
-<Group justify="space-between" mb="xs">
-<Text fw={600}>{policy.name}</Text>
-<Text size="xs" c="dimmed">Profile {policy.profileId}</Text>
-</Group>{jobs.length === 0 ? <Text size="sm" c="dimmed">No scheduled runs yet.</Text> : <Table.ScrollContainer minWidth={650}>
-<Table striped>
-<Table.Thead>
-<Table.Tr>
-<Table.Th>Scheduled</Table.Th>
-<Table.Th>Execution</Table.Th>
-<Table.Th>Outcome</Table.Th>
-<Table.Th>Progress</Table.Th>
-<Table.Th>Snapshot</Table.Th>
-<Table.Th>Details</Table.Th>
-</Table.Tr>
-</Table.Thead>
-<Table.Tbody>{jobs.map((job) => <Table.Tr key={job.id}>
-<Table.Td>{timeLabel(job.scheduledFor)}</Table.Td>
-<Table.Td>
-<StatusText color={['running', 'succeeded'].includes(job.executionStatus) ? 'green' : ['stale', 'unknown'].includes(job.executionStatus) ? 'yellow' : ['failed', 'partial', 'interrupted', 'canceled', 'timed_out'].includes(job.executionStatus) ? 'red' : 'gray'}>{job.executionStatus}</StatusText>
-</Table.Td>
-<Table.Td>{job.outcome || job.status}</Table.Td>
-<Table.Td>{job.progress ? <Text size="sm">{job.progress.phase}{job.progress.percentDone ? ` · ${job.progress.percentDone.toFixed(1)}%` : ''}{job.progress.filesTotal ? ` · ${job.progress.filesDone ?? 0}/${job.progress.filesTotal} files` : ''}{job.progress.bytesTotal ? ` · ${formatValue(job.progress.bytesDone ?? 0, 'By')}/${formatValue(job.progress.bytesTotal, 'By')}` : ''}</Text> : '—'}</Table.Td>
-<Table.Td>{job.snapshotIds?.length ? job.snapshotIds.map((id) => <Text key={id} size="xs" ff="monospace">{id}</Text>) : '—'}</Table.Td>
-<Table.Td>{job.errorMessage ? <Text size="xs" c="red">{job.errorMessage}{job.errorCode ? ` (${job.errorCode})` : ''}</Text> : job.errorCode || '—'}</Table.Td>
-</Table.Tr>)}</Table.Tbody>
-</Table>
-</Table.ScrollContainer>}</div>)}</Stack>}
-  </Card>
+  }, [ids, range])
+  return trends
 }
 
-function DeviceHealthIssues({ device }: { device: Device }) {
-  return <Stack gap={4}>
-    {device.status === 'stale' && <Text size="xs" c="yellow">{staleReason(device)}</Text>}
-    {device.status === 'failed' && <Text size="xs" c="red">Device needs attention</Text>}
-    {device.collectionErrors?.map((issue, index) => <Text key={index} size="xs" c="red" style={{ overflowWrap: 'anywhere' }}>{issue.capability}: {issue.message}</Text>)}
-  </Stack>
-}
-
-export function Devices({ section, selectedId, onSelect, role = '' }: { section: 'devices' | 'monitoring' | 'backups'; selectedId: string | null; onSelect: (id: string | null) => void; role?: string }) {
-  const [inventoryView, setInventoryView] = useState(() => {
-    try { return window.localStorage.getItem('vigara-device-view') === 'table' ? 'table' : 'cards' } catch { return 'cards' }
-  })
-  function changeInventoryView(value: string) {
-    setInventoryView(value)
-    try { window.localStorage.setItem('vigara-device-view', value) } catch { /* Keep the selection for this session when storage is unavailable. */ }
-  }
-  const [monitoringTab, setMonitoringTab] = useState('dashboard')
-  const [monitoringPanel, setMonitoringPanel] = useState('overview')
-  const [addDeviceOpen, setAddDeviceOpen] = useState(false)
-  const [reinstallDevice, setReinstallDevice] = useState<Device | null>(null)
-  const [allDevices, setAllDevices] = useState<Device[]>([]);
-  const [detailTab, setDetailTab] = useState<string | null>('info'); const [history, setHistory] = useState<History | null>(null); const [range, setRange] = useState('24h'); const [error, setError] = useState(''); const [historyError, setHistoryError] = useState(''); const [historyLoading, setHistoryLoading] = useState(false); const [loading, setLoading] = useState(true); const [offset, setOffset] = useState(0); const [refresh, setRefresh] = useState(0); const [metricNames, setMetricNames] = useState<string[]>([]); const [normalized, setNormalized] = useState(false); const [rateUnit, setRateUnit] = useState<RateUnit>('MB/s')
-  const [customStart, setCustomStart] = useState(''); const [customEnd, setCustomEnd] = useState(''); const [appliedInterval, setAppliedInterval] = useState<{ start: string; end: string } | null>(null); const [customError, setCustomError] = useState('')
-  const initialMetric = useRef(true)
-  const [zoomBase, setZoomBase] = useState<{ range: string; interval: { start: string; end: string } | null } | null>(null)
-  const [availability, setAvailability] = useState<Availability | null>(null)
-  const pageSize = 20
-  const healthIssuesOnly = section === 'monitoring' && monitoringTab === 'issues'
-  const listedDevices = healthIssuesOnly ? allDevices.filter((device) => device.status === 'failed' || device.status === 'stale' || !!device.collectionErrors?.length) : allDevices
-  const total = listedDevices.length
-  const pageOffset = Math.min(offset, Math.max(0, Math.ceil(total / pageSize) - 1) * pageSize)
-  const devices = listedDevices.slice(pageOffset, pageOffset + pageSize)
-  const selected = allDevices.find((device) => device.id === selectedId) ?? null
+export function Devices({ route: current, role = '', onNavigate }: { route: Route; role?: string; onNavigate: (route: Route) => void }) {
+  const [devices, setDevices] = useState<Device[] | null>(null)
+  const [error, setError] = useState('')
+  const [refresh, setRefresh] = useState(0)
+  const [addOpen, setAddOpen] = useState(false)
+  const [reinstall, setReinstall] = useState<Device | null>(null)
+  const selectedId = current.id
+  const selected = devices?.find((d) => d.id === selectedId) ?? null
 
   useEffect(() => {
     let active = true
-    if (!allDevices.length) setLoading(true)
-    const load = async () => {
-      const result: Device[] = []
-      for (let pageOffset = 0; ; pageOffset += 100) {
-        const page = await get<DevicePage>(`/api/inventory/devices?limit=100&offset=${pageOffset}`)
-        result.push(...page.devices)
-        if (!page.devices.length || result.length >= page.total) break
-      }
-      if (active) { setAllDevices(result); setOffset((current) => Math.min(current, Math.max(0, Math.ceil(result.length / pageSize) - 1) * pageSize)); setError('') }
-    }
-    void load().catch((cause: unknown) => { if (active) setError(cause instanceof Error ? cause.message : 'Could not load devices.') }).finally(() => { if (active) setLoading(false) })
+    void loadAllDevices().then((result) => { if (active) { setDevices(result); setError('') } }).catch((cause: unknown) => { if (active) setError(cause instanceof Error ? cause.message : 'Could not load devices.') })
     return () => { active = false }
-    // Refresh deliberately preserves selection and tab drafts.
   }, [refresh])
   useEffect(() => {
-    if (!selectedId && section !== 'monitoring') return
-    const timer = window.setInterval(() => setRefresh((value) => value + 1), 15_000)
+    // An open device refreshes every 15 seconds; the list every 30.
+    const timer = window.setInterval(() => setRefresh((v) => v + 1), selectedId ? 15_000 : 30_000)
     return () => window.clearInterval(timer)
-  }, [section, selectedId])
-  useEffect(() => { setMonitoringPanel('overview'); initialMetric.current = true; setZoomBase(null); setHistory(null); setHistoryError(''); setMetricNames([]); setCustomStart(''); setCustomEnd(''); setAppliedInterval(null); setRange('24h') }, [selectedId])
-  useEffect(() => { setAvailability(null); if (!selectedId) return; let active = true; void get<Availability>(`/api/devices/${encodeURIComponent(selectedId)}/availability`).then((value) => { if (active) setAvailability(value) }).catch(() => { /* Availability rules are optional until configured. */ }); return () => { active = false } }, [selectedId, refresh])
-  useEffect(() => { if (!selectedId || detailTab !== 'monitoring' || monitoringPanel !== 'history') return; let active = true; setHistoryLoading(true); setHistoryError(''); const query = new URLSearchParams()
-    if (range === 'custom' && appliedInterval) { query.set('start', appliedInterval.start); query.set('end', appliedInterval.end) } else query.set('range', range === 'custom' ? '24h' : range)
-    metricNames.slice(0, 5).forEach((name) => query.append('metrics', name))
-    void get<History>(`/api/inventory/devices/${encodeURIComponent(selectedId)}/history?${query}`).then((data) => { if (active) { setHistory(data); if (initialMetric.current && data.metrics.length) { initialMetric.current = false; setMetricNames([data.metrics[0]!]) } } }).catch((cause: unknown) => { if (active) setHistoryError(cause instanceof Error ? cause.message : 'Could not load metric history.') }).finally(() => { if (active) setHistoryLoading(false) }); return () => { active = false } }, [selectedId, detailTab, monitoringPanel, range, metricNames, appliedInterval, refresh])
+  }, [selectedId])
 
-  function backToList() { onSelect(null); setHistory(null); setError('') }
-  function openDevice(id: string, tab = 'info') { setDetailTab(tab); onSelect(id); setError('') }
-  return <section className="devices-page">
-    <Group justify="space-between" align="center" mb="xl">
-<div>
-<Text c="dimmed" size="sm" fw={600} tt="uppercase">Home infrastructure</Text>
-<Title order={1} mt={4}>{selected ? selected.name : section === 'backups' ? 'Backup history' : section === 'monitoring' ? 'Overview' : 'Devices'}</Title>
-<Text c="dimmed" mt={6}>{selected ? 'Device information, monitoring, backups and settings.' : section === 'backups' ? 'Execution state and recent snapshots for configured backup policies.' : section === 'monitoring' ? 'Compare current measurements across devices. Open a device to explore its history.' : 'Your enrolled and discovered devices. Open a device for information, monitoring, backups and settings.'}</Text>
-</div>
-<Group>
-{!selected && section === 'devices' && <Button onClick={() => setAddDeviceOpen(true)}>Add device</Button>}
-<Button variant="default" onClick={() => setRefresh((value) => value + 1)}>Refresh</Button>
-{selected && <Button variant="subtle" onClick={backToList}>{section === 'monitoring' ? '← Back to overview' : '← All devices'}</Button>}
-</Group>
-</Group>
-    {error && <Alert color="red" mb="md" title="Unable to load information" onClose={() => setError('')} withCloseButton>{error}</Alert>}
-    <Tabs value={monitoringTab} onChange={(value) => { if (value) { setMonitoringTab(value); setOffset(0) } }}>
-      {!selected && section === 'monitoring' && <Tabs.List mb="lg">
-        <Tabs.Tab value="dashboard">Dashboard</Tabs.Tab>
-        <Tabs.Tab value="issues">Device health issues</Tabs.Tab>
-        <Tabs.Tab value="all">All devices</Tabs.Tab>
-      </Tabs.List>}
-      <Tabs.Panel value={monitoringTab}>
-    {!selected && section === 'backups' ? <BackupHistory refresh={refresh} /> : loading ? <div className="device-empty">
-<Loader size="sm" />
-<Text c="dimmed" mt="sm">Loading devices…</Text>
-</div> : selected ? <Stack gap="lg">
-      <Card withBorder radius="md" padding="lg">
-<Group justify="space-between" align="flex-start">
-<div>
-<Group>
-<Title order={3}>{selected.name}</Title>
-<Badge title={selected.status === 'stale' ? staleReason(selected) : undefined} color={statusColor[selected.status]} variant="light">{statusLabel[selected.status]}</Badge><TelemetryDeliveryChip device={selected} />{availability?.maintenanceActive && <Badge color="blue" variant="light">Maintenance active</Badge>}{availability && !availability.expectedAwake && <Badge color="gray" variant="light">Expected offline</Badge>}</Group>
-<Text c="dimmed" mt="xs">{[selected.platform, selected.architecture].filter(Boolean).join(' · ') || 'Platform not reported'}{selected.agentVersion ? ` · Agent ${selected.agentVersion}` : ''}</Text>
-</div>
-<div className="checkin">
-<Text size="xs" c="dimmed">Last check-in</Text>
-<Text fw={600}>{relativeLabel(selected.lastSeenAt)}</Text>
-<Text size="xs" c="dimmed">{timeLabel(selected.lastSeenAt)}</Text>
-</div>
-</Group>
+  const modals = <>
+    <AddDevice opened={addOpen} onClose={() => setAddOpen(false)} />
+    {reinstall && <AddDevice key={reinstall.id} device={reinstall} opened onClose={() => { setReinstall(null); setRefresh((v) => v + 1) }} />}
+  </>
 
-      </Card>
-      <TelemetryDeliveryPanel device={selected} />
-      <Tabs value={detailTab} onChange={setDetailTab} keepMounted={false}>
-        <Tabs.List mb="lg">
-          <Tabs.Tab value="info">Device info</Tabs.Tab>
-          <Tabs.Tab value="monitoring">Monitoring</Tabs.Tab>
-          <Tabs.Tab value="backups">Backups</Tabs.Tab>
-          <Tabs.Tab value="settings">Device settings</Tabs.Tab>
-          <Tabs.Tab value="shell">Shell</Tabs.Tab>
-          {!!selected.latest?.dockerContainers?.length && <Tabs.Tab value="containers">Containers</Tabs.Tab>}
-        </Tabs.List>
-        <Tabs.Panel value="info"><DeviceInfo device={selected} onReinstall={() => setReinstallDevice(selected)} /></Tabs.Panel>
-        <Tabs.Panel value="shell">{detailTab === 'shell' && <TerminalPanel key={selected.id} hostId={selected.agentId ?? ''} reference={selected.agentId ?? ''} name={selected.name} running={null} role={role} device={{ platform: selected.platform, capabilities: selected.capabilities }} />}</Tabs.Panel>
-        <Tabs.Panel value="backups"><DeviceBackups key={`setup-${selected.id}`} deviceId={selected.id} /><BackupHistory key={selected.id} refresh={refresh} deviceId={selected.id} /></Tabs.Panel>
-        <Tabs.Panel value="settings"><DeviceSettings key={selected.id} device={selected} onDeleted={() => { setAllDevices((current) => current.filter((item) => item.id !== selected.id)); onSelect(null); setRefresh((value) => value + 1) }} onSaved={() => setRefresh((value) => value + 1)} /></Tabs.Panel>
-        <Tabs.Panel value="monitoring"><Stack gap="lg">
-      {selected.collectionErrors && selected.collectionErrors.length > 0 && <Alert color="red" title="Collection errors">{selected.collectionErrors.map((item, index) => <Text key={`${item.capability}-${index}`} size="sm">{item.capability}: {item.message}</Text>)}</Alert>}
-      <Tabs value={monitoringPanel} onChange={(value) => { if (value) setMonitoringPanel(value) }} keepMounted={false}>
-      <Tabs.List mb="md">
-        <Tabs.Tab value="overview">Resource overview</Tabs.Tab>
-        <Tabs.Tab value="history">Compare metrics &amp; explore history</Tabs.Tab>
-      </Tabs.List>
-      <Tabs.Panel value="overview"><DeviceMonitoring key={selected.id} device={selected} rateUnit={rateUnit} onRateUnitChange={setRateUnit} /></Tabs.Panel>
-      <Tabs.Panel value="history"><Card withBorder radius="md" padding="lg">
-<Group justify="space-between" align="flex-start" mb="md">
-<div>
-<Title order={3}>Resource history</Title>
-<Text size="sm" c="dimmed">{history?.resolution ?? 'Raw samples and retained hourly summaries'} · times use your local timezone</Text>
-</div>
-<SegmentedControl value={range} onChange={(value) => { setZoomBase(null); setCustomError(''); setCustomStart(''); setCustomEnd(''); setAppliedInterval(null); setRange(value) }} data={ranges} size="xs" />
-</Group>
-<Group align="end" mb="md">
-<TextInput type="datetime-local" step="0.001" label="Start" value={customStart} onChange={(event) => { setCustomStart(event.currentTarget.value) }} />
-<TextInput type="datetime-local" step="0.001" label="End" value={customEnd} onChange={(event) => { setCustomEnd(event.currentTarget.value) }} />
-<Button variant="light" onClick={() => { const start = new Date(customStart); const end = new Date(customEnd); const now = new Date(); if (!customStart || !customEnd || !Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || start >= end || end.getTime() - start.getTime() > 365 * 86400000 || end > new Date(now.getTime() + 60000)) { setCustomError('Enter a valid interval up to 365 days ending no more than one minute in the future.'); return } setZoomBase(null); setCustomError(''); setAppliedInterval({ start: start.toISOString(), end: end.toISOString() }); setRange('custom') }}>Apply interval</Button>
-<Text size="xs" c="dimmed">Timezone: {Intl.DateTimeFormat().resolvedOptions().timeZone}</Text>
-</Group>{customError && <Alert color="red" mb="sm">{customError}</Alert>}<Group justify="space-between" mb="sm">
-<Text size="sm" fw={600}>Overlay metrics</Text>
-<Group>
-<Checkbox label="Normalize each line to 0–100%" checked={normalized || new Set(history?.series.map((item) => item.unit)).size > 1} disabled={new Set(history?.series.map((item) => item.unit)).size > 1} onChange={(event) => setNormalized(event.currentTarget.checked)} />
-<Select aria-label="Network rate units" value={rateUnit} onChange={(value) => { if (value) setRateUnit(value as RateUnit) }} data={['B/s','kB/s','MB/s','GB/s','kb/s','Mb/s','Gb/s']} w={105} size="xs" />
-</Group>
-</Group>{historyError && <Alert color="red" title="History could not be loaded" mb="md">{historyError}<Button size="xs" variant="light" ml="sm" onClick={() => setRefresh((value) => value + 1)}>Retry</Button>
-</Alert>}{!history ? <Group>
-<Loader size="xs" />
-<Text size="sm" c="dimmed">Loading history…</Text>
-</Group> : history.metrics.length === 0 ? <Text c="dimmed">No measurements were recorded during this range.</Text> : <>
-<Checkbox.Group value={metricNames} onChange={(values) => setMetricNames(values.slice(0, 5))} description="Select up to five metrics. Label variants remain separate lines.">
-<Group>{history.metrics.map((name) => <Checkbox key={name} value={name} label={prettyName(name)} disabled={!metricNames.includes(name) && metricNames.length >= 5} />)}
-</Group>
-</Checkbox.Group>{history.series.length > 64 && <Alert color="yellow" mt="sm">More than 64 label variants match. Select fewer metrics to keep the chart readable.</Alert>}<div className="chart-frame">
-<LineChartWrapper loading={historyLoading} series={history.series.slice(0,64)} range={range} history={history} normalized={normalized} onZoom={(start, end) => { if (!zoomBase) setZoomBase({ range, interval: appliedInterval }); setCustomStart(toLocalInput(start)); setCustomEnd(toLocalInput(end)); setAppliedInterval({ start: start.toISOString(), end: end.toISOString() }); setCustomError(''); setRange('custom') }} rateUnit={rateUnit} />
-</div>{range === 'custom' && <Button size="xs" variant="default" mt="sm" onClick={() => { setCustomStart(zoomBase?.interval ? toLocalInput(new Date(zoomBase.interval.start)) : ''); setCustomEnd(zoomBase?.interval ? toLocalInput(new Date(zoomBase.interval.end)) : ''); setAppliedInterval(zoomBase?.interval ?? null); setRange(zoomBase?.range ?? '24h'); setZoomBase(null); setCustomError('') }}>Reset zoom</Button>}</>}</Card></Tabs.Panel>
-      </Tabs>
-        </Stack></Tabs.Panel>
-        <Tabs.Panel value="containers">      {selected.latest?.dockerContainers && selected.latest.dockerContainers.length > 0 && <Card withBorder radius="md" padding="lg">
-<Group justify="space-between" mb="md">
-<div>
-<Title order={3}>Docker containers</Title>
-<Text size="sm" c="dimmed">Containers from the latest Docker collection</Text>
-</div>
-<Badge variant="light">{selected.latest.dockerContainers.length}</Badge>
-</Group>
-<Table.ScrollContainer minWidth={520}>
-<Table>
-<Table.Thead>
-<Table.Tr>
-<Table.Th>Name</Table.Th>
-<Table.Th>Image</Table.Th>
-<Table.Th>State</Table.Th>
-<Table.Th>Container ID</Table.Th>
-</Table.Tr>
-</Table.Thead>
-<Table.Tbody>{selected.latest.dockerContainers.map((container) => <Table.Tr key={container.id}>
-<Table.Td>{container.name || '—'}</Table.Td>
-<Table.Td>{container.image || '—'}</Table.Td>
-<Table.Td>
-<StatusText color={container.state === 'running' ? 'green' : 'gray'}>{container.state}</StatusText>
-</Table.Td>
-<Table.Td>
-<Text size="xs" ff="monospace">{container.id.slice(0, 12)}</Text>
-</Table.Td>
-</Table.Tr>)}</Table.Tbody>
-</Table>
-</Table.ScrollContainer>
-</Card>}<Text size="sm" c="dimmed">Compose stack details are not yet available.</Text></Tabs.Panel>
-      </Tabs>
-    </Stack> : section === 'monitoring' && monitoringTab === 'dashboard' ? (!error || allDevices.length > 0) && <MonitoringOverview devices={allDevices} refresh={refresh} onOpen={(id) => openDevice(id, 'monitoring')} /> : devices.length === 0 ? <div className="device-empty">
-<Text fw={600}>{healthIssuesOnly ? 'No device health issues' : 'No devices yet'}</Text>
-<Text c="dimmed" size="sm" mt={6}>{healthIssuesOnly ? 'No stale devices or collection failures.' : 'Enrolled agents and discovered devices will appear here.'}</Text>
-</div> : <>
-      {healthIssuesOnly && <Text size="sm" c="dimmed" mb="md">Stale check-ins, failed devices and collection errors. Availability schedules can explain stale check-ins.</Text>}
-      <Group justify="space-between" mb="md">
-        <Group gap="xs">{(['healthy', 'stale', 'failed', 'unsupported'] as const).map((status) => <Badge key={status} color={statusColor[status]} variant="light">{allDevices.filter((device) => device.status === status).length} {statusLabel[status]}</Badge>)}</Group>
-        <SegmentedControl aria-label="Device view" value={inventoryView} onChange={changeInventoryView} data={[{ label: 'Cards', value: 'cards' }, { label: 'Table', value: 'table' }]} />
+  if (selectedId) {
+    if (!devices) return error ? <Alert color="red" title="Unable to load the device">{error}</Alert> : <div className="device-empty"><Loader size="sm" /></div>
+    if (!selected) return <div className="device-empty"><Text fw={600}>Device not found</Text><Text c="dimmed" size="sm" mt={6}>It may have been deleted.</Text><Button mt="md" variant="light" onClick={() => onNavigate(route('devices'))}>All devices</Button></div>
+    return <>
+      {error && <Alert color="red" mb="md" withCloseButton onClose={() => setError('')}>{error}</Alert>}
+      <DevicePage key={selected.id} device={selected} tab={current.sub} role={role} onNavigate={onNavigate}
+        onRefresh={() => setRefresh((v) => v + 1)} onReinstall={() => setReinstall(selected)}
+        onDeleted={() => { setDevices((list) => list?.filter((d) => d.id !== selected.id) ?? null); onNavigate(route('devices')) }} />
+      {modals}
+    </>
+  }
+  return <>
+    <DeviceList devices={devices} error={error} onNavigate={onNavigate} onAdd={() => setAddOpen(true)} onRefresh={() => setRefresh((v) => v + 1)} />
+    {modals}
+  </>
+}
+
+function DeviceList({ devices, error, onNavigate, onAdd, onRefresh }: { devices: Device[] | null; error: string; onNavigate: (route: Route) => void; onAdd: () => void; onRefresh: () => void }) {
+  const [view, setView] = useState<View>(storedView)
+  const [metric, setMetric] = useState<CompareMetric>('cpu')
+  const [range, setRange] = useState<CompareRange>('24h')
+  const trends = useTrends(devices, view === 'compare' ? range : '24h')
+  const rows = useMemo(() => deviceRows(devices ?? []), [devices])
+  const online = devices?.filter((d) => d.status === 'healthy').length ?? 0
+  function changeView(value: string) {
+    setView(value as View)
+    try { window.localStorage.setItem('vigara-device-view', value) } catch { /* The choice lasts for this visit when storage is unavailable. */ }
+  }
+  const meta = !devices ? 'Loading…' : !devices.length ? 'None enrolled yet' : `${devices.length} enrolled · ${online === devices.length ? (devices.length === 2 ? 'both' : 'all') + ' online' : `${online} online`}`
+
+  return <div className="vg-page">
+    <Group justify="space-between" align="flex-end" mb="lg">
+      <div><Title order={1}>Devices</Title><Text size="sm" c="dimmed" mt={4}>{meta}</Text></div>
+      <Group gap="sm">
+        <SegmentedControl size="xs" value={view} onChange={changeView} data={[{ value: 'table', label: 'Table' }, { value: 'compare', label: 'Compare' }]} aria-label="Device view" />
+        <Button variant="default" size="xs" onClick={onRefresh}>Refresh</Button>
+        <Button size="xs" onClick={onAdd}>Add device</Button>
       </Group>
-      {inventoryView === 'cards' ? <SimpleGrid cols={{ base: 1, sm: 2, lg: 3, xl: 4 }} spacing="md">
-        {devices.map((device) => <Card key={device.id} withBorder radius="md" padding="lg" className="device-summary-card">
-          <Stack gap="md" h="100%">
-            <Group justify="space-between" align="flex-start" wrap="nowrap">
-              <div className="device-card-identity"><Text fw={600} className="device-name">{device.name}</Text><Text size="xs" c="dimmed">{[device.platform, device.architecture].filter(Boolean).join(' · ') || 'Platform not reported'}</Text></div>
-              <StatusText color={statusColor[device.status]}>{statusLabel[device.status]}</StatusText>
-            </Group>
-            <SimpleGrid cols={2} spacing="md">
-              <ResourceMeter device={device} name="cpu_used_percent" label="CPU" />
-              <ResourceMeter device={device} name="memory_used_percent" label="Memory" />
-            </SimpleGrid>
-            {section === 'monitoring' && <NetworkRates device={device} />}
-            {healthIssuesOnly && <DeviceHealthIssues device={device} />}
-            <Text size="xs" c="dimmed" title={timeLabel(device.lastSeenAt)}>Last check-in · {relativeLabel(device.lastSeenAt)}</Text>
-            <Button variant="light" fullWidth mt="auto" onClick={() => openDevice(device.id, section === 'monitoring' ? 'monitoring' : 'info')} aria-label={`View ${device.name}`}>View device</Button>
-          </Stack>
-        </Card>)}
-      </SimpleGrid> : <Card withBorder radius="md" padding={0} className="inventory-card">
-<div className="table-scroll">
-<Table highlightOnHover verticalSpacing="md" horizontalSpacing="lg">
-<Table.Thead>
-<Table.Tr>
-<Table.Th>Device</Table.Th>
-<Table.Th>Platform</Table.Th>
-<Table.Th>Status</Table.Th>
-<Table.Th>Last check-in</Table.Th>
-{section === 'monitoring' ? <><Table.Th>CPU</Table.Th><Table.Th>Memory</Table.Th><Table.Th>Network receive / send</Table.Th></> : <Table.Th>Basic stats</Table.Th>}
-{healthIssuesOnly && <Table.Th>Health issues</Table.Th>}
-<Table.Th />
-</Table.Tr>
-</Table.Thead>
-<Table.Tbody>{devices.map((device) => <Table.Tr key={device.id} className="device-row" onClick={() => openDevice(device.id, section === 'monitoring' ? 'monitoring' : 'info')} onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); openDevice(device.id, section === 'monitoring' ? 'monitoring' : 'info') } }} tabIndex={0} aria-label={`Open device ${device.name}`}>
+    </Group>
+    {error && <Alert color="red" mb="md" title="Unable to load devices">{error}</Alert>}
+    {!devices ? !error && <div className="device-empty"><Loader size="sm" /><Text c="dimmed" mt="sm">Loading devices…</Text></div>
+      : !devices.length ? <div className="device-empty"><Text fw={600}>No devices yet</Text><Text c="dimmed" size="sm" mt={6}>Install the agent on a computer to see it here.</Text><Button mt="md" onClick={onAdd}>Add device</Button></div>
+      : view === 'compare' ? <Compare devices={devices} trends={trends} metric={metric} range={range} onMetric={setMetric} onRange={setRange} />
+      : <Panel flush><div className="table-scroll"><Table className="vg-table vg-device-table" highlightOnHover verticalSpacing={9}>
+        <Table.Thead><Table.Tr><Table.Th>Device</Table.Th><Table.Th>CPU · 24 h</Table.Th><Table.Th>Memory</Table.Th><Table.Th>Disk (fullest)</Table.Th><Table.Th ta="right">Containers</Table.Th><Table.Th>Agent</Table.Th><Table.Th ta="right">Check-in</Table.Th></Table.Tr></Table.Thead>
+        <Table.Tbody>{rows.map((row) => {
+          const device = devices.find((d) => d.id === row.id)!
+          const health = agentHealth(device)
+          const os = osName(device.latest?.host, device.platform)
+          const open = () => onNavigate(route('devices', row.id))
+          return <Table.Tr key={row.id} className="device-row" tabIndex={0} onClick={open} onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); open() } }} aria-label={`Open device ${row.name}`}>
+            <Table.Td><span className="vg-cell-name"><span className="vg-status-dot" data-tone={row.tone} title={row.status} /><span><b>{row.name}</b><small>{[row.detail, os].filter(Boolean).join(' · ') || row.status}</small></span></span></Table.Td>
+            <Table.Td><span className="vg-metric"><Sparkline width={80} values={trends[row.id] ? compareValues(trends[row.id], 'cpu') : []} label={`${row.name} CPU over 24 hours`} /><span className="vg-num">{row.cpu === null ? '—' : `${row.cpu.toFixed(1)}%`}</span></span></Table.Td>
+            <Table.Td><MetricBar width={64} value={row.memory} label={`${row.name} memory used`} /></Table.Td>
+            <Table.Td><span className="vg-metric"><MetricBar width={64} warnAt={85} value={row.disk} label={`${row.name} fullest disk used`} />{row.diskMount && <small className="vg-dim vg-mount">{row.diskMount}</small>}</span></Table.Td>
+            <Table.Td ta="right" className="vg-num">{row.containers ?? '—'}</Table.Td>
+            <Table.Td><span className="vg-agent" title={`${health.label} · ${health.detail}`}><span className="vg-status-dot" data-tone={health.tone} aria-hidden="true" />{device.agentId ? (device.latest?.host?.agentVersion || device.agentVersion || 'unknown') : 'none'}</span></Table.Td>
+            <Table.Td ta="right"><Text size="sm" c="dimmed" title={row.lastSeenAt ? new Date(row.lastSeenAt).toLocaleString() : undefined}>{relativeTime(row.lastSeenAt)}</Text></Table.Td>
+          </Table.Tr>
+        })}</Table.Tbody>
+      </Table></div></Panel>}
+  </div>
+}
 
-<Table.Td>
-<Text fw={600}>{device.name}</Text>
-<Text size="xs" c="dimmed">{device.platformId || device.id.slice(0, 8)}</Text>
-</Table.Td>
-<Table.Td>{[device.platform, device.architecture].filter(Boolean).join(' · ') || 'Unknown'}</Table.Td>
-<Table.Td>
-<StatusText title={device.status === 'stale' ? staleReason(device) : undefined} color={statusColor[device.status]}>{statusLabel[device.status]}</StatusText><TelemetryDeliveryChip device={device} />
-</Table.Td>
-<Table.Td>
-<Text size="sm">{relativeLabel(device.lastSeenAt)}</Text>
-<Text size="xs" c="dimmed">{timeLabel(device.lastSeenAt)}</Text>
-</Table.Td>
-{section === 'monitoring' ? <>
-<Table.Td>{summaryMetric(device, 'cpu_used_percent')}</Table.Td>
-<Table.Td>{summaryMetric(device, 'memory_used_percent')}</Table.Td>
-<Table.Td><Text size="sm">↓ {summaryMetric(device, 'network_receive_bytes_per_second', 'MB/s')}</Text><Text size="sm">↑ {summaryMetric(device, 'network_send_bytes_per_second', 'MB/s')}</Text></Table.Td>
-</> : <Table.Td><Text size="sm">CPU: {summaryMetric(device, 'cpu_used_percent')}</Text><Text size="sm">Memory: {summaryMetric(device, 'memory_used_percent')}</Text></Table.Td>}
-{healthIssuesOnly && <Table.Td><DeviceHealthIssues device={device} /></Table.Td>}
-<Table.Td>
-<Button size="xs" variant="light" onClick={(event) => { event.stopPropagation(); openDevice(device.id, section === 'monitoring' ? 'monitoring' : 'info') }} aria-label={`View ${device.name}`}>View device</Button>
-</Table.Td>
-</Table.Tr>)}</Table.Tbody>
-</Table>
-</div>
-</Card>}
-<Group justify="space-between" mt="sm">
-<Text size="sm" c="dimmed">Showing {pageOffset + 1}–{Math.min(pageOffset + devices.length, total)} of {total}</Text>
-{total > pageSize && <Group>
-<Button size="xs" variant="default" disabled={pageOffset === 0} onClick={() => setOffset(Math.max(0, pageOffset - pageSize))}>Previous</Button>
-<Button size="xs" variant="default" disabled={pageOffset + devices.length >= total} onClick={() => setOffset(pageOffset + pageSize)}>Next</Button>
-</Group>}
-</Group>
-    </>}
-      </Tabs.Panel>
-    </Tabs>
-    <AddDevice opened={addDeviceOpen} onClose={() => setAddDeviceOpen(false)} />
-    {reinstallDevice && <AddDevice key={reinstallDevice.id} device={reinstallDevice} opened onClose={() => { setReinstallDevice(null); setRefresh((value) => value + 1) }} />}
-  </section>
+const metricOptions: { value: CompareMetric; label: string }[] = [{ value: 'cpu', label: 'CPU' }, { value: 'memory', label: 'Memory' }, { value: 'disk', label: 'Disk' }, { value: 'network', label: 'Network' }]
+
+function Compare({ devices, trends, metric, range, onMetric, onRange }: { devices: Device[]; trends: Record<string, TrendResponse>; metric: CompareMetric; range: CompareRange; onMetric: (m: CompareMetric) => void; onRange: (r: CompareRange) => void }) {
+  const loaded = devices.filter((d) => trends[d.id])
+  const lines = loaded.filter((d) => compareValues(trends[d.id], metric).some((v) => v !== null))
+  const data = useMemo(() => compareRows(lines.map((d) => ({ id: d.id, trend: trends[d.id] })), metric), [lines, trends, metric])
+  const percent = metric !== 'network'
+  const format = (v: number) => percent ? `${v.toFixed(1)}%` : formatMetric(v, 'By/s', 'MB/s')
+  const missing = devices.filter((d) => trends[d.id] && !lines.includes(d))
+  return <Panel title={metric === 'disk' ? 'Fullest filesystem, % used' : metric === 'network' ? 'Network, receive + send' : `${metricOptions.find((m) => m.value === metric)!.label} use`} actions={<>
+    <SegmentedControl size="xs" value={metric} onChange={(v) => onMetric(v as CompareMetric)} data={metricOptions} aria-label="Metric" />
+    <SegmentedControl size="xs" value={range} onChange={(v) => onRange(v as CompareRange)} data={['6h', '24h', '7d', '30d']} aria-label="Range" />
+  </>}>
+    {loaded.length < Math.min(devices.length, 24) && !lines.length ? <Group h={300} justify="center"><Loader size="sm" /></Group>
+      : !lines.length ? <Text c="dimmed" size="sm">No device reported this metric in the range.</Text>
+      : <LineChart h={320} data={data} dataKey="timestamp" connectNulls={false} withDots={false} strokeWidth={1.5} curveType="linear" withLegend legendProps={{ verticalAlign: 'bottom', height: 40 }}
+        series={lines.map((d, i) => ({ name: d.id, label: d.name, color: lineColors[i % lineColors.length] }))}
+        valueFormatter={format} yAxisProps={{ domain: percent ? [0, 100] : [0, 'auto'], width: percent ? 40 : 70, tickFormatter: (v: number) => percent ? `${v}%` : formatMetric(v, 'By/s', 'MB/s') }}
+        xAxisProps={{ type: 'number', domain: ['dataMin', 'dataMax'], tickFormatter: (v: number) => range === '7d' || range === '30d' ? new Date(v).toLocaleDateString([], { month: 'short', day: 'numeric' }) : new Date(v).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }}
+        tooltipProps={{ labelFormatter: (v) => new Date(Number(v)).toLocaleString() }} />}
+    {missing.length > 0 && <Text size="xs" c="dimmed" mt="xs">No data in this range: {missing.map((d) => d.name).join(', ')}</Text>}
+    {devices.length > 24 && <Text size="xs" c="dimmed" mt="xs">Showing the first 24 devices.</Text>}
+  </Panel>
 }

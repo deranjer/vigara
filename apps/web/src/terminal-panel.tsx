@@ -7,7 +7,7 @@ import { streamUrl } from './container-utils'
 import { describeTerminalEnd, deviceTerminalPath, idleMinutes, isValidExecUser, parseTerminalEnd, resizeMessage, shells, splitInput, terminalBlocker, terminalPath } from './terminal-utils'
 
 type Status = 'idle' | 'connecting' | 'live' | 'ended' | 'failed'
-type Props = { hostId: string; reference: string; name: string; running: boolean | null; role: string; hostTier?: string; device?: { platform: string; capabilities: string[] } }
+type Props = { hostId: string; reference: string; name: string; running: boolean | null; role: string; hostTier?: string; device?: { platform: string; capabilities: string[] }; compact?: boolean; height?: number }
 
 const badges: Record<Status, { color: string; label: string }> = {
   idle: { color: 'gray', label: 'Not connected' }, connecting: { color: 'blue', label: 'Connecting…' }, live: { color: 'green', label: 'Connected' },
@@ -20,7 +20,7 @@ const inputPiece = 256 * 1024
 type Live = { socket: WebSocket; terminal: Terminal; observer: ResizeObserver }
 
 /** An interactive container or device shell over the server's terminal WebSocket. */
-export function TerminalPanel({ hostId, reference, name, running, role, hostTier, device }: Props) {
+export function TerminalPanel({ hostId, reference, name, running, role, hostTier, device, compact = false, height = 460 }: Props) {
   const [shell, setShell] = useState<string | null>('auto')
   const [user, setUser] = useState('')
   const [status, setStatus] = useState<Status>('idle')
@@ -94,7 +94,7 @@ export function TerminalPanel({ hostId, reference, name, running, role, hostTier
     ? role !== 'operator' && role !== 'admin' ? 'Your account cannot open device shells.'
       : !hostId ? 'This device has no enrolled agent.'
       : device.platform !== 'linux' && device.platform !== 'windows' ? 'Device shells are available for Linux and Windows.'
-      : !device.capabilities.includes('host.exec') ? 'Device shells are not enabled. Open Device info → Reinstall agent and enable device shell access.' : null
+      : !device.capabilities.includes('host.exec') ? 'Device shells are not enabled. Open the device’s Settings tab → Reinstall agent and enable device shell access.' : null
     : terminalBlocker(role, hostTier, running)
   if (blocker) return <Alert color="gray" title="Terminal unavailable">{blocker}</Alert>
 
@@ -102,19 +102,20 @@ export function TerminalPanel({ hostId, reference, name, running, role, hostTier
   const active = status === 'connecting' || status === 'live'
   const userError = isValidExecUser(user) ? undefined : 'Use a user name or number, optionally followed by :group.'
   return <Stack gap="sm">
-    <Alert color="yellow" title={device ? 'This opens a shell on the device' : 'This opens a shell inside the container'}>
+    {compact ? <Text size="xs" c="dimmed">Commands run on this device as the agent service account (often root or LocalSystem). Opening and closing is audited, never what you type. The session closes after {idleMinutes} minutes without typing, or when you close this panel.</Text>
+    : <Alert color="yellow" title={device ? 'This opens a shell on the device' : 'This opens a shell inside the container'}>
       {device ? 'Commands run directly on this device as the agent service account, which may be root or LocalSystem. ' : "Anything you type runs with that container's privileges, and a shell in a container is often root. "}Opening and closing a terminal is recorded in the audit log (never what you type or see).
       The session closes after {idleMinutes} minutes without typing, and when you leave this tab.
-    </Alert>
+    </Alert>}
     <Group gap="sm" align="flex-end">
-      <Select label="Shell" value={shell} onChange={setShell} data={device?.platform === 'windows' ? [{ value: 'auto', label: 'PowerShell (pwsh if available)' }, { value: 'powershell', label: 'PowerShell' }] : [...shells]} allowDeselect={false} disabled={active} w={300} />
+      <Select label="Shell" value={shell} onChange={setShell} data={device?.platform === 'windows' ? [{ value: 'auto', label: 'PowerShell (pwsh if available)' }, { value: 'powershell', label: 'PowerShell' }] : [...shells]} allowDeselect={false} disabled={active} w={compact ? 240 : 300} size={compact ? 'xs' : undefined} />
       {!device && <TextInput label="Run as" placeholder="Container default" value={user} onChange={(event) => setUser(event.currentTarget.value)} disabled={active} error={userError} w={180} />}
       {active ? <Button color="red" variant="light" onClick={() => { close(); setStatus('idle'); setMessage('') }}>Disconnect</Button>
         : <Button disabled={Boolean(userError)} onClick={connect}>{status === 'idle' ? 'Open terminal' : 'Reconnect'}</Button>}
       <Badge color={badge.color} variant="light" mb={6}>{badge.label}</Badge>
     </Group>
     {status === 'failed' && <Alert color="red" title="The terminal disconnected">{message}</Alert>}
-    <div ref={holder} role="application" aria-label={`Terminal for ${name}`} style={{ height: 460, background: '#0b0d10', borderRadius: 8, padding: 8, display: status === 'idle' ? 'none' : 'block' }} />
+    <div ref={holder} role="application" aria-label={`Terminal for ${name}`} style={{ height, background: '#0b0d10', borderRadius: 8, padding: 8, display: status === 'idle' ? 'none' : 'block' }} />
     {status === 'idle' && <Text size="sm" c="dimmed">Choose a shell and press Open terminal.</Text>}
   </Stack>
 }

@@ -1,14 +1,13 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { Alert, Badge, Button, Card, Checkbox, Group, Loader, MultiSelect, Modal, Progress, SimpleGrid, Stack, Text, TextInput, Title } from '@mantine/core'
 import { IconBrandWindowsFilled, IconBrandAppleFilled, IconBrandDebian, IconBrandRedhat, IconBrandUbuntu, IconDeviceDesktopQuestion, IconTerminal2 } from '@tabler/icons-react'
-import { type Device } from './devices'
+import { type Device } from './device-types'
 import { driveUsage, operatingSystem, type HardwareComponent } from './device-info-utils'
 import { formatDuration, formatMetric } from './metric-utils'
 import { AgentUpdate } from './agent-update'
 
 type Awake = { weekdays: string[]; start: string; end: string; timezone: string }
 type Availability = { awake: Awake | null; expectedAwake: boolean; maintenanceActive: boolean; maintenance: { id: string; startsAt: string; endsAt: string }[] }
-type Incident = { id: string; dimension: string; status: string; summary: string; startedAt: string }
 const weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 async function read<T>(path: string): Promise<T> {
   const response = await fetch(path, { credentials: 'same-origin' })
@@ -154,29 +153,4 @@ function DeleteDevice({ device, onDeleted }: { device: Device; onDeleted: () => 
       </Stack></form>
     </Modal>
   </Card>
-}
-
-export function MonitoringOverview({ devices, refresh, onOpen }: { devices: Device[]; refresh: number; onOpen: (id: string) => void }) {
-  const [incidents, setIncidents] = useState<Incident[] | null>(null)
-  const [error, setError] = useState('')
-  const [expanded, setExpanded] = useState(false)
-  useEffect(() => {
-    let active = true
-    void read<Incident[]>('/api/alerts/incidents').then((items) => { if (active) {setIncidents(items); setError('')} }).catch((cause: unknown) => { if (active) setError(cause instanceof Error ? cause.message : 'Could not load alerts.') })
-    return () => { active = false }
-  }, [refresh])
-  const firing = incidents?.filter((incident) => incident.status === 'firing') ?? []
-  const issues = devices.filter((device) => device.status === 'failed' || device.status === 'stale' || !!device.collectionErrors?.length)
-  return <Stack mb="xl">
-    <SimpleGrid cols={{base: 2, lg: 4}}>{[
-      ['Devices', devices.length], ['Healthy', devices.filter((device) => device.status === 'healthy').length], ['Devices with issues', issues.length], ['Firing alerts', error ? 'Unavailable' : incidents ? firing.length : '…'],
-    ].map(([label, count]) => <Card key={label} withBorder padding="lg"><Text c="dimmed" size="sm">{label}</Text><Text size="xl" fw={700}>{count}</Text></Card>)}</SimpleGrid>
-    <Card withBorder padding="lg"><Group justify="space-between" mb="md"><Title order={3}>Monitoring alerts</Title><Badge variant="light">Refreshes every 30 seconds</Badge></Group>
-      {error ? <Alert color="red">{error}</Alert> : incidents === null ? <Loader size="sm" /> : !firing.length ? <Text c="dimmed" size="sm">No firing incidents in the latest alert history.</Text> : <Stack>{(expanded ? firing : firing.slice(0, 10)).map((incident) => {
-        const device = devices.find((item) => item.id === incident.dimension.split('/')[0])
-        return <Alert color="red" key={incident.id} title={device?.name || 'Monitoring incident'}><Text size="sm">{incident.summary}</Text><Text size="xs" mt={4}>Since {date(incident.startedAt)}</Text>{device && <Button size="xs" variant="light" mt="sm" onClick={() => onOpen(device.id)}>Open device monitoring</Button>}</Alert>
-      })}{firing.length > 10 && <Button variant="subtle" onClick={() => setExpanded(!expanded)}>{expanded ? 'Show fewer alerts' : `Show all ${firing.length} alerts`}</Button>}</Stack>}
-      {incidents?.length === 500 && <Text size="xs" c="dimmed" mt="sm">Showing incidents from the latest 500 records returned by the server.</Text>}
-    </Card>
-  </Stack>
 }
