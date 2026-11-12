@@ -79,7 +79,7 @@ export function DeviceOverview({ device, host, onNavigate, onOpenTab }: { device
             : chart.every((row) => row.cpu === null && row.memory === null) ? <Text c="dimmed" size="sm">No measurements in this range.</Text>
             : <LineChart h={200} data={chart} dataKey="timestamp" connectNulls={false} withDots={false} strokeWidth={1.5} curveType="linear" withLegend legendProps={{ verticalAlign: 'top', height: 28 }}
               series={[{ name: 'cpu', label: 'CPU', color: 'blue.6' }, { name: 'memory', label: 'Memory', color: 'teal.6' }]}
-              valueFormatter={(v) => `${v.toFixed(1)}%`} yAxisProps={{ domain: [0, 100], width: 36 }}
+              valueFormatter={(v) => `${v.toFixed(1)}%`} yAxisProps={{ domain: [0, 100], width: 48, tickFormatter: (v: number) => `${v}%` }}
               xAxisProps={{ type: 'number', domain: ['dataMin', 'dataMax'], tickFormatter: (v: number) => range === '7d' ? new Date(v).toLocaleDateString([], { weekday: 'short' }) : new Date(v).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }}
               tooltipProps={{ labelFormatter: (v) => new Date(Number(v)).toLocaleString() }} />}
         </Panel>

@@ -143,7 +143,7 @@ function Compare({ devices, trends, metric, range, onMetric, onRange }: { device
       : !lines.length ? <Text c="dimmed" size="sm">No device reported this metric in the range.</Text>
       : <LineChart h={320} data={data} dataKey="timestamp" connectNulls={false} withDots={false} strokeWidth={1.5} curveType="linear" withLegend legendProps={{ verticalAlign: 'bottom', height: 40 }}
         series={lines.map((d, i) => ({ name: d.id, label: d.name, color: lineColors[i % lineColors.length] }))}
-        valueFormatter={format} yAxisProps={{ domain: percent ? [0, 100] : [0, 'auto'], width: percent ? 40 : 70, tickFormatter: (v: number) => percent ? `${v}%` : formatMetric(v, 'By/s', 'MB/s') }}
+        valueFormatter={format} yAxisProps={{ domain: percent ? [0, 100] : [0, 'auto'], width: percent ? 48 : 80, tickFormatter: (v: number) => percent ? `${v}%` : formatMetric(v, 'By/s', 'MB/s') }}
         xAxisProps={{ type: 'number', domain: ['dataMin', 'dataMax'], tickFormatter: (v: number) => range === '7d' || range === '30d' ? new Date(v).toLocaleDateString([], { month: 'short', day: 'numeric' }) : new Date(v).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }}
         tooltipProps={{ labelFormatter: (v) => new Date(Number(v)).toLocaleString() }} />}
     {missing.length > 0 && <Text size="xs" c="dimmed" mt="xs">No data in this range: {missing.map((d) => d.name).join(', ')}</Text>}
