@@ -1,18 +1,24 @@
-import { StackUpdatePolicy } from './image-updates'
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
-import { Alert, Badge, Button, Card, Checkbox, Code, Group, Modal, Select, Stack, Tabs, Text, TextInput, Title } from '@mantine/core'
+import { Alert, Button, Checkbox, Code, Group, Menu, Modal, Stack, Tabs, Text, TextInput, Title } from '@mantine/core'
+import { useMediaQuery } from '@mantine/hooks'
+import { IconDots, IconLock, IconRefresh, IconRocket } from '@tabler/icons-react'
+import { StackUpdatePolicy } from './image-updates'
+import { relativeTime } from './overview-utils'
 import { route as routeOf, type Route } from './route'
-
-import { StackList } from './stack-list'
 import { isComposeFile } from './compose-editor-utils'
 import { SecretEditor } from './secret-editor'
+import { runStackActions } from './stack-actions'
 import { StackDiff } from './stack-diff'
-import { StackLoading } from './stack-loading'
-import { StackContainersTab, StackRuntime } from './stack-runtime'
-import type { StackRuntimeStatus } from './stack-list-utils'
 import { StackImageTags } from './stack-image-tags'
 import { setServiceImage } from './stack-image-utils'
+import { StackList } from './stack-list'
+import { isReverseProxy, stackActionBlocker, stackActionTargets, stackRuntimeBadge, type StackAction, type StackHost, type StackSummary } from './stack-list-utils'
+import { StackLoading } from './stack-loading'
+import { useStackRuntime } from './stack-runtime'
+import { ActivityTimeline, DraftBar, FileList, ReviewSheet, ServicesRail } from './stack-workspace'
+import { changedPaths, deploymentTitle, draftSummary, firstReviewStep, type Deployment, type Revision, type ReviewStep } from './stack-workspace-utils'
 import { StatusText } from './status'
+import { Panel } from './ui'
 
 const ComposeEditor = lazy(() => import('./compose-editor'))
 
@@ -20,8 +26,6 @@ type Files = Record<string, string>
 type Snapshot = { id: string; commit: string; files: Files }
 type Draft = { digest?: string; base: string; files: Files | null; version: number }
 type Detail = { projectName: string; snapshot: Snapshot; draft: Draft; branch: string; assigned: boolean; agentId: string; digest: string }
-type Revision = { commit: string; message: string; at: string }
-type Deployment = { id: string; commit: string; digest: string; status: string; stage: string; message: string; createdAt: string }
 type Plan = { images: Record<string, string>; tracking?: Record<string, string>; token: string; projectName: string; services: string[] }
 
 async function request<T>(url: string, method = 'GET', body?: unknown): Promise<T> {
@@ -46,14 +50,20 @@ export function Stacks({ route, role, onNavigate }: { route: Route; role: string
  return <StackList role={role} onOpen={(id) => onNavigate(routeOf('stacks', id))} onPull={(id) => onNavigate(routeOf('stacks', id, 'pull'))} />
 }
 
+function readCollapsed() { try { return localStorage.getItem('vigara.stack.rail') === 'collapsed' } catch { return false } }
+
+/**
+ * A stack as a workspace: files, the editor and live services side by side, one bar for the draft,
+ * and one Review & deploy sheet. Phones get a read-only view that can still deploy, pull and restart.
+ */
 function StackEditor({ id, projectName, onBack, role, onNavigate, pullOnOpen }: { id: string; projectName: string; onBack: () => void; role: string; onNavigate: (route: Route) => void; pullOnOpen?: boolean }) {
   const [detail, setDetail] = useState<Detail | null>(null)
   const [files, setFiles] = useState<Files>({})
   const [draft, setDraft] = useState<Draft>({ base: '', files: null, version: 0 })
   const [file, setFile] = useState<string | null>('compose.yaml')
   const [tab, setTab] = useState<string | null>('files')
-  const [containerStatus, setContainerStatus] = useState<StackRuntimeStatus>({ color: 'gray', label: 'Loading containers', count: '…' })
   const [history, setHistory] = useState<Revision[]>([])
+  const [historyLoading, setHistoryLoading] = useState(false)
   const [jobs, setJobs] = useState<Deployment[]>([])
   const [actionBusy, setBusy] = useState(false)
   const [secretBusy, setSecretBusy] = useState(false)
@@ -62,20 +72,27 @@ function StackEditor({ id, projectName, onBack, role, onNavigate, pullOnOpen }: 
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
-  const [newPath, setNewPath] = useState('')
   const [plan, setPlan] = useState<Plan | null>(null)
+  const [planCommit, setPlanCommit] = useState('')
   const [pull, setPull] = useState(false)
   const [recreate, setRecreate] = useState(false)
+  const [review, setReview] = useState<ReviewStep | null>(null)
+  const [deployCommit, setDeployCommit] = useState('')
   const [tagImages, setTagImages] = useState<Record<string, string> | null>(null)
   const [discarding, setDiscarding] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deleteConfirm, setDeleteConfirm] = useState('')
   const [skipDevice, setSkipDevice] = useState(false)
+  const [stopping, setStopping] = useState(false)
+  const [outcomes, setOutcomes] = useState<{ name: string; ok: boolean; message: string }[]>([])
   const [remote, setRemote] = useState<Snapshot | null>(null)
+  const [railCollapsed, setRailCollapsed] = useState(readCollapsed)
+  const phone = useMediaQuery('(max-width: 47.99em)') ?? false
   const filesRef = useRef(files)
   filesRef.current = files
   const dirty = detail ? !equal(files, detail.snapshot.files) : false
   const unpersisted = draft.files ? !equal(files, draft.files) : dirty
+  const runtime = useStackRuntime(id, jobs[0] ? `${jobs[0].id}:${jobs[0].status}` : '')
 
   async function load(initial: boolean) {
     const value = await request<Detail>(base(id))
@@ -85,7 +102,7 @@ function StackEditor({ id, projectName, onBack, role, onNavigate, pullOnOpen }: 
       setFiles(next); setFile(next['compose.yaml'] !== undefined ? 'compose.yaml' : Object.keys(next)[0] ?? null)
     } else {
       setRemote(value.snapshot)
-      setNotice(value.snapshot.commit !== detail?.snapshot.commit ? 'Fetched the latest saved version. Your editor contents are preserved; compare the versions before replacing your draft.' : 'The saved version is up to date. Your editor contents are preserved.')
+      setNotice(value.snapshot.commit !== detail?.snapshot.commit ? 'Fetched the latest saved version. Your editor contents are preserved; compare the versions under Activity before replacing your draft.' : 'The saved version is up to date. Your editor contents are preserved.')
     }
     return value
   }
@@ -96,7 +113,6 @@ function StackEditor({ id, projectName, onBack, role, onNavigate, pullOnOpen }: 
       setDetail(value); setDraft(value.draft)
       const next = value.draft.files ?? (Object.keys(value.snapshot.files).length ? value.snapshot.files : starter(id, value.projectName || projectName))
       setFiles(next); setFile(next['compose.yaml'] !== undefined ? 'compose.yaml' : Object.keys(next)[0] ?? null)
-      if (value.draft.files) setNotice('Restored your saved draft. Running services are unchanged.')
     }).catch((cause: Error) => { if (active) setError(cause.message) }).finally(() => { if (active) setLoading(false) })
     return () => { active = false }
     // The editor is keyed by stack ID; later fetches never overwrite its draft.
@@ -113,13 +129,17 @@ function StackEditor({ id, projectName, onBack, role, onNavigate, pullOnOpen }: 
     window.addEventListener('beforeunload', warn)
     return () => window.removeEventListener('beforeunload', warn)
   }, [dirty, unpersisted])
+  // Leaving through the breadcrumb, the sidebar or a link stores unsaved edits as the draft first.
+  const leaving = useRef({ unpersisted, persistDraft: () => Promise.resolve(draft) })
+  leaving.current = { unpersisted, persistDraft: () => persistDraft() }
+  useEffect(() => () => { if (leaving.current.unpersisted) void leaving.current.persistDraft().catch(() => undefined) }, [])
   // "Pull & recreate" in the stack list lands here (#/stacks/<id>/pull) and opens the same review.
   const pullStarted = useRef(false)
   useEffect(() => {
     if (!pullOnOpen || !detail || pullStarted.current) return
     pullStarted.current = true
     onNavigate(routeOf('stacks', id))
-    if (detail.snapshot.commit && detail.assigned && !detail.draft.files) void action(() => preview(true))
+    if (detail.snapshot.commit && detail.assigned && !detail.draft.files) openPull()
     // Runs once, when the stack has loaded; the ref keeps later reloads from reopening it.
   }, [pullOnOpen, detail])
 
@@ -128,16 +148,24 @@ function StackEditor({ id, projectName, onBack, role, onNavigate, pullOnOpen }: 
     const next = await request<Draft>(`${base(id)}/draft`, 'PUT', { base: draft.base || detail?.snapshot.commit || '', files: nextFiles, version: draft.version })
     setDraft(next); return next
   }
-  async function save() {
+  /** Commits the draft to Git. Returns the new commit, or null when Git has not confirmed the push. */
+  async function save(): Promise<string | null> {
     const next = await persistDraft()
     const result = await request<{ state: string; commit: string }>(`${base(id)}/save`, 'POST', { version: next.version })
-    if (result.state === 'pendingPush') { setNotice('Pending sync: your draft is stored, but Git has not confirmed the push. Retry Save to sync it. This version cannot be deployed yet.'); return }
-    await load(true); setPlan(null); setNotice(`Saved revision ${short(result.commit)} to ${detail?.branch}. Running services are unchanged.`)
+    if (result.state === 'pendingPush') { setNotice('Pending sync: your draft is stored, but Git has not confirmed the push. Commit again to sync it. This version cannot be deployed yet.'); return null }
+    await load(true); setPlan(null); setNotice(`Committed ${short(result.commit)} to ${detail?.branch}. Running services are unchanged.`)
+    return result.commit
   }
-  async function preview(recreateStack: boolean) {
-    setPull(recreateStack); setRecreate(recreateStack)
-    setPlan(await request<Plan>(`${base(id)}/plan`, 'POST', { commit: detail?.snapshot.commit }))
+  async function preparePlan(recreateStack: boolean, commit = detail?.snapshot.commit ?? '') {
+    setPull(recreateStack); setRecreate(recreateStack); setPlan(null); setPlanCommit(commit)
+    setPlan(await request<Plan>(`${base(id)}/plan`, 'POST', { commit }))
   }
+  function openReview() {
+    const step = firstReviewStep(dirty)
+    setReview(step); setError('')
+    if (step === 'plan') void action(() => preparePlan(false))
+  }
+  function openPull() { setReview('plan'); void action(() => preparePlan(true)) }
   async function selectTag(service: string, image: string) {
     const updated = setServiceImage(filesRef.current, service, image)
     setFiles(updated); filesRef.current = updated; setPlan(null)
@@ -145,55 +173,142 @@ function StackEditor({ id, projectName, onBack, role, onNavigate, pullOnOpen }: 
     const saved = await request<{ state: string; commit: string }>(`${base(id)}/save`, 'POST', { version: next.version })
     setTagImages(null)
     if (saved.state !== 'saved') {
-      setNotice('The selected tag is stored in your draft. Retry Save to finish syncing Git before deployment.'); return
+      setNotice('The selected tag is stored in your draft. Commit again to finish syncing Git before deployment.'); return
     }
     await load(true)
-    setNotice(`Saved ${service}: ${image}. Review the deployment before applying it.`)
-    setPull(true); setRecreate(true)
-    setPlan(await request<Plan>(`${base(id)}/plan`, 'POST', { commit: saved.commit }))
+    setNotice(`Committed ${service}: ${image}. Review the deployment before applying it.`)
+    setReview('plan')
+    await preparePlan(true, saved.commit)
   }
+  async function runAction(kind: StackAction) {
+    setOutcomes([])
+    // Choose current container IDs immediately before the action, as in the stack list.
+    const [listing, inventory] = await Promise.all([request<{ stacks: StackSummary[] }>('/api/stacks'), request<{ hosts: StackHost[] }>('/api/containers')])
+    runtime.lock.current = true
+    try { setOutcomes(await runStackActions(listing.stacks, inventory.hosts, role, kind, id)) } finally { runtime.lock.current = false; runtime.reload() }
+  }
+
   if (loading) return <StackLoading />
   if (!detail) return <Stack><Alert color="red">{error}</Alert><Button variant="default" onClick={onBack}>All stacks</Button></Stack>
   const activeJob = jobs.find((job) => ['queued', 'running', 'unknown'].includes(job.status))
   const deployed = jobs.find((job) => job.status === 'succeeded')
+  const deployJob = deployCommit ? jobs.find((job) => job.commit === deployCommit) ?? null : null
   const selectedContent = file ? files[file] ?? '' : ''
   const encrypted = file?.endsWith('.sops') ?? false
-  return <section className="devices-page"><Stack gap="lg">
-    <Group justify="space-between"><div><Text size="sm" c="dimmed" tt="uppercase">Compose stack</Text><Title order={1}>{id}</Title><Text c="dimmed">Branch {detail.branch} · Project {detail.projectName || projectName}</Text></div><Button variant="default" disabled={busy} onClick={() => { if (unpersisted) { void action(async () => { await persistDraft(); onBack() }) } else onBack() }}>← All stacks</Button></Group>
-    {error && <Alert color="red" title="Stack operation could not complete" withCloseButton onClose={() => setError('')}>{error}</Alert>}
-    {notice && <Alert color="blue" withCloseButton onClose={() => setNotice('')}>{notice}</Alert>}
-    <Group gap="xs"><Badge variant="light">Saved: {short(detail.snapshot.commit)}</Badge><Badge color="gray" variant="light">Last deployed: {deployed ? short(deployed.commit) : 'Never'}</Badge>{dirty && <Badge color="yellow">Draft changes</Badge>}{deployed && deployed.digest !== detail.digest && <Badge color="orange">Saved changes waiting to deploy</Badge>}</Group>
-    <Group gap="xs">
-      <Button variant="light" loading={actionBusy} disabled={busy || !detail.snapshot.commit || !!activeJob || !detail.assigned || dirty} onClick={() => void action(() => preview(true))}>Pull and recreate stack</Button>
-      <Button variant="default" disabled={busy || !detail.snapshot.commit || !!activeJob || !detail.assigned || dirty} onClick={() => void action(async () => {
-        const source = await request<Plan>(`${base(id)}/plan`, 'POST', { commit: detail.snapshot.commit, sourcesOnly: true })
-        setTagImages(source.tracking ?? source.images)
-      })}>Browse image tags</Button>
-      <Text size="xs" c="dimmed">Pull refreshes configured tags, including latest, and recreates all services. Data volumes are retained.</Text>
-    </Group>
-    {!detail.assigned && <Alert color="yellow">Configure an approved device and project folder for this stack before saving or deploying.</Alert>}
-    {activeJob?.status === 'unknown' && <Alert color="yellow" title="Check deployment">The last deployment result could not be confirmed, so pulling and recreating is disabled. {activeJob.message || 'Open Deployments to check the device result.'}</Alert>}
-    {jobs[0]?.status === 'failed' &&<Alert color="red" title="Last deployment failed">{jobs[0].stage} · {jobs[0].message || 'Open Deployments for the device result.'}</Alert>}
-    <Tabs value={tab} onChange={(value) => { setTab(value); if (value === 'history') void action(async () => setHistory(await request<Revision[]>(`${base(id)}/history`))) }}>
-      <Tabs.List mb="lg"><Tabs.Tab value="files">Compose files</Tabs.Tab><StackContainersTab status={containerStatus} /><Tabs.Tab value="diff">Draft diff</Tabs.Tab><Tabs.Tab value="environment">Environment</Tabs.Tab><Tabs.Tab value="history">Revision history</Tabs.Tab><Tabs.Tab value="deployments">Deployments</Tabs.Tab><Tabs.Tab value="updates">Image updates</Tabs.Tab></Tabs.List>
-      <Tabs.Panel value="containers" keepMounted><StackRuntime id={id} role={role} deploymentStatus={jobs[0] ? `${jobs[0].id}:${jobs[0].status}` : ''} onStatusChange={setContainerStatus} onNavigate={(route) => { if (unpersisted) { void action(async () => { await persistDraft(); onNavigate(route) }) } else onNavigate(route) }} /></Tabs.Panel>
-      <Tabs.Panel value="files"><Stack>
-        <Group justify="space-between"><Select aria-label="Stack file" value={file} data={Object.keys(files).sort()} onChange={setFile} w={320} /><Button variant="light" onClick={() => setTab('diff')}>Review draft changes</Button></Group>
-        {encrypted ? <Alert>Encrypted environment files are preserved without displaying their values. Use the Environment tab to replace their contents.</Alert> : file && <Suspense fallback={<StackLoading editor />}>
-          <ComposeEditor stackId={id} path={file} value={selectedContent} original={(remote ?? detail.snapshot).files[file] ?? ''} compare={false} composeFile={isComposeFile(file, files['vigara-stack.yaml'] ?? '')} disabled={busy} onChange={(value) => setFiles((current) => ({ ...current, [file]: value }))} onSave={() => { if (!busy && dirty && detail.assigned) void action(save) }} />
-        </Suspense>}
-        <Group align="end"><TextInput label="New file path" placeholder="config/app.yaml" value={newPath} onChange={(event) => setNewPath(event.currentTarget.value)} /><Button variant="default" disabled={busy || !newPath || files[newPath] !== undefined || newPath.endsWith('.env') || newPath === '.env'} onClick={() => { setFiles({ ...files, [newPath]: '' }); setFile(newPath); setNewPath('') }}>Add file</Button>{file && file !== 'vigara-stack.yaml' && <Button color="red" variant="subtle" disabled={busy} onClick={() => { const next = { ...files }; delete next[file]; setFiles(next); setFile(Object.keys(next)[0] ?? null) }}>Remove from draft</Button>}</Group>
-        <Text size="xs" c="dimmed">Keep passwords and tokens in encrypted environment inputs. YAML is preserved as written. File removal changes Git; this first runner leaves old device files in place.</Text>
+  const changes = changedPaths(detail.snapshot.files, files)
+  const live = runtime.data
+  const stackName = live?.stack.name || id
+  const deviceName = live?.stack.deviceName || live?.hosts.find((host) => host.agentId === detail.agentId)?.name || (detail.agentId ? 'Unknown device' : 'No device')
+  const badge = live ? stackRuntimeBadge(live.stack, live.hosts) : null
+  const blocker = live ? stackActionBlocker(live.stack, live.hosts, role) : 'Live container information is unavailable.'
+  const canAct = (kind: StackAction) => !busy && !blocker && !!live && stackActionTargets(live.stack, live.hosts, kind).length > 0
+  const canDeploy = detail.assigned && !activeJob
+  const savedUndeployed = !!detail.snapshot.commit && (!deployed || deployed.digest !== detail.digest)
+  const lastFailed = jobs[0]?.status === 'failed' ? jobs[0] : null
+  const openActivity = () => { setTab('activity'); setHistoryLoading(true); void request<Revision[]>(`${base(id)}/history`).then(setHistory).catch((cause: Error) => setError(cause.message)).finally(() => setHistoryLoading(false)) }
+
+  return <div className="vg-page vg-stack-page">
+    <header className="vg-device-head">
+      <div className="vg-device-title">
+        <Title order={1}>{stackName}</Title>
+        <Text size="sm" c="dimmed" mt={4} className="vg-meta-row">
+          {badge ? <StatusText color={badge.color} title={badge.label}>{badge.label === 'Unavailable' ? 'Services unavailable' : `${badge.count} running`}</StatusText> : <span>Loading services…</span>}
+          <span>{deviceName}</span>
+          <span className="vg-mono">{detail.branch}@{detail.snapshot.commit ? detail.snapshot.commit.slice(0, 7) : 'unsaved'}</span>
+          <span>{deployed ? `deployed ${relativeTime(deployed.createdAt)}` : 'never deployed'}</span>
+        </Text>
+      </div>
+      <Group gap="xs">
+        <Button size="xs" variant="default" leftSection={<IconRefresh size={14} />} disabled={busy || !detail.snapshot.commit || !canDeploy || dirty} title={dirty ? 'Commit or discard the draft first.' : 'Download newer images for the configured tags and recreate every service'} onClick={openPull}>Pull &amp; recreate</Button>
+        <Menu position="bottom-end" withinPortal>
+          <Menu.Target><Button size="xs" variant="default" px={8} aria-label="More stack actions"><IconDots size={16} /></Button></Menu.Target>
+          <Menu.Dropdown>
+            <Menu.Item disabled={!canAct('restart')} onClick={() => void action(() => runAction('restart'))}>Restart</Menu.Item>
+            <Menu.Item disabled={!canAct('stop')} onClick={() => setStopping(true)}>Stop…</Menu.Item>
+            <Menu.Item disabled={!canAct('start')} onClick={() => void action(() => runAction('start'))}>Start</Menu.Item>
+            {blocker && <Menu.Label>{blocker}</Menu.Label>}
+            <Menu.Divider />
+            <Menu.Item disabled={busy || !detail.snapshot.commit || !canDeploy || dirty || phone} onClick={() => void action(async () => { const source = await request<Plan>(`${base(id)}/plan`, 'POST', { commit: detail.snapshot.commit, sourcesOnly: true }); setTagImages(source.tracking ?? source.images) })}>Choose image tags…</Menu.Item>
+            <Menu.Item disabled={busy} onClick={() => void action(async () => { await load(false); openActivity() })}>Fetch saved version</Menu.Item>
+            <Menu.Divider />
+            <Menu.Item color="red" disabled={busy || !!activeJob} onClick={() => { setDeleteConfirm(''); setSkipDevice(false); setDeleting(true) }}>Delete stack…</Menu.Item>
+          </Menu.Dropdown>
+        </Menu>
+      </Group>
+    </header>
+
+    {error && !review && <Alert mb="sm" color="red" title="Stack operation could not complete" withCloseButton onClose={() => setError('')}>{error}</Alert>}
+    {notice && <Alert mb="sm" color="blue" withCloseButton onClose={() => setNotice('')}>{notice}</Alert>}
+    {!!outcomes.length && <Alert mb="sm" color={outcomes.some((outcome) => !outcome.ok) ? 'red' : 'green'} withCloseButton onClose={() => setOutcomes([])}>{outcomes.map((outcome, index) => <Text key={index} size="sm">{outcome.message}</Text>)}</Alert>}
+    {!detail.assigned && <Alert mb="sm" color="yellow">Assign this stack to a device under Profiles and assignments on the Stacks page before committing or deploying.</Alert>}
+    {remote && <Alert mb="sm" title="Compare the fetched version"><Text size="sm">Fetched {short(remote.commit)}. Compare it with your draft under Activity. Keeping your draft against this version may overwrite changes, so resolve differences before committing.</Text><Button mt="sm" size="xs" variant="light" disabled={busy} onClick={() => { setDetail({ ...detail, snapshot: remote }); setDraft({ ...draft, base: remote.commit }); setRemote(null); setNotice('Your draft now uses the fetched version as its base. Review your edits before committing.') }}>Use fetched version as draft base</Button></Alert>}
+
+    {dirty ? <DraftBar tone="warn" actions={<>
+      <Button size="xs" variant="subtle" color="gray" disabled={busy} onClick={() => setDiscarding(true)}>Discard</Button>
+      {unpersisted && !phone && <Button size="xs" variant="default" disabled={busy} onClick={() => void action(async () => { await persistDraft(); setNotice('Draft stored in Vigara. Git and running services are unchanged.') })}>Store draft</Button>}
+      <Button size="xs" leftSection={<IconRocket size={14} />} disabled={busy || !detail.assigned} onClick={openReview}>Review &amp; deploy</Button>
+    </>}><b>Draft</b> · {draftSummary(changes)} · {unpersisted ? 'not stored yet' : 'stored in Vigara'}</DraftBar>
+      : activeJob ? <DraftBar tone={activeJob.status === 'unknown' ? 'warn' : 'info'} actions={activeJob.status === 'unknown'
+        ? <Button size="xs" variant="default" onClick={openActivity}>Check in Activity</Button>
+        : <Button size="xs" variant="default" onClick={() => { setDeployCommit(activeJob.commit); setReview('deploy') }}>Show progress</Button>}>
+        <b>{deploymentTitle(activeJob)}</b>{activeJob.stage ? ` · ${activeJob.stage}` : ''}{activeJob.status === 'unknown' ? ' · the device has not confirmed the result' : ''}</DraftBar>
+      : lastFailed ? <DraftBar tone="crit" actions={<><Button size="xs" variant="default" onClick={openActivity}>Activity</Button><Button size="xs" leftSection={<IconRocket size={14} />} disabled={busy || !canDeploy} onClick={openReview}>Review &amp; deploy</Button></>}>
+        <b>Last deploy failed</b> · {[lastFailed.stage, lastFailed.message].filter(Boolean).join(' · ') || 'see Activity for the device output'}</DraftBar>
+      : savedUndeployed ? <DraftBar tone="info" actions={<Button size="xs" leftSection={<IconRocket size={14} />} disabled={busy || !canDeploy} onClick={openReview}>Review &amp; deploy</Button>}>
+        Revision <span className="vg-mono">{detail.snapshot.commit.slice(0, 7)}</span> is committed but not deployed</DraftBar>
+      : null}
+
+    <Tabs value={tab} onChange={(value) => { if (value === 'activity') openActivity(); else setTab(value) }} mt="xs" keepMounted={false} className="vg-page-tabs">
+      <Tabs.List><Tabs.Tab value="files">Files</Tabs.Tab><Tabs.Tab value="environment" rightSection={<IconLock size={12} aria-hidden="true" />}>Environment</Tabs.Tab><Tabs.Tab value="activity">Activity</Tabs.Tab><Tabs.Tab value="settings">Settings</Tabs.Tab></Tabs.List>
+      <Tabs.Panel value="files" pt="md">
+        {phone && <Text size="xs" c="dimmed" mb="xs">Files are read-only on a phone. Deploy, pull and restart still work.</Text>}
+        <div className="vg-ws" data-rail={railCollapsed ? 'collapsed' : undefined}>
+          <FileList files={files} changes={changes} selected={file} readOnly={phone || busy} onSelect={setFile}
+            onAdd={(path) => { setFiles({ ...files, [path]: '' }); setFile(path) }}
+            onRemove={(path) => { const next = { ...files }; delete next[path]; setFiles(next); setFile(next['compose.yaml'] !== undefined ? 'compose.yaml' : Object.keys(next)[0] ?? null) }} />
+          <div className="vg-ws-editor">
+            {encrypted ? <Alert>Encrypted environment files keep their values hidden. Use the Environment tab to replace their contents.</Alert> : file && files[file] !== undefined ? <Suspense fallback={<StackLoading editor />}>
+              <ComposeEditor stackId={id} path={file} value={selectedContent} original={(remote ?? detail.snapshot).files[file] ?? ''} compare={false} composeFile={isComposeFile(file, files['vigara-stack.yaml'] ?? '')} disabled={busy || phone} onChange={(value) => setFiles((current) => ({ ...current, [file]: value }))} onSave={() => { if (!busy && dirty && detail.assigned) openReview() }} />
+            </Suspense> : <Text c="dimmed" size="sm">Choose a file.</Text>}
+            <Text size="xs" c="dimmed" mt="xs">Keep passwords and tokens in the Environment tab, where they are encrypted. YAML is kept as written. Removing a file changes Git; files already on the device stay in place.</Text>
+          </div>
+          <ServicesRail runtime={runtime} jobs={jobs} collapsed={railCollapsed && !phone} onCollapse={(value) => { setRailCollapsed(value); try { localStorage.setItem('vigara.stack.rail', value ? 'collapsed' : 'open') } catch { /* optional */ } }} onActivity={openActivity}
+            onNavigate={(route) => { if (unpersisted) { void action(async () => { await persistDraft(); onNavigate(route) }) } else onNavigate(route) }} />
+        </div>
+      </Tabs.Panel>
+      <Tabs.Panel value="environment" pt="md">{phone ? <Text size="sm" c="dimmed">Environment values can be changed on a larger screen.</Text> : <SecretEditor key={`${detail.snapshot.commit}:${secretEpoch}`} id={id} files={files} busy={busy} persistDraft={persistDraft} onBusy={setSecretBusy} onEncrypted={(value) => { setFiles((current) => ({ ...current, [value.path]: value.ciphertext, 'vigara-stack.yaml': value.manifest })); setNotice('Environment encrypted and added to your draft. Commit it with Review & deploy when ready.') }} />}</Tabs.Panel>
+      <Tabs.Panel value="activity" pt="md">
+        <ActivityTimeline history={history} jobs={jobs} loading={historyLoading} busy={busy || phone}
+          draftPanel={(dirty || remote) ? <Panel title={remote ? 'Fetched version ↔ your editor' : 'Unsaved draft'}><StackDiff stackId={id} saved={(remote ?? detail.snapshot).files} draft={files} revision={(remote ?? detail.snapshot).commit.slice(0, 8)} /></Panel> : null}
+          onRestore={(commit) => void action(async () => { const value = await request<Detail>(`${base(id)}?commit=${commit}`); setFiles(value.snapshot.files); setPlan(null); setTab('files'); setNotice(`Loaded revision ${short(commit)} into your draft. Commit it before deploying.`) })}
+          onReconcile={(job) => void action(async () => { const value = await request<{ message: string }>(`${base(id)}/deployments/${job}/reconcile`, 'POST', {}); setNotice(value.message) })} />
+      </Tabs.Panel>
+      <Tabs.Panel value="settings" pt="md"><Stack gap="md">
+        <Panel title="Stack"><dl className="vg-kv">
+          <div><dt>Stack ID</dt><dd className="vg-mono">{id}</dd></div>
+          <div><dt>Compose project</dt><dd className="vg-mono">{detail.projectName || projectName}</dd></div>
+          <div><dt>Device</dt><dd>{deviceName}</dd></div>
+          {live?.stack.directory && <div><dt>Folder on the device</dt><dd className="vg-mono">{live.stack.directory}</dd></div>}
+          <div><dt>Branch</dt><dd className="vg-mono">{detail.branch}</dd></div>
+        </dl></Panel>
+        <Panel title="Image updates"><StackUpdatePolicy id={id} /></Panel>
+        <Panel title="Delete"><Group justify="space-between" align="center"><Text size="sm" c="dimmed">Stops and removes the stack’s containers and deletes it from Git. Volumes and data on the device are kept.</Text><Button size="xs" color="red" variant="outline" disabled={busy || !!activeJob} onClick={() => { setDeleteConfirm(''); setSkipDevice(false); setDeleting(true) }}>Delete stack…</Button></Group></Panel>
       </Stack></Tabs.Panel>
-      <Tabs.Panel value="diff">{tab === 'diff' && <StackDiff stackId={id} saved={(remote ?? detail.snapshot).files} draft={files} revision={(remote ?? detail.snapshot).commit.slice(0, 8)} />}</Tabs.Panel>
-      <Tabs.Panel value="environment">{tab === 'environment' && <SecretEditor key={`${detail.snapshot.commit}:${secretEpoch}`} id={id} files={files} busy={busy} persistDraft={persistDraft} onBusy={setSecretBusy} onEncrypted={(value) => { setFiles((current) => ({ ...current, [value.path]: value.ciphertext, 'vigara-stack.yaml': value.manifest })); setNotice('Environment encrypted and added to your draft. Save the revision when ready.'); }} />}</Tabs.Panel>
-      <Tabs.Panel value="history"><Stack>{!history.length && <Text c="dimmed">No saved revisions yet.</Text>}{history.map((revision) => <Card key={revision.commit} withBorder><Group justify="space-between"><div><Text fw={600}>{revision.message}</Text><Text size="xs" c="dimmed">{short(revision.commit)} · {new Date(revision.at).toLocaleString()}</Text></div><Button variant="light" disabled={busy} onClick={() => void action(async () => { const value = await request<Detail>(`${base(id)}?commit=${revision.commit}`); setFiles(value.snapshot.files); setPlan(null); setTab('files'); setNotice(`Loaded revision ${short(revision.commit)} into your draft. Save creates a new commit before deployment.`) })}>Restore into draft</Button></Group></Card>)}</Stack></Tabs.Panel>
-      <Tabs.Panel value="updates">{tab === 'updates' && <StackUpdatePolicy id={id} />}</Tabs.Panel>
-      <Tabs.Panel value="deployments"><Stack>{!jobs.length && <Text c="dimmed">No deployments yet.</Text>}{jobs.map((job) => <Card withBorder key={job.id}><Group justify="space-between"><Text fw={600}>Revision {short(job.commit)}</Text><StatusText color={job.status === 'succeeded' ? 'green' : job.status === 'failed' ? 'red' : 'yellow'}>{job.status}</StatusText></Group><Text size="sm" mt="xs">{job.stage} · {job.message || 'Waiting for the device.'}</Text><Text size="xs" c="dimmed" mt="xs">{new Date(job.createdAt).toLocaleString()}</Text>{job.status === 'unknown' && <Button mt="sm" variant="light" disabled={busy} onClick={() => void action(async () => { const value = await request<{ message: string }>(`${base(id)}/deployments/${job.id}/reconcile`, 'POST', {}); setNotice(value.message) })}>Check device result</Button>}</Card>)}</Stack></Tabs.Panel>
     </Tabs>
-    <Group justify="space-between"><Group><Button variant="subtle" color="red" disabled={busy || (!dirty && !draft.files)} onClick={() => setDiscarding(true)}>Discard draft</Button><Button variant="default" disabled={busy || !unpersisted} onClick={() => void action(async () => { await persistDraft(); setNotice('Draft stored in Vigara. Git and running services are unchanged.') })}>Keep draft</Button><Button loading={busy} disabled={!dirty || !detail.assigned} onClick={() => void action(save)}>Save to {detail.branch}</Button><Button variant="subtle" disabled={busy} onClick={() => void action(async () => { await load(false); setTab('diff') })}>Fetch saved version</Button></Group><Button variant="light" disabled={busy || !detail.snapshot.commit || !!activeJob || !detail.assigned || dirty} onClick={() => void action(() => preview(false))}>Preview deployment</Button></Group>
-    {dirty && <Text size="sm" c="dimmed">Save your draft before deploying. Saving does not restart services.</Text>}
-    <Group><Button variant="outline" color="red" disabled={busy || !!activeJob} onClick={() => { setDeleteConfirm(''); setSkipDevice(false); setDeleting(true) }}>Delete stack</Button>{activeJob && <Text size="xs" c="dimmed">Wait for the active deployment to finish before deleting.</Text>}</Group>
+
+    <ReviewSheet opened={review !== null} step={review ?? 'changes'} stackId={id} dirty={dirty} saved={(remote ?? detail.snapshot).files} draft={files} revision={short(planCommit || detail.snapshot.commit)}
+      plan={plan} pull={pull} recreate={recreate} deviceName={deviceName} branch={detail.branch} busy={busy} error={error} job={deployJob} canDeploy={canDeploy}
+      onStep={(step) => { setReview(step); if (step === 'plan' && !plan) void action(() => preparePlan(recreate)) }} onPull={setPull} onRecreate={setRecreate}
+      onCommitOnly={() => void action(async () => { if (await save()) setReview(null) })}
+      onCommitAndPlan={() => void action(async () => { const commit = await save(); if (!commit) return; setReview('plan'); await preparePlan(false, commit) })}
+      onPlan={() => void action(() => preparePlan(recreate))}
+      onDeploy={() => void action(async () => { await request(`${base(id)}/deploy`, 'POST', { commit: planCommit, token: plan?.token, images: plan?.images, pull, recreate }); setDeployCommit(planCommit); setPlan(null); setReview('deploy') })}
+      onClose={() => { setReview(null); setError('') }} />
+    <Modal opened={stopping} onClose={() => setStopping(false)} title={`Stop ${stackName}?`} centered size="sm"><Stack>
+      <Text size="sm">{live ? stackActionTargets(live.stack, live.hosts, 'stop').length : 0} running container{live && stackActionTargets(live.stack, live.hosts, 'stop').length === 1 ? '' : 's'} on {deviceName} stop. Nothing is removed; Start brings them back.</Text>
+      {live && isReverseProxy(live.stack) && <Alert color="yellow" p="xs">This looks like a reverse proxy. Sites behind it go offline while it is stopped.</Alert>}
+      <Group justify="flex-end" gap="xs"><Button variant="default" onClick={() => setStopping(false)}>Cancel</Button><Button color="red" onClick={() => { setStopping(false); void action(() => runAction('stop')) }}>Stop stack</Button></Group>
+    </Stack></Modal>
     <Modal opened={deleting} onClose={() => { if (!busy) setDeleting(false) }} title="Delete stack entirely?" centered><Stack>
       <Text>This stops and removes the containers and networks of project <Code>{detail.projectName || projectName}</Code>, deletes <Code>{id}</Code> from {detail.branch} in Git, and removes its drafts and deployment history from Vigara.</Text>
       <Text size="sm" c="dimmed">Named volumes, bind-mounted data and the project folder on the device are kept. Earlier Git revisions remain in repository history.</Text>
@@ -206,8 +321,6 @@ function StackEditor({ id, projectName, onBack, role, onNavigate, pullOnOpen }: 
       {error && <Alert color="red" mb="sm">{error}</Alert>}
       {tagImages && <StackImageTags id={id} images={tagImages} busy={busy} onSelect={(service, image) => void action(() => selectTag(service, image))} />}
     </Modal>
-    {remote && <Alert title="Compare fetched version"><Text size="sm">Fetched {short(remote.commit)}. Review all files in the Draft diff tab. Keeping your draft against this version may overwrite changes, so resolve differences before saving.</Text><Button mt="sm" variant="light" disabled={busy} onClick={() => { setDetail({ ...detail, snapshot: remote }); setDraft({ ...draft, base: remote.commit }); setRemote(null); setNotice('Draft now uses the fetched version as its base. Review your edits before saving.') }}>Use fetched version as draft base</Button></Alert>}
-    <Modal opened={discarding} onClose={() => { if (!busy) setDiscarding(false) }} title="Discard draft?" centered><Stack><Text>Discard your edits and stored draft for this stack? Saved Git revisions and running services are retained.</Text><Button color="red" loading={busy} onClick={() => void action(async () => { if (draft.files) await request(base(id) + '/draft', 'DELETE', { version: draft.version }); const next = Object.keys(detail.snapshot.files).length ? detail.snapshot.files : starter(id, detail.projectName || projectName); setFiles(next); setDraft({ base: detail.snapshot.commit, files: null, version: 0 }); setFile(next['compose.yaml'] !== undefined ? 'compose.yaml' : Object.keys(next)[0] ?? null); setPlan(null); setDiscarding(false); setNotice('Stored draft discarded.'); })}>Discard draft</Button></Stack></Modal>
-    <Modal opened={!!plan} onClose={() => { if (!busy) setPlan(null) }} title={recreate ? (pull ? "Pull and recreate stack" : "Recreate stack") : "Deploy saved revision"} size="lg" classNames={{ body: 'stack-deploy-preview' }} centered><Stack><Text>Apply revision <Code>{short(detail.snapshot.commit)}</Code> to project <Code>{plan?.projectName}</Code>?</Text><Text size="sm">Device: {detail.agentId}</Text><Text size="sm">Services: {plan?.services.join(', ')}</Text><Stack gap="xs">{Object.entries(plan?.images ?? {}).map(([service, image]) => <Text size="xs" key={service}><Code>{service}</Code>: <Code>{image}</Code></Text>)}</Stack><Text size="sm" c="dimmed">Changed services may restart. Existing data volumes are retained. Deploying an older configuration does not undo application data migrations.</Text><Checkbox label="Recreate all stack containers" checked={recreate} onChange={(event) => setRecreate(event.currentTarget.checked)} /><Checkbox label="Download the reviewed images before deployment" checked={pull} onChange={(event) => setPull(event.currentTarget.checked)} />{error && <Alert color="red">{error}</Alert>}<Button loading={busy} onClick={() => void action(async () => { await request(`${base(id)}/deploy`, 'POST', { commit: detail.snapshot.commit, token: plan?.token, images: plan?.images, pull, recreate }); setPlan(null); setTab('deployments'); setNotice('Deployment queued. You can leave this page and return to its status.'); })}>{recreate ? (pull ? "Pull and recreate stack" : "Recreate stack") : "Deploy revision"}</Button></Stack></Modal>
-  </Stack></section>
+    <Modal opened={discarding} onClose={() => { if (!busy) setDiscarding(false) }} title="Discard draft?" centered><Stack><Text>Discard your edits and stored draft for this stack? Committed revisions and running services are kept.</Text><Button color="red" loading={busy} onClick={() => void action(async () => { if (draft.files) await request(base(id) + '/draft', 'DELETE', { version: draft.version }); const next = Object.keys(detail.snapshot.files).length ? detail.snapshot.files : starter(id, detail.projectName || projectName); setFiles(next); setDraft({ base: detail.snapshot.commit, files: null, version: 0 }); setFile(next['compose.yaml'] !== undefined ? 'compose.yaml' : Object.keys(next)[0] ?? null); setPlan(null); setDiscarding(false); setNotice('Draft discarded.'); })}>Discard draft</Button></Stack></Modal>
+  </div>
 }

@@ -86,6 +86,6 @@ export default function ComposeEditor({ stackId, path, value, original, compare,
       {compare && <div className="compose-diff-labels"><Text size="xs" fw={600}>Saved version</Text><Text size="xs" fw={600}>Your draft</Text></div>}
       <div ref={host} className="compose-editor-surface" />
     </div></div>
-    {!review && <Text size="xs" c="dimmed">{tabMovesFocus ? 'Tab moves focus' : 'Tab indents by 2 spaces'} · Shift+Tab unindents · Ctrl/Cmd+S saves to Git · Ctrl+M (Mac: Ctrl+Shift+M) toggles Tab focus · F1 for commands</Text>}
+    {!review && <Text size="xs" c="dimmed">{tabMovesFocus ? 'Tab moves focus' : 'Tab indents by 2 spaces'} · Shift+Tab unindents · Ctrl/Cmd+S opens Review & deploy · Ctrl+M (Mac: Ctrl+Shift+M) toggles Tab focus · F1 for commands</Text>}
   </Stack>
 }
