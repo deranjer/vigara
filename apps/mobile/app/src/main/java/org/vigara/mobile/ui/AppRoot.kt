@@ -6,11 +6,13 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -38,6 +40,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import org.vigara.mobile.data.ApiException
+import org.vigara.mobile.data.Incident
 import org.vigara.mobile.data.User
 import org.vigara.mobile.data.UserEnvelope
 import org.vigara.mobile.data.VigaraApi
@@ -51,6 +54,8 @@ import org.vigara.mobile.ui.screens.DevicesScreen
 import org.vigara.mobile.ui.screens.ImageUpdatesScreen
 import org.vigara.mobile.ui.screens.LoginScreen
 import org.vigara.mobile.ui.screens.MoreScreen
+import org.vigara.mobile.ui.screens.OverviewScreen
+import org.vigara.mobile.ui.common.rememberLoad
 import org.vigara.mobile.ui.screens.ResourcesScreen
 import org.vigara.mobile.ui.screens.StackDetailScreen
 import org.vigara.mobile.ui.screens.StacksScreen
@@ -65,10 +70,10 @@ import org.vigara.mobile.ui.screens.WebTarget
 private data class Tab(val route: String, val label: String, val icon: ImageVector)
 
 private val tabs = listOf(
-    Tab("devices", "Devices", Icons.Default.Home),
+    Tab("overview", "Overview", Icons.Default.Home),
     Tab("containers", "Containers", Icons.Default.List),
-    Tab("stacks", "Stacks", Icons.Default.Settings),
-    Tab("updates", "Updates", Icons.Default.Refresh),
+    Tab("stacks", "Stacks", Icons.Default.Build),
+    Tab("alerts", "Alerts", Icons.Default.Notifications),
     Tab("more", "More", Icons.Default.Menu),
 )
 
@@ -112,14 +117,18 @@ private fun NavHostController.goTab(route: String) {
 private fun MainShell(api: VigaraApi, user: User, onUserChanged: (User) -> Unit, onSignedOut: () -> Unit) {
     val nav = rememberNavController()
     var web by remember { mutableStateOf<Pair<String, WebTarget>?>(null) }
+    // The Alerts tab carries the open count, as the web sidebar does.
+    val openAlerts = rememberLoad(pollMs = 60_000) { runCatching { api.get<List<Incident>>("/api/alerts/incidents").count { it.bucket() == "open" } }.getOrDefault(0) }
+    val tabRoutes = tabs.map { it.route }.toSet()
+    val go = { route: String -> if (route in tabRoutes) nav.goTab(route) else nav.navigate(route) }
     val backStack by nav.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route.orEmpty()
     val groupOf = { route: String ->
         when {
-            route.startsWith("device") -> "devices"
+            route == "overview" || route.startsWith("device/") -> "overview"
             route.startsWith("container") -> "containers"
             route.startsWith("stack") || route == "git-settings" -> "stacks"
-            route == "updates" -> "updates"
+            route.startsWith("alert") -> "alerts"
             else -> "more"
         }
     }
@@ -132,15 +141,20 @@ private fun MainShell(api: VigaraApi, user: User, onUserChanged: (User) -> Unit,
                     NavigationBarItem(
                         selected = groupOf(currentRoute) == tab.route,
                         onClick = { nav.goTab(tab.route) },
-                        icon = { Icon(tab.icon, contentDescription = null) },
+                        icon = {
+                            val count = openAlerts.data ?: 0
+                            if (tab.route == "alerts" && count > 0) BadgedBox(badge = { Badge { Text(if (count > 99) "99+" else "$count") } }) { Icon(tab.icon, contentDescription = null) }
+                            else Icon(tab.icon, contentDescription = null)
+                        },
                         label = { Text(tab.label) },
                     )
                 }
             }
         },
     ) { padding ->
-        NavHost(nav, startDestination = "devices", modifier = Modifier.padding(padding)) {
-            composable("devices") { DevicesScreen(api, user, onOpen = { nav.navigate("device/${Uri.encode(it)}") }, onAdd = { nav.navigate("add-device") }) }
+        NavHost(nav, startDestination = "overview", modifier = Modifier.padding(padding)) {
+            composable("overview") { OverviewScreen(api, onNavigate = go, onOpenDevice = { nav.navigate("device/${Uri.encode(it)}") }) }
+            composable("devices") { DevicesScreen(api, user, onOpen = { nav.navigate("device/${Uri.encode(it)}") }, onAdd = { nav.navigate("add-device") }, onBack = { nav.popBackStack() }) }
             composable("device/{id}", listOf(navArgument("id") { type = NavType.StringType })) {
                 DeviceDetailScreen(api, user, it.arguments?.getString("id").orEmpty(), onBack = { nav.popBackStack() })
             }
@@ -172,12 +186,12 @@ private fun MainShell(api: VigaraApi, user: User, onUserChanged: (User) -> Unit,
                 StackDetailScreen(api, user, it.arguments?.getString("id").orEmpty(), onBack = { nav.popBackStack() },
                     onOpenContainer = { host, ref -> nav.navigate("container/${Uri.encode(host)}/${Uri.encode(ref)}") })
             }
-            composable("updates") { ImageUpdatesScreen(api, user, onOpenContainer = { host, ref -> nav.navigate("container/${Uri.encode(host)}/${Uri.encode(ref)}") }) }
+            composable("updates") { ImageUpdatesScreen(api, user, onOpenContainer = { host, ref -> nav.navigate("container/${Uri.encode(host)}/${Uri.encode(ref)}") }, onBack = { nav.popBackStack() }) }
             composable("more") { MoreScreen(user, onNavigate = { nav.navigate(it) }) }
             composable("resources/{kind}", listOf(navArgument("kind") { type = NavType.StringType })) {
                 ResourcesScreen(api, user, it.arguments?.getString("kind").orEmpty(), onBack = { nav.popBackStack() })
             }
-            composable("alerts") { AlertsScreen(api, onBack = { nav.popBackStack() }) }
+            composable("alerts") { AlertsScreen(api, onOpenDevice = { nav.navigate("device/${Uri.encode(it)}") }, onRules = { nav.navigate("alert-rules") }) }
             composable("account") { AccountScreen(api, user, onBack = { nav.popBackStack() }, onUserChanged = onUserChanged, onSignedOut = onSignedOut) }
             composable("admin") { AdminScreen(api, user, onBack = { nav.popBackStack() }) }
         }

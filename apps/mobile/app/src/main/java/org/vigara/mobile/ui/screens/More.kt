@@ -69,14 +69,14 @@ import org.vigara.mobile.ui.common.relativeTime
 fun MoreScreen(user: User, onNavigate: (String) -> Unit) {
     AppScaffold("More") { padding ->
         Column(Modifier.padding(padding).verticalScroll(rememberScrollState())) {
+            SectionTitle("Fleet", Modifier.padding(horizontal = 16.dp))
+            MoreRow("Devices", "Every device, its health and metrics") { onNavigate("devices") }
+            MoreRow("Image updates", "Newer images for running containers") { onNavigate("updates") }
+            if (user.isAdmin) MoreRow("Add device", "Create an agent installer") { onNavigate("add-device") }
             SectionTitle("Docker", Modifier.padding(horizontal = 16.dp))
             MoreRow("Images", "Pull, inspect and prune images") { onNavigate("resources/image") }
             MoreRow("Networks", "Docker networks per host") { onNavigate("resources/network") }
             MoreRow("Volumes", "Docker volumes per host") { onNavigate("resources/volume") }
-            SectionTitle("Monitoring", Modifier.padding(horizontal = 16.dp))
-            MoreRow("Alerts", "Open and resolved incidents") { onNavigate("alerts") }
-            MoreRow("Alert rules", "Create and disable rules") { onNavigate("alert-rules") }
-            if (user.isAdmin) MoreRow("Add device", "Create an agent installer") { onNavigate("add-device") }
             SectionTitle("Integrations", Modifier.padding(horizontal = 16.dp))
             MoreRow("Claude and ChatGPT (MCP)", "Connection URL and connected applications") { onNavigate("mcp") }
             if (user.isAdmin) MoreRow("Git settings", "Repository for stack storage") { onNavigate("git-settings") }
@@ -95,14 +95,6 @@ private fun MoreRow(title: String, subtitle: String, onClick: () -> Unit) {
         modifier = Modifier.clickable(onClick = onClick),
     )
     HorizontalDivider()
-}
-
-@Composable
-fun AlertsScreen(api: VigaraApi, onBack: () -> Unit) {
-    val incidents = rememberLoad(pollMs = 30_000) { api.get<List<Incident>>("/api/alerts/incidents") }
-    AppScaffold("Alerts", onBack = onBack) { padding ->
-        Column(Modifier.padding(padding)) { LoadedContent(incidents) { IncidentList(it) } }
-    }
 }
 
 @Composable

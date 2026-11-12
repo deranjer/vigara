@@ -31,10 +31,25 @@ import kotlinx.serialization.Serializable
 @Serializable data class Point(val at: String = "", val value: Double? = null)
 @Serializable data class Series(val name: String = "", val unit: String = "", val labels: Map<String, String> = emptyMap(), val points: List<Point> = emptyList())
 @Serializable data class History(val range: String = "", val metrics: List<String> = emptyList(), val series: List<Series> = emptyList())
+@Serializable data class AlertNote(val id: String = "", val author: String = "", val body: String = "", val createdAt: String = "")
 @Serializable data class Incident(
     val id: String = "", val dimension: String = "", val status: String = "", val summary: String = "",
     val startedAt: String = "", val lastObservedAt: String? = null, val resolvedAt: String? = null,
-)
+    val ruleId: String = "", val ruleName: String = "", val kind: String = "", val severity: String = "warning",
+    val acknowledgedAt: String? = null, val acknowledgedBy: String? = null, val mutedUntil: String? = null,
+    val notes: List<AlertNote> = emptyList(),
+) {
+    /** Which inbox tab the alert belongs in, as on the web: open, acknowledged, muted or resolved. */
+    fun bucket(now: java.time.Instant = java.time.Instant.now()): String = when {
+        status != "firing" -> "resolved"
+        mutedUntil?.let { runCatching { java.time.Instant.parse(it) }.getOrNull() }?.isAfter(now) == true -> "muted"
+        acknowledgedAt != null -> "acknowledged"
+        else -> "open"
+    }
+    /** The device id at the start of the dimension, when there is one. */
+    val deviceId: String? get() = dimension.substringBefore('/').takeIf { uuidPattern.matches(it) }
+}
+private val uuidPattern = Regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", RegexOption.IGNORE_CASE)
 @Serializable data class Awake(val weekdays: List<String> = emptyList(), val start: String = "", val end: String = "", val timezone: String = "")
 @Serializable data class MaintenanceWindow(val id: String = "", val startsAt: String = "", val endsAt: String = "")
 @Serializable data class Availability(

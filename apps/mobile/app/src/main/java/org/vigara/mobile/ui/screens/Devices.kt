@@ -64,40 +64,17 @@ private val metricLabels = mapOf(
 fun prettyMetric(name: String) = metricLabels[name] ?: name.replace('_', ' ').replaceFirstChar { it.titlecase(Locale.getDefault()) }
 
 @Composable
-fun DevicesScreen(api: VigaraApi, user: User, onOpen: (String) -> Unit, onAdd: () -> Unit) {
+fun DevicesScreen(api: VigaraApi, user: User, onOpen: (String) -> Unit, onAdd: () -> Unit, onBack: (() -> Unit)? = null) {
     val devices = rememberLoad(pollMs = 30_000) { api.get<DevicePage>("/api/inventory/devices?limit=100&offset=0") }
-    AppScaffold("Devices", actions = { if (user.isAdmin) androidx.compose.material3.TextButton(onAdd) { Text("Add") } }) {
+    AppScaffold("Devices", onBack = onBack, actions = { if (user.isAdmin) androidx.compose.material3.TextButton(onAdd) { Text("Add") } }) {
         Column(Modifier.padding(it)) {
             LoadedContent(devices) { page ->
                 if (page.devices.isEmpty()) EmptyState("No devices yet. Enroll one from the Vigara web UI (Devices → Add device).")
-                else LazyColumn(contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    items(page.devices, key = { d -> d.id }) { device -> DeviceCard(device) { onOpen(device.id) } }
+                else LazyColumn(contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 16.dp)) {
+                    items(page.devices.sortedBy { d -> d.name.lowercase() }, key = { d -> d.id }) { device -> DeviceRow(device) { onOpen(device.id) } }
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun DeviceCard(device: Device, onClick: () -> Unit) {
-    ItemCard(onClick = onClick) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(device.name, style = MaterialTheme.typography.titleMedium)
-                Text("${device.platform} ${device.architecture}".trim(), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            StatusChip(device.status.replaceFirstChar { it.titlecase() }, Palette.device(device.status))
-        }
-        val cpu = device.metric("cpu_used_percent")
-        val mem = device.metric("memory_used_percent")
-        val free = device.metric("filesystem_free_bytes")
-        val total = device.metric("filesystem_total_bytes")
-        Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            cpu?.let { Text("CPU ${"%.0f".format(it)}%", style = MaterialTheme.typography.bodyMedium) }
-            mem?.let { Text("Mem ${"%.0f".format(it)}%", style = MaterialTheme.typography.bodyMedium) }
-            if (free != null && total != null && total > 0) Text("Disk ${"%.0f".format((total - free) / total * 100)}%", style = MaterialTheme.typography.bodyMedium)
-        }
-        Text("Last seen ${relativeTime(device.lastSeenAt, "never")}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
     }
 }
 
@@ -120,7 +97,7 @@ fun DeviceDetailScreen(api: VigaraApi, user: User, id: String, onBack: () -> Uni
                 when (tab) {
                     0 -> DeviceOverview(d)
                     1 -> DeviceTrends(api, d)
-                    2 -> DeviceAlerts(api)
+                    2 -> DeviceAlerts(api, d)
                     3 -> DeviceBackups(api, user, d)
                     4 -> DeviceSchedule(api, d)
                     else -> TerminalPanel(
@@ -214,23 +191,18 @@ private fun DeviceTrends(api: VigaraApi, device: Device) {
 }
 
 @Composable
-private fun DeviceAlerts(api: VigaraApi) {
-    val incidents = rememberLoad(pollMs = 30_000) { api.get<List<Incident>>("/api/alerts/incidents") }
-    LoadedContent(incidents) { list -> IncidentList(list) }
-}
-
-@Composable
-fun IncidentList(list: List<Incident>) {
-    if (list.isEmpty()) { EmptyState("No alerts. Everything looks healthy."); return }
-    LazyColumn(contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        items(list, key = { it.id }) { incident ->
-            ItemCard {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(incident.summary.ifBlank { incident.dimension }, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-                    StatusChip(incident.status, if (incident.status == "resolved") Palette.good else Palette.bad)
-                }
-                Text("${incident.dimension} · started ${formatTime(incident.startedAt)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                incident.resolvedAt?.let { Text("Resolved ${formatTime(it)}", style = MaterialTheme.typography.bodySmall) }
+private fun DeviceAlerts(api: VigaraApi, device: Device) {
+    val incidents = rememberLoad(device.id, pollMs = 30_000) { api.get<List<Incident>>("/api/alerts/incidents").filter { it.deviceId == device.id } }
+    LoadedContent(incidents) { list ->
+        if (list.isEmpty()) { EmptyState("No alerts for this device."); return@LoadedContent }
+        LazyColumn(contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 16.dp)) {
+            items(list.sortedWith(compareBy({ it.status != "firing" }, { it.startedAt })), key = { it.id }) { incident ->
+                org.vigara.mobile.ui.common.TwoLineRow(
+                    incident.summary.ifBlank { incident.dimension },
+                    listOf(incident.ruleName, if (incident.status == "firing") "started ${formatTime(incident.startedAt)}" else "resolved ${formatTime(incident.resolvedAt)}").filter { it.isNotBlank() }.joinToString(" · "),
+                    dot = severityColor(incident),
+                    trailing = relativeTime(incident.startedAt),
+                )
             }
         }
     }

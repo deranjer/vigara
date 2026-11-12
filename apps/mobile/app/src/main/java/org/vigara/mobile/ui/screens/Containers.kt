@@ -73,6 +73,8 @@ import org.vigara.mobile.ui.common.Palette
 import org.vigara.mobile.ui.common.SectionTitle
 import org.vigara.mobile.ui.common.Spinner
 import org.vigara.mobile.ui.common.StatusChip
+import org.vigara.mobile.ui.common.StatusText
+import org.vigara.mobile.ui.common.TwoLineRow
 import org.vigara.mobile.ui.common.formatBytes
 import org.vigara.mobile.ui.common.formatEpoch
 import org.vigara.mobile.ui.common.formatRate
@@ -82,7 +84,7 @@ import org.vigara.mobile.data.Series
 import org.vigara.mobile.data.Point
 import androidx.compose.material3.Surface
 
-val hostStateColors = mapOf("ok" to Palette.good, "offline" to Palette.idle, "unavailable" to Palette.warn, "error" to Palette.bad)
+fun hostStateColor(state: String) = when (state) { "ok" -> Palette.good; "unavailable" -> Palette.warn; "error" -> Palette.bad; else -> Palette.idle }
 val hostStateLabels = mapOf("ok" to "Connected", "offline" to "Offline", "unavailable" to "Docker not enabled", "error" to "Error")
 val tierLabels = mapOf("read" to "Read only", "manage" to "Manage", "exec" to "Manage + terminal", "deploy" to "Full control")
 
@@ -127,7 +129,7 @@ fun ContainersScreen(api: VigaraApi, user: User, onOpen: (String, String) -> Uni
                     }
                 }.filter { (h, cs) -> cs.isNotEmpty() || (needle.isEmpty() && state == null && h.state != "ok") }
                 if (shown.isEmpty()) EmptyState(if (list.isEmpty()) "No hosts with Docker enabled yet." else "No containers match.")
-                else LazyColumn(contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                else LazyColumn(contentPadding = PaddingValues(bottom = 16.dp)) {
                     shown.forEach { (h, cs) ->
                         item(key = "host-${h.agentId}") { HostHeader(h) }
                         items(cs, key = { "${h.agentId}/${it.id}" }) { c -> ContainerRow(c) { onOpen(h.agentId, c.name.ifBlank { c.id }) } }
@@ -140,30 +142,30 @@ fun ContainersScreen(api: VigaraApi, user: User, onOpen: (String, String) -> Uni
 
 @Composable
 private fun HostHeader(host: HostEntry) {
-    Column(Modifier.padding(top = 8.dp)) {
+    Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 18.dp, bottom = 6.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(host.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-            StatusChip(hostStateLabels[host.state] ?: host.state, hostStateColors[host.state] ?: Palette.idle)
-            if (host.state == "ok") StatusChip(tierLabels[host.dockerTier] ?: host.dockerTier, Palette.info, Modifier.padding(start = 6.dp))
+            Text(host.name, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+            StatusText(if (host.state == "ok") tierLabels[host.dockerTier] ?: host.dockerTier else hostStateLabels[host.state] ?: host.state, hostStateColor(host.state))
         }
         if (host.message.isNotBlank()) Text(host.message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (host.truncated) Text("Only part of this host's containers are shown.", style = MaterialTheme.typography.bodySmall, color = Palette.warn)
     }
+    androidx.compose.material3.HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 }
 
 @Composable
 private fun ContainerRow(c: ContainerInfo, onClick: () -> Unit) {
-    ItemCard(onClick = onClick) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(c.name.ifBlank { c.id.take(12) }, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-            StatusChip(c.state, Palette.container(c.state))
-        }
-        Text(c.image, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
-        Text(c.status, style = MaterialTheme.typography.bodySmall)
-        val ports = c.ports.filter { it.publicPort > 0 }.distinctBy { it.publicPort to it.privatePort }.joinToString("  ") { "${it.publicPort}→${it.privatePort}" }
-        if (ports.isNotEmpty()) Text(ports, style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace)
-        if (c.project.isNotBlank()) Text("Stack ${c.project}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-    }
+    // Name and state on top; image (and stack) beneath; status text and the first published port on the right.
+    val port = c.ports.firstOrNull { it.publicPort > 0 }?.let { ":${it.publicPort}" }
+    TwoLineRow(
+        title = c.name.ifBlank { c.id.take(12) },
+        subtitle = listOf(c.image, c.project.takeIf { it.isNotBlank() }?.let { "stack $it" }).filterNotNull().joinToString(" · "),
+        dot = Palette.container(c.state),
+        trailing = c.state,
+        trailingDetail = port ?: c.status.takeIf { c.state != "running" }?.substringBefore(" (")?.take(18),
+        trailingColor = Palette.container(c.state).takeIf { c.state != "running" },
+        onClick = onClick,
+    )
 }
 
 @Composable
@@ -235,30 +237,17 @@ private fun ContainerOverview(
         }
     }
 
-    LazyColumn(contentPadding = PaddingValues(16.dp)) {
+    Column(Modifier.fillMaxSize()) {
+    LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(16.dp)) {
         item {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                StatusChip(d.state.status.ifBlank { "unknown" }, Palette.container(d.state.status))
-                if (d.state.health.isNotBlank()) StatusChip(d.state.health, if (d.state.health == "healthy") Palette.good else Palette.warn, Modifier.padding(start = 6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                StatusText(d.state.status.ifBlank { "unknown" }, Palette.container(d.state.status))
+                if (d.state.health.isNotBlank()) StatusText(d.state.health, if (d.state.health == "healthy") Palette.good else Palette.warn)
             }
             if (!mayManage) InfoBanner(
                 if (!user.canOperate) "Your account can view containers but not change them." else "Container management is not enabled for this host. Enable it from the host's Docker settings in the web UI.",
                 Modifier.padding(top = 8.dp),
             )
-            if (mayManage) {
-                val actions = actionsFor(d.state.status.ifBlank { "exited" })
-                actions.chunked(3).forEach { rowActions ->
-                    Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        rowActions.forEach { a ->
-                            val destructive = a == "remove" || a == "kill" || a == "stop"
-                            val click = { if (destructive || a == "restart") confirm = a else run(a) }
-                            if (a == rowActions.first()) Button(click, enabled = busy == null) { if (busy == a) Spinner() else Text(actionLabels[a] ?: a) }
-                            else FilledTonalButton(click, enabled = busy == null) { if (busy == a) Spinner() else Text(actionLabels[a] ?: a) }
-                        }
-                    }
-                }
-                OutlinedButton({ recreate = true }, enabled = busy == null, modifier = Modifier.padding(top = 8.dp)) { Text("Recreate…") }
-            }
 
             SectionTitle("Container")
             KeyValue("Image", d.image, mono = true)
@@ -302,6 +291,12 @@ private fun ContainerOverview(
                 MonoBlock(d.labels.entries.sortedBy { it.key }.joinToString("\n") { "${it.key}=${it.value}" })
             }
         }
+    }
+    if (mayManage) ContainerActionBar(actionsFor(d.state.status.ifBlank { "exited" }), busy, onAction = { a ->
+        if (a == "recreate") recreate = true
+        else if (a == "remove" || a == "kill" || a == "stop" || a == "restart") confirm = a
+        else run(a)
+    })
     }
 
     confirm?.let { action ->
@@ -493,6 +488,40 @@ private fun ContainerStats(api: VigaraApi, hostId: String, ref: String, running:
                 LineChart(listOf(Series("cpu", "%", emptyMap(), samples.map { Point(it.t, it.cpu) })), "%")
                 SectionTitle("Memory (% of limit)")
                 LineChart(listOf(Series("mem", "%", emptyMap(), samples.map { Point(it.t, it.memPct) })), "%")
+            }
+        }
+    }
+}
+
+/**
+ * The container's actions, pinned to the bottom of the Overview tab so they stay in reach while the
+ * details scroll. The two most likely actions are buttons; the rest, and Recreate, are in a menu.
+ */
+@Composable
+private fun ContainerActionBar(actions: List<String>, busy: String?, onAction: (String) -> Unit) {
+    var menu by remember { mutableStateOf(false) }
+    val inline = actions.filter { it != "remove" && it != "kill" }.take(2)
+    val rest = actions.filter { it !in inline } + "recreate"
+    Surface(color = MaterialTheme.colorScheme.surface, shadowElevation = 6.dp) {
+        Column {
+            androidx.compose.material3.HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                inline.forEachIndexed { i, a ->
+                    val label = @Composable { if (busy == a) Spinner() else Text(actionLabels[a] ?: a) }
+                    if (i == 0) Button({ onAction(a) }, enabled = busy == null, modifier = Modifier.weight(1f)) { label() }
+                    else OutlinedButton({ onAction(a) }, enabled = busy == null, modifier = Modifier.weight(1f)) { label() }
+                }
+                androidx.compose.foundation.layout.Box {
+                    OutlinedButton({ menu = true }, enabled = busy == null) { if (busy != null && busy !in inline) Spinner() else Text("More") }
+                    androidx.compose.material3.DropdownMenu(menu, { menu = false }) {
+                        rest.forEach { a ->
+                            androidx.compose.material3.DropdownMenuItem(
+                                text = { Text(if (a == "recreate") "Recreate…" else actionLabels[a] ?: a, color = if (a == "remove" || a == "kill") Palette.bad else Color.Unspecified) },
+                                onClick = { menu = false; onAction(a) },
+                            )
+                        }
+                    }
+                }
             }
         }
     }
