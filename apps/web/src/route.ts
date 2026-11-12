@@ -41,7 +41,7 @@ export function parseRoute(hash: string): Route {
   const [rawSection, rawId, rawSub, rawTab] = hash.replace(/^#\/?/, '').split('/')
   const id = decodeSegment(rawId, idPattern)
   const legacy = legacySections.find((candidate) => candidate === rawSection)
-  if (legacy === 'monitoring') return route('overview', id)
+  if (legacy === 'monitoring') return id ? route('devices', id) : route('overview')
   if (legacy === 'account') return route('settings', 'account')
   if (legacy === 'admin') return route('settings', 'server')
   const section = sections.find((candidate) => candidate === rawSection)

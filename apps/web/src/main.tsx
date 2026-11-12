@@ -8,6 +8,7 @@ import { Stacks } from './stacks'
 import { Devices } from './devices'
 import { Resources } from './resources'
 import { Alerts } from './alerts'
+import { Overview } from './overview'
 import { Settings } from './settings'
 import { AppFrame, PublicFrame, sectionLabels } from './app-shell'
 import { PasswordWhitespaceWarning } from './password-warning'
@@ -202,7 +203,7 @@ type PageProps = { user: User; route: Route; onNavigate: (route: Route) => void;
 function Page({ user, route, onNavigate, onUserChanged, onSessionExpired }: PageProps) {
   const role = user.role
   switch (route.section) {
-    case 'overview': return <Devices key={user.id} role={role} section="monitoring" selectedId={route.id} onSelect={(id) => onNavigate(routeOf('overview', id))} />
+    case 'overview': return <Overview key={user.id} userName={user.displayName || user.username} onNavigate={onNavigate} />
     case 'alerts': return <Alerts key={user.id} />
     case 'devices': return <Devices key={user.id} role={role} section="devices" selectedId={route.id} onSelect={(id) => onNavigate(routeOf('devices', id))} />
     case 'backups': return <Devices key={user.id} role={role} section="backups" selectedId={route.id} onSelect={(id) => onNavigate(routeOf(id ? 'devices' : 'backups', id))} />
