@@ -148,7 +148,7 @@ export function Backups({ role }: { role: string }) {
           })}</Table.Tbody>
         </Table></div>
       </Panel>
-      {current && <RunsPanel key={current.id} policy={current} label={policyLabel(current, deviceName(current.deviceId))} runs={runs[current.id] ?? []} admin={admin} onEdit={() => setSheet({ deviceId: current.deviceId })} />}
+      {current && <RunsPanel key={`${current.id}-${refresh}`} policy={current} label={policyLabel(current, deviceName(current.deviceId))} runs={runs[current.id] ?? []} admin={admin} onEdit={() => setSheet({ deviceId: current.deviceId })} />}
     </>}
 
     <PolicySheet opened={!!sheet} initial={sheet ?? {}} devices={devices} policies={policies} volumes={volumes ?? []} onClose={() => setSheet(null)} onSaved={() => { setSheet(null); setRefresh((n) => n + 1) }} />
