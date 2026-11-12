@@ -5,6 +5,7 @@ import { Spotlight, spotlight, type SpotlightActionGroupData } from '@mantine/sp
 import { useAtom } from 'jotai'
 import { IconArchive, IconArrowUpCircle, IconBell, IconBox, IconCheck, IconChevronDown, IconDots, IconHome, IconLogout, IconMoon, IconSearch, IconServer, IconSettings, IconStack2, IconSun, IconUser } from '@tabler/icons-react'
 import { navSection, route as routeOf, type Route, type Section } from './route'
+import { alertsChangedEvent, openCount } from './alerts-utils'
 import { deviceScopeAtom } from './scope'
 import '@mantine/spotlight/styles.css'
 
@@ -44,15 +45,17 @@ function useSummary(): Summary {
   const [summary, setSummary] = useState<Summary>({ devices: null, firing: null, stacks: null, updates: null })
   useEffect(() => {
     let active = true
+    const loadAlerts = () => void read<{ status: string; acknowledgedAt?: string; mutedUntil?: string }[]>('/api/alerts/incidents').then((v) => { if (active) setSummary((s) => ({ ...s, firing: openCount(v) })) }).catch(() => undefined)
     const load = () => {
       void read<{ devices: SummaryDevice[] }>('/api/inventory/devices?limit=100&offset=0').then((v) => { if (active) setSummary((s) => ({ ...s, devices: v.devices })) }).catch(() => undefined)
-      void read<{ status: string }[]>('/api/alerts/incidents').then((v) => { if (active) setSummary((s) => ({ ...s, firing: v.filter((i) => i.status === 'firing').length })) }).catch(() => undefined)
+      loadAlerts()
       void read<{ stacks: { id: string }[] }>('/api/stacks').then((v) => { if (active) setSummary((s) => ({ ...s, stacks: v.stacks.map((stack) => stack.id) })) }).catch(() => undefined)
       void read<{ items: { ignored: boolean; result: { status: string } }[] }>('/api/image-updates').then((v) => { if (active) setSummary((s) => ({ ...s, updates: v.items.filter((i) => !i.ignored && i.result.status === 'available').length })) }).catch(() => undefined)
     }
     load()
     const timer = window.setInterval(load, 60_000)
-    return () => { active = false; window.clearInterval(timer) }
+    window.addEventListener(alertsChangedEvent, loadAlerts)
+    return () => { active = false; window.clearInterval(timer); window.removeEventListener(alertsChangedEvent, loadAlerts) }
   }, [])
   return summary
 }
@@ -122,7 +125,9 @@ function Breadcrumbs({ route, summary, onNavigate }: { route: Route; summary: Su
   if (nav !== route.section) crumbs.push({ label: sectionLabels[route.section], to: routeOf(route.section) })
   if (route.id) {
     const device = summary.devices?.find((d) => d.id === route.id || d.agentId === route.id)
-    const label = route.section === 'settings' ? { account: 'Account', server: 'Server', about: 'About' }[route.id] ?? route.id : device?.name ?? route.id
+    const label = route.section === 'settings' ? { account: 'Account', server: 'Server', about: 'About' }[route.id] ?? route.id
+      : route.section === 'alerts' ? route.id.charAt(0).toUpperCase() + route.id.slice(1)
+      : device?.name ?? route.id
     // A device's tab is shown by its tab bar, so the device is the last crumb.
     const sub = route.section === 'devices' ? null : route.sub
     crumbs.push({ label, to: sub ? routeOf(route.section, route.id) : undefined })

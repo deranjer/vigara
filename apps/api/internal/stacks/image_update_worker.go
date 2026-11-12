@@ -235,25 +235,30 @@ func (a *API) storeImageCheck(ctx context.Context, agent string, result protocol
 		if e != nil {
 			return e
 		}
-		if tag.RowsAffected() == 1 {
+		// A newer image is an event (the notice row), not an alert. Only a
+		// container on a fixed version tag whose image changed raises one.
+		if tag.RowsAffected() == 1 && pinnedVersionTag(result.RunningImage) {
 			var device string
 			if err = tx.QueryRow(ctx, "SELECT device_id::text FROM agent_identities WHERE id=$1", agent).Scan(&device); err != nil {
 				return err
 			}
 			dimension := device + "/image/" + result.ID
-			summary := fmt.Sprintf("Image changed for %.80s (%.120s).", result.Name, result.Image)
+			summary := fmt.Sprintf("Image for %.80s changed under the fixed tag %.120s.", result.Name, result.RunningImage)
 			var incident string
-			err = tx.QueryRow(ctx, `INSERT INTO alert_incidents(rule_id,dimension,status,summary,started_at,last_observed_at) VALUES('00000000-0000-0000-0000-000000000024',$1,'firing',$2,now(),now()) ON CONFLICT(rule_id,dimension) DO UPDATE SET status='firing',summary=$2,last_observed_at=now(),resolved_at=NULL RETURNING id::text`, dimension, summary).Scan(&incident)
-			if err != nil {
+			err = tx.QueryRow(ctx, `INSERT INTO alert_incidents(rule_id,dimension,status,summary,started_at,last_observed_at) SELECT id,$1,'firing',$2,now(),now() FROM alert_rules WHERE id='`+pinnedImageRule+`' AND enabled ON CONFLICT(rule_id,dimension) DO UPDATE SET status='firing',summary=$2,started_at=CASE WHEN alert_incidents.status='firing' THEN alert_incidents.started_at ELSE now() END,last_observed_at=now(),resolved_at=NULL,acknowledged_at=NULL,acknowledged_by=NULL,updated_at=now() RETURNING id::text`, dimension, summary).Scan(&incident)
+			if errors.Is(err, pgx.ErrNoRows) {
+				err = nil // rule switched off
+			} else if err != nil {
 				return err
-			}
-			payload, _ := json.Marshal(map[string]string{"rule": "Container image updates", "summary": summary, "dimension": dimension})
-			if _, err = tx.Exec(ctx, "INSERT INTO alert_events(incident_id,transition,payload) VALUES($1,'firing',$2)", incident, payload); err != nil {
-				return err
+			} else {
+				payload, _ := json.Marshal(map[string]string{"rule": "Pinned image changed", "summary": summary, "dimension": dimension})
+				if _, err = tx.Exec(ctx, "INSERT INTO alert_events(incident_id,transition,payload) VALUES($1,'firing',$2)", incident, payload); err != nil {
+					return err
+				}
 			}
 		}
 	} else if result.Status == "current" {
-		_, err = tx.Exec(ctx, `UPDATE alert_incidents SET status='resolved',resolved_at=now(),last_observed_at=now() WHERE rule_id='00000000-0000-0000-0000-000000000024' AND dimension=(SELECT device_id::text FROM agent_identities WHERE id=$1)||'/image/'||$2 AND status='firing'`, agent, result.ID)
+		_, err = tx.Exec(ctx, `UPDATE alert_incidents SET status='resolved',resolved_at=now(),last_observed_at=now(),updated_at=now() WHERE rule_id IN ('00000000-0000-0000-0000-000000000024','`+pinnedImageRule+`') AND dimension=(SELECT device_id::text FROM agent_identities WHERE id=$1)||'/image/'||$2 AND status='firing'`, agent, result.ID)
 		if err != nil {
 			return err
 		}
@@ -333,10 +338,13 @@ func (a *API) notifyAutomaticImageFailures(ctx context.Context) {
 			err = tx.QueryRow(ctx, "SELECT device_id::text FROM agent_identities WHERE id=$1", f.agent).Scan(&device)
 			dimension := device + "/image-update-failure/" + f.stack
 			if err == nil {
-				err = tx.QueryRow(ctx, `INSERT INTO alert_incidents(rule_id,dimension,status,summary,started_at,last_observed_at) VALUES('00000000-0000-0000-0000-000000000024',$1,'firing',$2,now(),now()) ON CONFLICT(rule_id,dimension) DO UPDATE SET status='firing',summary=$2,last_observed_at=now(),resolved_at=NULL RETURNING id::text`, dimension, summary).Scan(&incident)
+				err = tx.QueryRow(ctx, `INSERT INTO alert_incidents(rule_id,dimension,status,summary,started_at,last_observed_at) SELECT id,$1,'firing',$2,now(),now() FROM alert_rules WHERE id='00000000-0000-0000-0000-000000000024' AND enabled ON CONFLICT(rule_id,dimension) DO UPDATE SET status='firing',summary=$2,last_observed_at=now(),resolved_at=NULL,acknowledged_at=NULL,acknowledged_by=NULL,updated_at=now() RETURNING id::text`, dimension, summary).Scan(&incident)
+				if errors.Is(err, pgx.ErrNoRows) {
+					err, incident = nil, "" // rule switched off
+				}
 			}
 			payload, _ := json.Marshal(map[string]string{"rule": "Automatic image update needs attention", "summary": summary, "dimension": dimension})
-			if err == nil {
+			if err == nil && incident != "" {
 				_, err = tx.Exec(ctx, "INSERT INTO alert_events(incident_id,transition,payload) VALUES($1,'firing',$2)", incident, payload)
 			}
 		}
@@ -514,4 +522,24 @@ func (a *API) automaticImageAllowed(ctx context.Context, s stack.Snapshot, versi
 		w = *p.Maintenance
 	}
 	return w.Slot(time.Now()) != ""
+}
+
+const pinnedImageRule = "00000000-0000-0000-0000-000000000025"
+
+var fixedVersionTag = regexp.MustCompile(`^v?\d+\.\d+\.\d+([.+_-][0-9A-Za-z.+_-]*)?$`)
+
+// pinnedVersionTag reports whether an image reference names an exact release
+// (1.2.3, v2.4.0-alpine, 1.40.0.7998-ls245). An image changing under such a tag
+// is unexpected; under latest, 17 or 17-alpine it is routine. Digest
+// references are already fixed and never change.
+func pinnedVersionTag(ref string) bool {
+	if strings.Contains(ref, "@") {
+		return false
+	}
+	slash := strings.LastIndex(ref, "/")
+	colon := strings.LastIndex(ref, ":")
+	if colon <= slash {
+		return false
+	}
+	return fixedVersionTag.MatchString(ref[colon+1:])
 }

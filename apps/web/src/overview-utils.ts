@@ -1,3 +1,4 @@
+import { bucketOf } from './alerts-utils'
 import { route, type Route } from './route'
 import type { StatusTone } from './status'
 
@@ -7,7 +8,7 @@ export type OverviewDevice = {
   id: string; name: string; status: string; agentId?: string | null; lastSeenAt?: string | null
   latest?: { host?: { cpuModel?: string; logicalCpus?: number; totalMemoryBytes?: number }; metrics?: OverviewMetric[]; dockerContainers?: { id: string; name?: string; image?: string; state: string }[] }
 }
-export type OverviewIncident = { id: string; status: string; summary: string; dimension: string; startedAt: string; resolvedAt?: string }
+export type OverviewIncident = { id: string; status: string; summary: string; dimension: string; startedAt: string; resolvedAt?: string; acknowledgedAt?: string; mutedUntil?: string }
 export type OverviewUpdate = { agentId: string; device: string; ignored: boolean; result: { name: string; status: string } }
 export type OverviewStack = { id: string; name: string; draft?: boolean; deploymentStatus?: string; deploymentAt?: string; deploymentCommit?: string; deviceName?: string }
 export type OverviewHost = { agentId: string; name: string; state: string; containers: { name?: string; state: string; status?: string }[] }
@@ -83,8 +84,9 @@ const listNames = (names: string[], max = 3) => names.length <= max ? names.join
 /** What needs the user, most serious first. Every item links to the page that resolves it. */
 export function attentionItems(input: { devices: OverviewDevice[] | null; incidents: OverviewIncident[] | null; updates: OverviewUpdate[] | null; stacks: OverviewStack[] | null; hosts: OverviewHost[] | null; policies: number | null }): AttentionItem[] {
   const items: AttentionItem[] = []
-  const firing = input.incidents?.filter((i) => i.status === 'firing') ?? []
-  if (firing.length) items.push({ key: 'alerts', tone: 'crit', title: firing.length === 1 ? firing[0].summary : `${firing.length} alerts are firing`, detail: firing.length === 1 ? `Since ${new Date(firing[0].startedAt).toLocaleString()}` : listNames(firing.map((i) => i.summary), 2), action: 'Open alerts', to: route('alerts') })
+  // Acknowledged and muted alerts have been seen; only open ones need attention.
+  const firing = input.incidents?.filter((i) => bucketOf(i) === 'open') ?? []
+  if (firing.length) items.push({ key: 'alerts', tone: 'crit', title: firing.length === 1 ? firing[0].summary : `${firing.length} alerts are open`, detail: firing.length === 1 ? `Since ${new Date(firing[0].startedAt).toLocaleString()}` : listNames(firing.map((i) => i.summary), 2), action: 'Open alerts', to: route('alerts') })
   for (const device of input.devices ?? []) {
     if (device.status === 'failed' || device.status === 'stale') items.push({ key: `device:${device.id}`, tone: device.status === 'failed' ? 'crit' : 'warn', title: `${device.name} is ${device.status === 'stale' ? 'not checking in' : 'failing to report'}`, detail: device.lastSeenAt ? `Last check-in ${new Date(device.lastSeenAt).toLocaleString()}` : 'No check-in recorded', action: 'Open device', to: route('devices', device.id) })
     const disk = worstDisk(device)

@@ -58,7 +58,7 @@ func (h *Handler) tools(p principal) *mcp.Server {
  'missedRunPolicy',p.missed_run_policy,'disconnectedDevicePolicy',p.disconnected_device_policy,
  'nextRunAt',p.next_run_at,'updatedAt',p.updated_at)
  FROM backup_policies p WHERE p.retired_at IS NULL ORDER BY p.name,p.id LIMIT $1 OFFSET $2`)
-	h.addPageTool(server, p, "list_alerts", "List recent firing and resolved incidents, newest first, including backup failures and device availability alerts.", "alerts.read", `SELECT jsonb_build_object('id',i.id,'ruleName',r.name,'kind',r.kind,'status',i.status,'summary',i.summary,'startedAt',i.started_at,'lastObservedAt',i.last_observed_at,'resolvedAt',i.resolved_at)
+	h.addPageTool(server, p, "list_alerts", "List recent firing and resolved incidents, newest first, including backup failures and device availability alerts. acknowledgedAt is set once someone has seen a firing alert; mutedUntil is set while it is muted.", "alerts.read", `SELECT jsonb_build_object('id',i.id,'ruleName',r.name,'kind',r.kind,'severity',r.severity,'status',i.status,'summary',i.summary,'startedAt',i.started_at,'lastObservedAt',i.last_observed_at,'resolvedAt',i.resolved_at,'acknowledgedAt',i.acknowledged_at,'mutedUntil',CASE WHEN i.muted_until>now() THEN i.muted_until END)
  FROM alert_incidents i JOIN alert_rules r ON r.id=i.rule_id ORDER BY i.updated_at DESC,i.id DESC LIMIT $1 OFFSET $2`)
 	h.addManagementTools(server, p)
 	return server

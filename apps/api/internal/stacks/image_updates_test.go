@@ -229,9 +229,22 @@ func TestImageCheckNoticesAreDurableAndErrorsKeepLastSuccess(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// A newer image is recorded once as a notice and raises no alert.
 	var count int
-	if err := a.Pool.QueryRow(ctx, "SELECT count(*) FROM alert_events").Scan(&count); err != nil || count != 1 {
-		t.Fatal("duplicate image notifications", count, err)
+	if err := a.Pool.QueryRow(ctx, "SELECT (SELECT count(*) FROM image_update_notices)*10+(SELECT count(*) FROM alert_events)").Scan(&count); err != nil || count != 10 {
+		t.Fatal("image notices*10+alert events", count, err)
+	}
+	// Under a fixed version tag a changed image is unexpected and alerts, once.
+	pinned := r
+	pinned.RunningImage = "example/web:1.2.3"
+	pinned.Available = "sha256:" + strings.Repeat("e", 64)
+	for range 2 {
+		if err := a.storeImageCheck(ctx, agent, pinned); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := a.Pool.QueryRow(ctx, "SELECT count(*) FROM alert_events e JOIN alert_incidents i ON i.id=e.incident_id WHERE i.rule_id='"+pinnedImageRule+"'").Scan(&count); err != nil || count != 1 {
+		t.Fatal("pinned image alerts", count, err)
 	}
 	r.Status = "unknown"
 	r.Message = "registry unavailable"

@@ -38,6 +38,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/devices/{deviceID}/availability", h.putAvailability)
 	mux.HandleFunc("POST /api/devices/{deviceID}/maintenance", h.addMaintenance)
 	mux.HandleFunc("DELETE /api/devices/{deviceID}/maintenance/{windowID}", h.deleteMaintenance)
+	h.registerInbox(mux)
 }
 
 // AwakeSchedule describes recurring expected-online local wall-clock time.
@@ -363,6 +364,7 @@ type Rule struct {
 	Name      string    `json:"name"`
 	Kind      string    `json:"kind"`
 	Enabled   bool      `json:"enabled"`
+	Severity  string    `json:"severity"`
 	Config    Config    `json:"config"`
 	CreatedAt time.Time `json:"createdAt"`
 }
@@ -379,9 +381,10 @@ type Config struct {
 	IntervalSeconds   int               `json:"intervalSeconds,omitempty"`
 }
 type ruleRequest struct {
-	Name   string `json:"name"`
-	Kind   string `json:"kind"`
-	Config Config `json:"config"`
+	Name     string `json:"name"`
+	Kind     string `json:"kind"`
+	Severity string `json:"severity,omitempty"`
+	Config   Config `json:"config"`
 }
 
 func validateRule(q ruleRequest) error {
@@ -445,7 +448,7 @@ func (h *Handler) listRules(w http.ResponseWriter, r *http.Request) {
 	if !h.requireUser(w, r) {
 		return
 	}
-	rows, e := h.pool.Query(r.Context(), `SELECT id::text,name,kind,enabled,config,created_at FROM alert_rules ORDER BY created_at DESC`)
+	rows, e := h.pool.Query(r.Context(), `SELECT id::text,name,kind,enabled,severity,config,created_at FROM alert_rules ORDER BY created_at DESC`)
 	if e != nil {
 		http.Error(w, "could not read alert rules", 500)
 		return
@@ -455,7 +458,7 @@ func (h *Handler) listRules(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var a Rule
 		var b []byte
-		if e = rows.Scan(&a.ID, &a.Name, &a.Kind, &a.Enabled, &b, &a.CreatedAt); e != nil {
+		if e = rows.Scan(&a.ID, &a.Name, &a.Kind, &a.Enabled, &a.Severity, &b, &a.CreatedAt); e != nil {
 			http.Error(w, "could not read alert rules", 500)
 			return
 		}
@@ -481,6 +484,13 @@ func (h *Handler) createRule(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, e.Error(), 400)
 		return
 	}
+	if q.Severity == "" {
+		q.Severity = "warning"
+	}
+	if !validSeverity(q.Severity) {
+		http.Error(w, "severity must be warning or critical", 400)
+		return
+	}
 	b, _ := json.Marshal(q.Config)
 	ctx := r.Context()
 	tx, e := h.pool.Begin(ctx)
@@ -503,7 +513,7 @@ func (h *Handler) createRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var a Rule
-	e = tx.QueryRow(ctx, `INSERT INTO alert_rules(name,kind,config) VALUES($1,$2,$3) RETURNING id::text,name,kind,enabled,config,created_at`, q.Name, q.Kind, b).Scan(&a.ID, &a.Name, &a.Kind, &a.Enabled, &b, &a.CreatedAt)
+	e = tx.QueryRow(ctx, `INSERT INTO alert_rules(name,kind,severity,config) VALUES($1,$2,$3,$4) RETURNING id::text,name,kind,enabled,severity,config,created_at`, q.Name, q.Kind, q.Severity, b).Scan(&a.ID, &a.Name, &a.Kind, &a.Enabled, &a.Severity, &b, &a.CreatedAt)
 	if e == nil {
 		e = tx.Commit(ctx)
 	}
@@ -580,19 +590,29 @@ func (h *Handler) disableRule(w http.ResponseWriter, r *http.Request) {
 type Incident struct {
 	ID             string     `json:"id"`
 	RuleID         string     `json:"ruleId"`
+	RuleName       string     `json:"ruleName"`
+	Kind           string     `json:"kind"`
+	Severity       string     `json:"severity"`
 	Dimension      string     `json:"dimension"`
 	Status         string     `json:"status"`
 	Summary        string     `json:"summary"`
 	StartedAt      time.Time  `json:"startedAt"`
 	LastObservedAt *time.Time `json:"lastObservedAt,omitempty"`
 	ResolvedAt     *time.Time `json:"resolvedAt,omitempty"`
+	AcknowledgedAt *time.Time `json:"acknowledgedAt,omitempty"`
+	AcknowledgedBy string     `json:"acknowledgedBy,omitempty"`
+	MutedUntil     *time.Time `json:"mutedUntil,omitempty"`
+	Notes          []Note     `json:"notes"`
 }
 
 func (h *Handler) listIncidents(w http.ResponseWriter, r *http.Request) {
 	if !h.requireUser(w, r) {
 		return
 	}
-	rows, e := h.pool.Query(r.Context(), `SELECT id::text,rule_id::text,dimension,status,summary,started_at,last_observed_at,resolved_at FROM alert_incidents ORDER BY updated_at DESC LIMIT 500`)
+	// Mutes that have run out are reported as unmuted.
+	rows, e := h.pool.Query(r.Context(), `SELECT i.id::text,i.rule_id::text,r.name,r.kind,r.severity,i.dimension,i.status,i.summary,i.started_at,i.last_observed_at,i.resolved_at,i.acknowledged_at,COALESCE(NULLIF(u.display_name,''),u.username,''),CASE WHEN i.muted_until>now() THEN i.muted_until END,
+ COALESCE((SELECT jsonb_agg(jsonb_build_object('id',n.id,'author',n.author_name,'body',n.body,'createdAt',n.created_at) ORDER BY n.created_at) FROM alert_notes n WHERE n.incident_id=i.id),'[]'::jsonb)
+ FROM alert_incidents i JOIN alert_rules r ON r.id=i.rule_id LEFT JOIN users u ON u.id=i.acknowledged_by ORDER BY i.updated_at DESC LIMIT 500`)
 	if e != nil {
 		http.Error(w, "could not read alert incidents", 500)
 		return
@@ -601,10 +621,13 @@ func (h *Handler) listIncidents(w http.ResponseWriter, r *http.Request) {
 	out := []Incident{}
 	for rows.Next() {
 		var a Incident
-		if e = rows.Scan(&a.ID, &a.RuleID, &a.Dimension, &a.Status, &a.Summary, &a.StartedAt, &a.LastObservedAt, &a.ResolvedAt); e != nil {
+		var notes []byte
+		if e = rows.Scan(&a.ID, &a.RuleID, &a.RuleName, &a.Kind, &a.Severity, &a.Dimension, &a.Status, &a.Summary, &a.StartedAt, &a.LastObservedAt, &a.ResolvedAt, &a.AcknowledgedAt, &a.AcknowledgedBy, &a.MutedUntil, &notes); e != nil {
 			http.Error(w, "could not read alert incidents", 500)
 			return
 		}
+		a.Notes = []Note{}
+		_ = json.Unmarshal(notes, &a.Notes)
 		out = append(out, a)
 	}
 	if e = rows.Err(); e != nil {
@@ -785,19 +808,20 @@ func evaluateRule(ctx context.Context, tx pgx.Tx, r Rule, now time.Time) error {
 	return nil
 }
 func evalDevice(ctx context.Context, tx pgx.Tx, r Rule, now time.Time) error {
-	rows, e := tx.Query(ctx, `SELECT id::text,last_seen_at,created_at FROM devices WHERE ($1='' OR id::text=$1)`, r.Config.DeviceID)
+	rows, e := tx.Query(ctx, `SELECT id::text,display_name,last_seen_at,created_at FROM devices WHERE ($1='' OR id::text=$1)`, r.Config.DeviceID)
 	if e != nil {
 		return e
 	}
 	type d struct {
 		id      string
+		name    string
 		seen    *time.Time
 		created time.Time
 	}
 	ds := []d{}
 	for rows.Next() {
 		var x d
-		if e = rows.Scan(&x.id, &x.seen, &x.created); e != nil {
+		if e = rows.Scan(&x.id, &x.name, &x.seen, &x.created); e != nil {
 			rows.Close()
 			return e
 		}
@@ -810,10 +834,10 @@ func evalDevice(ctx context.Context, tx pgx.Tx, r Rule, now time.Time) error {
 	rows.Close()
 	for _, x := range ds {
 		since := x.created
-		summary := "device has never checked in"
+		summary := x.name + " has never checked in"
 		if x.seen != nil {
 			since = *x.seen
-			summary = "device has not checked in since " + since.UTC().Format(time.RFC3339)
+			summary = x.name + " has not checked in since " + since.UTC().Format("2 Jan 15:04 UTC")
 		}
 		age := now.Sub(since)
 		due := age > time.Duration(r.Config.StaleAfterSeconds+r.Config.GraceSeconds)*time.Second
@@ -882,7 +906,7 @@ func evalThreshold(ctx context.Context, tx pgx.Tx, r Rule, now time.Time) error 
 		labelFilter = []byte(`{}`)
 	}
 	lookback := r.Config.SustainSeconds + r.Config.GraceSeconds + 420
-	rows, e := tx.Query(ctx, `SELECT i.device_id::text,t.observed_at,(m->>'value')::double precision,COALESCE(NULLIF(m->'labels','null'::jsonb),'{}'::jsonb) FROM agent_telemetry t JOIN agent_identities i ON i.id=t.agent_id CROSS JOIN LATERAL jsonb_array_elements(COALESCE(t.payload->'metrics','[]'::jsonb)) m WHERE i.revoked_at IS NULL AND ($1='' OR i.device_id::text=$1) AND t.observed_at>now()-make_interval(secs=>$3) AND m->>'name'=$2 AND COALESCE(NULLIF(m->'labels','null'::jsonb),'{}'::jsonb) @> $4::jsonb ORDER BY t.observed_at DESC,t.agent_id,t.report_id DESC LIMIT 100001`, r.Config.DeviceID, r.Config.Metric, lookback, labelFilter)
+	rows, e := tx.Query(ctx, `SELECT i.device_id::text,dv.display_name,t.observed_at,(m->>'value')::double precision,COALESCE(NULLIF(m->'labels','null'::jsonb),'{}'::jsonb) FROM agent_telemetry t JOIN agent_identities i ON i.id=t.agent_id JOIN devices dv ON dv.id=i.device_id CROSS JOIN LATERAL jsonb_array_elements(COALESCE(t.payload->'metrics','[]'::jsonb)) m WHERE i.revoked_at IS NULL AND ($1='' OR i.device_id::text=$1) AND t.observed_at>now()-make_interval(secs=>$3) AND m->>'name'=$2 AND COALESCE(NULLIF(m->'labels','null'::jsonb),'{}'::jsonb) @> $4::jsonb ORDER BY t.observed_at DESC,t.agent_id,t.report_id DESC LIMIT 100001`, r.Config.DeviceID, r.Config.Metric, lookback, labelFilter)
 	if e != nil {
 		return e
 	}
@@ -899,11 +923,11 @@ func evalThreshold(ctx context.Context, tx pgx.Tx, r Rule, now time.Time) error 
 			rows.Close()
 			return errors.New("more than 100000 matching metric observations in the evaluation window")
 		}
-		var dev string
+		var dev, devName string
 		var at time.Time
 		var value float64
 		var labelData []byte
-		if e = rows.Scan(&dev, &at, &value, &labelData); e != nil {
+		if e = rows.Scan(&dev, &devName, &at, &value, &labelData); e != nil {
 			rows.Close()
 			return e
 		}
@@ -923,7 +947,7 @@ func evalThreshold(ctx context.Context, tx pgx.Tx, r Rule, now time.Time) error 
 		dim := dev + "/" + string(b)
 		grouped[dim] = append(grouped[dim], sample{at, value})
 		if _, ok := summaries[dim]; !ok {
-			summaries[dim] = fmt.Sprintf("%s value %g (condition %s %g)", r.Config.Metric, value, r.Config.Operator, r.Config.Threshold)
+			summaries[dim] = thresholdSummary(r.Config, value, labels["mount_path"], devName)
 		}
 	}
 	if e = rows.Err(); e != nil {
@@ -1065,7 +1089,7 @@ func transition(ctx context.Context, tx pgx.Tx, r Rule, dim string, due, known b
 	if due && status == "resolved" {
 		var raw []byte
 		raw, _ = json.Marshal(map[string]any{"ruleId": r.ID, "rule": r.Name, "kind": r.Kind, "dimension": dim, "summary": summary, "observedAt": observed})
-		_, e = tx.Exec(ctx, `UPDATE alert_incidents SET status='firing',summary=$1,started_at=$2,last_observed_at=COALESCE($3,last_observed_at),resolved_at=NULL,updated_at=now() WHERE id=$4`, summary, now, observed, id)
+		_, e = tx.Exec(ctx, `UPDATE alert_incidents SET status='firing',summary=$1,started_at=$2,last_observed_at=COALESCE($3,last_observed_at),resolved_at=NULL,acknowledged_at=NULL,acknowledged_by=NULL,updated_at=now() WHERE id=$4`, summary, now, observed, id)
 		if e != nil {
 			return e
 		}
@@ -1087,4 +1111,39 @@ func transition(ctx context.Context, tx pgx.Tx, r Rule, dim string, due, known b
 		return e
 	}
 	return nil
+}
+
+var metricNames = map[string]string{"cpu_used_percent": "CPU", "memory_used_percent": "Memory", "memory_available_bytes": "Available memory", "filesystem_free_bytes": "Free disk", "filesystem_total_bytes": "Disk size"}
+var operatorWords = map[string]string{"gt": "over", "gte": "at or over", "lt": "under", "lte": "at or under"}
+
+// thresholdSummary words a threshold alert: "Memory on nas-01 at 55.7% (alert at or over 40%)",
+// "Free disk on /data on nas-01 at 9.5 GB (alert under 10 GB)".
+func thresholdSummary(c Config, value float64, mount, device string) string {
+	name := metricNames[c.Metric]
+	if name == "" {
+		name = c.Metric
+	}
+	if mount != "" {
+		name += " on " + mount
+	}
+	format := func(v float64) string {
+		if strings.HasSuffix(c.Metric, "_bytes") {
+			return humanBytes(v)
+		}
+		return strings.TrimSuffix(fmt.Sprintf("%.1f", v), ".0") + "%"
+	}
+	if device != "" {
+		name += " on " + device
+	}
+	return fmt.Sprintf("%s at %s (alert %s %s)", name, format(value), operatorWords[c.Operator], format(c.Threshold))
+}
+
+func humanBytes(v float64) string {
+	units := []string{"B", "KB", "MB", "GB", "TB", "PB"}
+	i := 0
+	for v >= 1024 && i < len(units)-1 {
+		v /= 1024
+		i++
+	}
+	return strings.TrimSuffix(fmt.Sprintf("%.1f", v), ".0") + " " + units[i]
 }

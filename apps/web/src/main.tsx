@@ -205,7 +205,7 @@ function Page({ user, route, onNavigate, onUserChanged, onSessionExpired }: Page
   const role = user.role
   switch (route.section) {
     case 'overview': return <Overview key={user.id} userName={user.displayName || user.username} onNavigate={onNavigate} />
-    case 'alerts': return <Alerts key={user.id} />
+    case 'alerts': return <Alerts key={user.id} route={route} onNavigate={onNavigate} />
     case 'devices': return <Devices key={user.id} role={role} route={route} onNavigate={onNavigate} />
     case 'backups': return <div key={user.id} className="vg-page"><Title order={1} mb="lg">Backups</Title><BackupHistory /></div>
     case 'stacks': return <Stacks key={user.id} route={route} role={role} onNavigate={onNavigate} />
