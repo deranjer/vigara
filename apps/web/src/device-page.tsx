@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ActionIcon, Button, Group, Menu, Stack, Table, Tabs, Text, Title, UnstyledButton } from '@mantine/core'
 import { IconChevronDown, IconDots, IconMinus, IconTerminal2, IconX } from '@tabler/icons-react'
-import { BackupHistory } from './backup-history'
+import { DeviceRuns } from './backups'
 import { DeviceBackups } from './backup-config'
 import type { ContainerInfo, HostEntry } from './container-utils'
 import { DeviceMetrics } from './device-metrics'
@@ -106,7 +106,7 @@ export function DevicePage({ device, tab: rawTab, role, onNavigate, onRefresh, o
       <Tabs.Panel value="overview"><DeviceOverview device={device} host={host} onNavigate={onNavigate} onOpenTab={go} /></Tabs.Panel>
       <Tabs.Panel value="metrics"><DeviceMetrics device={device} /></Tabs.Panel>
       <Tabs.Panel value="containers"><DeviceContainers device={device} host={host} onNavigate={onNavigate} /></Tabs.Panel>
-      <Tabs.Panel value="backups"><Stack gap="lg"><DeviceBackups key={`setup-${device.id}`} deviceId={device.id} /><BackupHistory key={device.id} deviceId={device.id} /></Stack></Tabs.Panel>
+      <Tabs.Panel value="backups"><Stack gap="lg"><DeviceBackups key={`setup-${device.id}`} deviceId={device.id} /><DeviceRuns key={device.id} deviceId={device.id} deviceName={device.name} /></Stack></Tabs.Panel>
       <Tabs.Panel value="settings"><Stack gap="lg"><DeviceInfo device={device} onReinstall={onReinstall} /><DeviceSettings key={device.id} device={device} onDeleted={onDeleted} onSaved={onRefresh} /></Stack></Tabs.Panel>
     </Tabs>
 

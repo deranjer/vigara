@@ -4,6 +4,7 @@ import { Alert, Badge, Button, Card, Checkbox, Group, Modal, MultiSelect, Passwo
 import { BackupPathInput } from './backup-path-input'
 import { RepositoryPathInput } from './repository-path-input'
 import { isAbsoluteBackupPath } from './backup-path-utils'
+import { formatBytes } from './container-utils'
 
 const weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 export type BackupConfig = {
@@ -28,7 +29,7 @@ export function BackupFields({ value, onChange, existing = false, disabled = fal
   </Stack>
 }
 
-type ManagedView = { configured: boolean; initialized: boolean; available: boolean; revision: number; appliedRevision: number; errorCode?: string; reportedAt?: string; config?: BackupConfig }
+export type ManagedView = { configured: boolean; initialized: boolean; available: boolean; revision: number; appliedRevision: number; errorCode?: string; reportedAt?: string; config?: BackupConfig }
 type Snapshot = { id: string; time: string; hostname?: string; paths: string[] }
 type Entry = { name: string; type: string; path: string; size?: number }
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
@@ -36,7 +37,7 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
   if (!response.ok) throw new Error((await response.text()).trim().slice(0, 300) || 'Backup request failed.')
   return response.json() as Promise<T>
 }
-const setupErrors: Record<string, string> = {
+export const setupErrors: Record<string, string> = {
   source_unavailable: 'A selected folder cannot be read by the agent.', repository_unavailable: 'The repository cannot be opened or initialized. Check storage access and the repository password.',
   restic_unavailable: 'The bundled restic executable is missing. Install a fresh backup-enabled agent bundle.', invalid_configuration: 'The selected paths are invalid or include the backup repository.', state_unavailable: 'The agent could not save its private configuration.',
 }
@@ -85,7 +86,8 @@ export function DeviceBackups({ deviceId }: { deviceId: string }) {
   </Stack></Card>
 }
 
-function SnapshotBrowser({ base }: { base: string }) {
+/** Read-only browsing of a device's snapshots; `snapshotId` opens that snapshot without the picker. */
+export function SnapshotBrowser({ base, snapshotId }: { base: string; snapshotId?: string }) {
   const [snapshots, setSnapshots] = useState<Snapshot[]>([])
   const [snapshot, setSnapshot] = useState<string | null>(null)
   const [directory, setDirectory] = useState('/')
@@ -94,9 +96,9 @@ function SnapshotBrowser({ base }: { base: string }) {
   const [loading, setLoading] = useState(true)
   useEffect(() => {
     let active = true
-    void json<Snapshot[]>(`${base}/snapshots`).then((v) => { if (active) { const sorted = [...v].sort((a, b) => b.time.localeCompare(a.time)); setSnapshots(sorted); setSnapshot(sorted[0]?.id ?? null); setLoading(false) } }).catch((e: unknown) => { if (active) { setError(e instanceof Error ? e.message : 'Could not load snapshots.'); setLoading(false) } })
+    void json<Snapshot[]>(`${base}/snapshots`).then((v) => { if (active) { const sorted = [...v].sort((a, b) => b.time.localeCompare(a.time)); setSnapshots(sorted); setSnapshot(snapshotId && sorted.some((x) => x.id === snapshotId) ? snapshotId : sorted[0]?.id ?? null); setLoading(false) } }).catch((e: unknown) => { if (active) { setError(e instanceof Error ? e.message : 'Could not load snapshots.'); setLoading(false) } })
     return () => { active = false }
-  }, [base])
+  }, [base, snapshotId])
   useEffect(() => {
     if (!snapshot) return
     let active = true
@@ -106,10 +108,10 @@ function SnapshotBrowser({ base }: { base: string }) {
   }, [base, snapshot, directory])
   const download = (path: string) => `${base}/snapshots/${snapshot}/download?path=${encodeURIComponent(path)}`
   return <Stack>
-    <Title order={4}>Snapshots</Title>{error && <Alert color="red">{error}</Alert>}
-    <Select label="Snapshot" value={snapshot} onChange={(v) => { setSnapshot(v); setDirectory('/') }} data={snapshots.map((s) => ({ value: s.id, label: `${new Date(s.time).toLocaleString()} · ${s.hostname ?? ''} · ${s.id.slice(0, 12)}` }))} />
+    {!snapshotId && <Title order={4}>Snapshots</Title>}{error && <Alert color="red">{error}</Alert>}
+    {!snapshotId && <Select label="Snapshot" value={snapshot} onChange={(v) => { setSnapshot(v); setDirectory('/') }} data={snapshots.map((s) => ({ value: s.id, label: `${new Date(s.time).toLocaleString()} · ${s.hostname ?? ''} · ${s.id.slice(0, 12)}` }))} />}
     {snapshot && <><Group><Button size="xs" variant="default" disabled={directory === '/' || loading} onClick={() => setDirectory(directory.slice(0, directory.lastIndexOf('/')) || '/')}>Up</Button><Text size="sm">{directory}</Text><Button size="xs" component="a" href={download(directory)}>Download folder ZIP</Button></Group>
-      <Table><Table.Thead><Table.Tr><Table.Th>Name</Table.Th><Table.Th>Size</Table.Th><Table.Th /></Table.Tr></Table.Thead><Table.Tbody>{entries.map((entry) => <Table.Tr key={entry.path}><Table.Td>{entry.type === 'dir' ? <Button variant="subtle" size="xs" onClick={() => setDirectory(entry.path)}>{entry.name}/</Button> : entry.name}</Table.Td><Table.Td>{entry.type === 'file' ? `${(entry.size ?? 0).toLocaleString()} B` : '—'}</Table.Td><Table.Td>{['file', 'dir'].includes(entry.type) && <Button component="a" href={download(entry.path)} variant="light" size="xs">Download{entry.type === 'dir' ? ' ZIP' : ''}</Button>}</Table.Td></Table.Tr>)}</Table.Tbody></Table></>}
+      <Table><Table.Thead><Table.Tr><Table.Th>Name</Table.Th><Table.Th>Size</Table.Th><Table.Th /></Table.Tr></Table.Thead><Table.Tbody>{entries.map((entry) => <Table.Tr key={entry.path}><Table.Td>{entry.type === 'dir' ? <Button variant="subtle" size="xs" onClick={() => setDirectory(entry.path)}>{entry.name}/</Button> : entry.name}</Table.Td><Table.Td className="vg-num">{entry.type === 'file' ? formatBytes(entry.size ?? 0) : '—'}</Table.Td><Table.Td>{['file', 'dir'].includes(entry.type) && <Button component="a" href={download(entry.path)} variant="light" size="xs">Download{entry.type === 'dir' ? ' ZIP' : ''}</Button>}</Table.Td></Table.Tr>)}</Table.Tbody></Table></>}
     <Text size="xs" c="dimmed">{loading ? 'Loading…' : !snapshots.length ? 'No snapshots found.' : !entries.length ? 'No entries in this folder.' : 'Downloads are limited to 2 GiB each.'}</Text>
   </Stack>
 }

@@ -350,3 +350,14 @@ code, kbd, pre, samp { font-family: var(--mantine-font-family-monospace); }
 /* P8 Notifications */
 .vg-notify-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
 @media (max-width: 61.99em) { .vg-notify-grid { grid-template-columns: minmax(0, 1fr); } }
+
+/* P9 Backups */
+.vg-runs { display: inline-flex; gap: 2px; vertical-align: middle; }
+.vg-runs i { width: 8px; height: 16px; border-radius: 2px; background: var(--vg-ok, var(--mantine-color-green-6)); }
+.vg-runs i[data-kind="none"] { background: var(--mantine-color-default-border); }
+.vg-runs i[data-kind="fail"] { background: var(--vg-crit, var(--mantine-color-red-6)); }
+.vg-runs i[data-kind="warn"] { background: var(--vg-warn, var(--mantine-color-yellow-6)); }
+.vg-runs i[data-kind="running"] { background: var(--mantine-primary-color-filled); }
+.vg-row-selected { background: var(--mantine-primary-color-light); }
+.vg-check-list { display: flex; flex-direction: column; gap: 8px; max-height: 260px; overflow-y: auto; padding: 10px 12px; border: 1px solid var(--mantine-color-default-border); border-radius: var(--mantine-radius-sm); }
+.vg-check-list .mantine-Checkbox-body, .vg-check-list .mantine-Checkbox-labelWrapper { width: 100%; min-width: 0; }
