@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Button, Card, Stack, Tabs, Text, Title } from '@mantine/core'
 import { Account } from './account'
 import { Admin } from './admin'
+import { NotificationSettingsPanel } from './notification-settings'
 import { route as routeOf, settingsTabs, type Route, type SettingsTab } from './route'
 import { compareSemver } from './semver'
 import type { ShellUser } from './app-shell'
@@ -15,14 +16,16 @@ export function Settings({ user, route, onNavigate, onUserChanged, onSessionExpi
   const requested = settingsTabs.find((tab) => tab === route.id)
   const tab: SettingsTab = requested && available.includes(requested) ? requested : isAdmin ? 'server' : 'account'
   return <Stack gap="lg" className="vg-page">
-    <div><Title order={1}>Settings</Title><Text c="dimmed" mt={6}>Your account, server administration and version details.</Text></div>
+    <div><Title order={1}>Settings</Title><Text c="dimmed" mt={6}>Your account, notifications, server administration and version details.</Text></div>
     <Tabs value={tab} onChange={(value) => { if (value) onNavigate(routeOf('settings', value)) }} keepMounted={false}>
       <Tabs.List mb="lg">
         <Tabs.Tab value="account">Account</Tabs.Tab>
+        <Tabs.Tab value="notifications">Notifications</Tabs.Tab>
         {isAdmin && <Tabs.Tab value="server">Server</Tabs.Tab>}
         <Tabs.Tab value="about">About</Tabs.Tab>
       </Tabs.List>
       <Tabs.Panel value="account"><Account key={user.id} user={user} onChanged={onUserChanged} onSessionExpired={onSessionExpired} /></Tabs.Panel>
+      <Tabs.Panel value="notifications"><NotificationSettingsPanel /></Tabs.Panel>
       {isAdmin && <Tabs.Panel value="server"><Admin role={user.role} /></Tabs.Panel>}
       <Tabs.Panel value="about"><Card withBorder padding="lg" maw={560}><Text size="sm" c="dimmed">Vigara server</Text><ReleaseStatus /></Card></Tabs.Panel>
     </Tabs>

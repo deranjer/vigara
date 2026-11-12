@@ -33,14 +33,21 @@ type Message struct {
 	RuleName   string
 	Summary    string
 	OccurredAt time.Time
+	// Severity is "critical" or "warning"; Transition is "firing", "resolved" or "test".
+	Severity string
+	// Links back into Vigara. Empty when no public URL is configured.
+	OpenURL, AcknowledgeURL, MuteURL string
 }
 
 // Target is an enabled destination. ID is stable and safe to expose in
 // operational status; Send never includes credentials or response bodies in
 // its errors.
 type Target struct {
-	ID   string
-	send func(context.Context, Message) error
+	ID string
+	// Kind and Display describe the channel in settings; Display never
+	// contains credentials, webhook paths or tokens.
+	Kind, Display string
+	send          func(context.Context, Message) error
 }
 
 // Send delivers one notification. Retry decisions are left to the durable
@@ -95,6 +102,8 @@ func safeTargetName(value string) string {
 		return GotifyTargetID
 	case DiscordTargetID:
 		return DiscordTargetID
+	case NtfyTargetID:
+		return NtfyTargetID
 	default:
 		return "notification"
 	}
@@ -111,8 +120,21 @@ func fromEnv(getenv func(string) string) ([]Target, error) {
 	gotifyURL := strings.TrimSpace(getenv(GotifyURLVar))
 	gotifyToken := getenv(GotifyTokenVar)
 	discordURL := strings.TrimSpace(getenv(DiscordWebhookURLVar))
+	ntfyURL := strings.TrimSpace(getenv(NtfyURLVar))
+	ntfyTopic := strings.TrimSpace(getenv(NtfyTopicVar))
+	ntfyToken := getenv(NtfyTokenVar)
 
-	targets := make([]Target, 0, 2)
+	targets := make([]Target, 0, 3)
+	if ntfyURL != "" || ntfyTopic != "" || ntfyToken != "" {
+		if ntfyURL == "" || ntfyTopic == "" {
+			return nil, errors.New("ntfy requires both VIGIRA_NTFY_URL and VIGIRA_NTFY_TOPIC")
+		}
+		target, err := newNtfyTarget(ntfyURL, ntfyTopic, ntfyToken, newHTTPClient())
+		if err != nil {
+			return nil, err
+		}
+		targets = append(targets, target)
+	}
 	if gotifyURL == "" && gotifyToken == "" {
 		// Disabled.
 	} else {

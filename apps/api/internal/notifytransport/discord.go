@@ -27,7 +27,9 @@ func newDiscordTarget(rawURL string, client *http.Client) (Target, error) {
 		client = newHTTPClient()
 	}
 	return Target{
-		ID: DiscordTargetID,
+		ID:      DiscordTargetID,
+		Kind:    "discord",
+		Display: "Discord webhook",
 		send: func(ctx context.Context, message Message) error {
 			payload := discordPayload{Content: renderDiscord(message), AllowedMentions: discordMentions{Parse: []string{}}}
 			request, err := newJSONRequest(ctx, endpoint, payload)

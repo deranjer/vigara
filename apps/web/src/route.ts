@@ -22,7 +22,7 @@ export function route(section: Section, id: string | null = null, sub: string | 
 }
 
 /** Settings tabs, addressed as #/settings/<tab>. */
-export const settingsTabs = ['account', 'server', 'about'] as const
+export const settingsTabs = ['account', 'notifications', 'server', 'about'] as const
 export type SettingsTab = (typeof settingsTabs)[number]
 
 /** Docker resource pages shown as tabs of Containers. */

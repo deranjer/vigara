@@ -1,6 +1,18 @@
 # Notification channels
 
-Vigira can deliver alert transitions to Gotify and Discord. Each destination is optional; it is enabled only when its environment settings are present. A partial Gotify configuration prevents startup so delivery is not silently disabled.
+Vigira can deliver alert transitions to ntfy, Gotify and Discord. Each destination is optional; it is enabled only when its environment settings are present. A partial Gotify configuration prevents startup so delivery is not silently disabled.
+
+## ntfy
+
+Set the ntfy server's base URL and a topic. A token is optional and is sent as a Bearer token for servers that require access control.
+
+```dotenv
+VIGIRA_NTFY_URL=https://ntfy.example.com
+VIGIRA_NTFY_TOPIC=vigara-alerts
+VIGIRA_NTFY_TOKEN=<optional-access-token>
+```
+
+Critical alerts are sent at priority 5, warnings at 4, cleared alerts at 2. When `VIGIRA_PUBLIC_URL` is set, tapping a notification opens Alerts, and firing alerts carry **Acknowledge** and **Mute 24 h** buttons. Each button is a signed link for that one alert and action; it works without signing in and expires after seven days.
 
 ## Gotify
 
@@ -22,6 +34,10 @@ VIGIRA_DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/<webhook-id>/<webhoo
 ```
 
 Discord delivery waits for server confirmation, disables allowed mentions, and bounds message content to Discord's documented 2,000-character limit. Both adapters sanitize and Markdown-escape user-provided fields.
+
+## Routing and quiet hours
+
+Settings › Notifications lists the configured channels, sends a test message, and sets which alerts each channel receives (critical, warning, cleared) and the daily quiet hours. During quiet hours, warnings and cleared alerts wait until quiet hours end; critical alerts always notify. A held alert that has since cleared or refired is dropped instead of being sent late, and so is the "cleared" for a firing quiet hours held back. Alerts muted from the inbox are never sent. Only administrators can change these settings.
 
 ## Delivery behavior
 

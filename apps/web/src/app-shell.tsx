@@ -125,7 +125,7 @@ function Breadcrumbs({ route, summary, onNavigate }: { route: Route; summary: Su
   if (nav !== route.section) crumbs.push({ label: sectionLabels[route.section], to: routeOf(route.section) })
   if (route.id) {
     const device = summary.devices?.find((d) => d.id === route.id || d.agentId === route.id)
-    const label = route.section === 'settings' ? { account: 'Account', server: 'Server', about: 'About' }[route.id] ?? route.id
+    const label = route.section === 'settings' ? { account: 'Account', notifications: 'Notifications', server: 'Server', about: 'About' }[route.id] ?? route.id
       : route.section === 'alerts' ? route.id.charAt(0).toUpperCase() + route.id.slice(1)
       : device?.name ?? route.id
     // A device's tab is shown by its tab bar, so the device is the last crumb.

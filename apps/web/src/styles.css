@@ -346,3 +346,7 @@ code, kbd, pre, samp { font-family: var(--mantine-font-family-monospace); }
   .vg-alert-age { margin-left: auto; }
   .vg-alert-actions { width: 100%; justify-content: flex-start; padding-left: 16px; }
 }
+
+/* P8 Notifications */
+.vg-notify-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (max-width: 61.99em) { .vg-notify-grid { grid-template-columns: minmax(0, 1fr); } }
