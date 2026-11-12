@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Alert, Badge, Button, Card, Group, Loader, Progress, SegmentedControl, Select, SimpleGrid, Stack, Tabs, Text, Title } from '@mantine/core'
+import { Alert, Badge, Button, Card, Group, Loader, Progress, SimpleGrid, Stack, Text, Title } from '@mantine/core'
 import { LineChart } from '@mantine/charts'
-import { type Device } from './devices'
+import { type Device } from './device-types'
 import { chartRows, formatMetric, type RateUnit } from './metric-utils'
 import { labelKey, measurementName, monitoringSections, type MonitoringCard } from './monitoring-utils'
 import { trendRefreshMs, trendToHistory, type TrendHistory, type TrendResponse } from './trend-utils'
@@ -10,7 +10,6 @@ import { trendRefreshMs, trendToHistory, type TrendHistory, type TrendResponse }
 // interval never shows the previous one's points while it loads.
 type TrendState = { range: string; history: TrendHistory | null; loading: boolean; error: string }
 const colors = ['cyan.6', 'grape.5', 'teal.6', 'orange.6']
-const intervals = [{ label: '1h', value: '1h' }, { label: '6h', value: '6h' }, { label: '24h', value: '24h' }, { label: '7d', value: '7d' }, { label: '30d', value: '30d' }, { label: '90d', value: '90d' }, { label: '1y', value: '365d' }]
 
 function Trend({ card, history, loading, failed, rateUnit }: { card: MonitoringCard; history: TrendHistory | null; loading: boolean; failed: boolean; rateUnit: RateUnit }) {
   const series = useMemo(() => card.trends.flatMap(metric => history?.series.filter(item => item.name === metric.name && labelKey(item.labels) === labelKey(metric.labels)) ?? []), [card, history])
@@ -54,17 +53,17 @@ function ResourceCard({ card, history, loading, failed, rateUnit, logicalCpus }:
   </Card>
 }
 
-export function DeviceMonitoring({ device, rateUnit, onRateUnitChange }: { device: Device; rateUnit: RateUnit; onRateUnitChange: (unit: RateUnit) => void }) {
-  const [range, setRange] = useState('24h')
+/**
+ * Every measurement in the device's latest snapshot, grouped by section (host, filesystems,
+ * network, containers…), each card with a trend over `range`. One request loads all trends.
+ */
+export function DeviceMonitoring({ device, range, rateUnit }: { device: Device; range: string; rateUnit: RateUnit }) {
   const [retry, setRetry] = useState(0)
-  const [selectedSection, setSelectedSection] = useState<string | null>(null)
   const sections = useMemo(() => monitoringSections(device.latest?.metrics ?? [], device.latest?.dockerContainers), [device.latest])
-  const activeSection = sections.some(section => section.id === selectedSection) ? selectedSection : sections[0]?.id ?? null
-  const [state, setState] = useState<TrendState>({ range: '24h', history: null, loading: true, error: '' })
+  const [state, setState] = useState<TrendState>({ range, history: null, loading: true, error: '' })
   useEffect(() => {
-    // One request returns every current series for this interval. Refreshing keeps
-    // the charts on screen and swaps the data in place; only a new interval or
-    // device clears them, because the old points belong to a different grid.
+    // Refreshing keeps the charts on screen and swaps the data in place; only a new
+    // interval or device clears them, because the old points belong to a different grid.
     const controller = new AbortController()
     let timer: number | undefined
     let loadedAt = 0
@@ -83,7 +82,7 @@ export function DeviceMonitoring({ device, rateUnit, onRateUnitChange }: { devic
         if (controller.signal.aborted) return
         setState(current => ({ range, history: current.range === range ? current.history : null, loading: false, error: 'Trends could not be loaded. Latest measurements are still shown.' }))
       }
-      timer = window.setTimeout(() => { if (document.hidden) schedule(); else void load() }, period)
+      schedule()
     }
     function schedule() { timer = window.setTimeout(() => { if (document.hidden) schedule(); else void load() }, period) }
     // Background tabs skip refreshes; returning shows fresh data without waiting a full period.
@@ -94,23 +93,16 @@ export function DeviceMonitoring({ device, rateUnit, onRateUnitChange }: { devic
   }, [device.id, range, retry])
   const current = state.range === range ? state : { range, history: null, loading: true, error: '' }
   return <Stack gap="xl">
-    <Group justify="space-between" align="flex-end">
-      <div><Title order={3}>Resource overview</Title><Text size="sm" c="dimmed" mt={4}>Latest values · observed {device.telemetryObservedAt ? new Date(device.telemetryObservedAt).toLocaleString() : 'time not reported'}</Text></div>
-      <Group align="flex-end"><div><Text size="xs" c="dimmed" mb={4}>Trend interval</Text><SegmentedControl aria-label="Overview trend interval" size="xs" value={range} onChange={setRange} data={intervals} /></div><Select label="Rate units" aria-label="Overview rate units" size="xs" w={110} value={rateUnit} onChange={value => { if (value) onRateUnitChange(value as RateUnit) }} data={['B/s', 'kB/s', 'MB/s', 'GB/s', 'kb/s', 'Mb/s', 'Gb/s']} /></Group>
-    </Group>
     {current.error && <Alert color="yellow" title="Trends unavailable">{current.error}<Button size="xs" variant="light" ml="sm" onClick={() => setRetry(value => value + 1)}>Retry trends</Button></Alert>}
     {!sections.length && <Text c="dimmed">No measurements were reported in the latest snapshot. Missing values are not treated as zero.</Text>}
-    {!!sections.length && <Tabs value={activeSection} onChange={setSelectedSection} keepMounted={false}>
-      <Tabs.List mb="md">{sections.map(section => <Tabs.Tab key={section.id} value={section.id}>{section.title}</Tabs.Tab>)}</Tabs.List>
-      {sections.map(section => <Tabs.Panel key={section.id} value={section.id}>
-      <Title order={4} id={`monitoring-${section.id}`} mb={4}>{section.title}</Title>
-      <Text size="sm" c="dimmed" mb="md">{section.description}</Text>
+    {/* Each section folds; per-container cards start folded when there are many, so the page stays scannable. */}
+    {sections.map(section => <details key={section.id} className="vg-section" open={!(section.id === 'containers' && section.groups.length > 3)}>
+      <summary><Title order={3} component="span" id={`monitoring-${section.id}`}>{section.title}</Title><Text size="sm" c="dimmed" component="span">{section.id === 'containers' ? `${section.groups.length} containers · ` : ''}{section.description}</Text></summary>
       <div className="monitoring-groups">{section.groups.map(group => <div className={`${group.title ? 'monitoring-resource-group' : ''} ${group.cards.length > 1 ? 'monitoring-group-wide' : ''}`} key={group.id}>
         {group.title && <Text fw={600} size="sm" mb="sm" className="monitoring-group-label">{group.title}</Text>}
         <SimpleGrid cols={{ base: 1, sm: Math.min(2, group.cards.length), xl: Math.min(3, group.cards.length) }} spacing="md">{group.cards.map(card => <ResourceCard key={card.id} card={card} history={current.history} loading={current.loading} failed={!!current.error} rateUnit={rateUnit} logicalCpus={device.latest?.host?.logicalCpus} />)}</SimpleGrid>
       </div>)}</div>
-      </Tabs.Panel>)}
-    </Tabs>}
+    </details>)}
     {current.history && <Text size="xs" c="dimmed">Trends: {new Date(current.history.windowStart).toLocaleString()} – {new Date(Math.min(new Date(current.history.windowEnd).getTime(), Date.now())).toLocaleString()}, {current.history.resolutionSeconds >= 3600 ? `${current.history.resolutionSeconds / 3600}-hour` : `${current.history.resolutionSeconds / 60}-minute`} averages. Hover for values. Gaps indicate missing measurements.</Text>}
   </Stack>
 }

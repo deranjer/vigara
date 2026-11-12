@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { MantineProvider } from '@mantine/core'
-import type { Device } from './devices'
+import type { Device } from './device-types'
 import { deliverySummary, staleReason } from './telemetry-delivery-utils'
 import { TelemetryDeliveryChip, TelemetryDeliveryPanel } from './telemetry-delivery'
 const now = Date.now()

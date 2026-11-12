@@ -27,7 +27,7 @@ export function Sparkline({ values, max = 100, width = 100, height = 22, label }
     path += `${pen ? 'L' : 'M'}${(i * step).toFixed(1)} ${y(v)} `
     pen = true
   })
-  return <svg className="vg-spark" width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label={label}><path d={path.trim()} /></svg>
+  return <svg className="vg-spark" width={width} height={height} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="img" aria-label={label}><path d={path.trim()} /></svg>
 }
 
 /** A thin horizontal bar for a percentage. It turns amber at 80% and red at 90% by default. */
