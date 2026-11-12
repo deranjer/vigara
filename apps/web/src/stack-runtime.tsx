@@ -35,17 +35,16 @@ export function StackContainersTab({ status }: { status: StackRuntimeStatus }) {
   return <Tabs.Tab value="containers" rightSection={<Badge size="sm" color={status.color} variant="light" title={status.label} aria-label={status.label}>{status.count}</Badge>}>Containers</Tabs.Tab>
 }
 
-export function StackRuntime({ id, role, deploymentStatus, onNavigate, onStatusChange }: { id: string; role: string; deploymentStatus?: string; onNavigate: (route: Route) => void; onStatusChange?: (status: StackRuntimeStatus) => void }) {
+/**
+ * Live containers of a stack, refreshed every 10 seconds and after each deployment status change.
+ * `lock` pauses polling while an action picks container IDs.
+ */
+export function useStackRuntime(id: string, deploymentStatus?: string) {
   const [data, setData] = useState<RuntimeData | null>(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
   const [refresh, setRefresh] = useState(0)
-  const [busy, setBusy] = useState<StackAction | null>(null)
-  const [outcomes, setOutcomes] = useState<Outcome[]>([])
   const lock = useRef(false)
-  useEffect(() => {
-    onStatusChange?.(data ? stackRuntimeBadge(data.stack, data.hosts) : { color: 'gray', label: 'Container information unavailable', count: '—' })
-  }, [data, onStatusChange])
   useEffect(() => {
     let active = true
     let polling = false
@@ -67,6 +66,16 @@ export function StackRuntime({ id, role, deploymentStatus, onNavigate, onStatusC
     const timer = window.setInterval(() => void poll(), 10_000)
     return () => { active = false; window.clearInterval(timer) }
   }, [id, refresh, deploymentStatus])
+  return { data, error, loading, lock, reload: () => setRefresh((value) => value + 1) }
+}
+
+export function StackRuntime({ id, role, deploymentStatus, onNavigate, onStatusChange }: { id: string; role: string; deploymentStatus?: string; onNavigate: (route: Route) => void; onStatusChange?: (status: StackRuntimeStatus) => void }) {
+  const { data, error, loading, lock, reload } = useStackRuntime(id, deploymentStatus)
+  const [busy, setBusy] = useState<StackAction | null>(null)
+  const [outcomes, setOutcomes] = useState<Outcome[]>([])
+  useEffect(() => {
+    onStatusChange?.(data ? stackRuntimeBadge(data.stack, data.hosts) : { color: 'gray', label: 'Container information unavailable', count: '—' })
+  }, [data, onStatusChange])
 
   async function change(action: StackAction) {
     if (lock.current) return
@@ -76,10 +85,10 @@ export function StackRuntime({ id, role, deploymentStatus, onNavigate, onStatusC
       const [listing, inventory] = await Promise.all([get<{ stacks: StackSummary[] }>('/api/stacks'), get<{ hosts: HostEntry[] }>('/api/containers')])
       setOutcomes(await runStackActions(listing.stacks, inventory.hosts, role, action, id))
     } catch (cause) { setOutcomes([{ name: 'Stack action', ok: false, message: cause instanceof Error ? cause.message : 'The action failed.' }]) }
-    finally { lock.current = false; setBusy(null); setRefresh((value) => value + 1) }
+    finally { lock.current = false; setBusy(null); reload() }
   }
 
-  return <StackRuntimeView data={data} role={role} busy={busy} loading={loading} error={error} outcomes={outcomes} onAction={(action) => void change(action)} onRefresh={() => setRefresh((value) => value + 1)} onNavigate={onNavigate} />
+  return <StackRuntimeView data={data} role={role} busy={busy} loading={loading} error={error} outcomes={outcomes} onAction={(action) => void change(action)} onRefresh={reload} onNavigate={onNavigate} />
 }
 
 export function StackRuntimeView({ data, role, busy, loading, error, outcomes, onAction, onRefresh, onNavigate }: {
