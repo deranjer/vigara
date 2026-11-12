@@ -3,7 +3,7 @@ import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { Alert, Badge, Button, Card, Checkbox, Code, Group, Modal, Select, Stack, Tabs, Text, TextInput, Title } from '@mantine/core'
 import { route as routeOf, type Route } from './route'
 
-import { StackList } from './stack-management'
+import { StackList } from './stack-list'
 import { isComposeFile } from './compose-editor-utils'
 import { SecretEditor } from './secret-editor'
 import { StackDiff } from './stack-diff'
@@ -42,11 +42,11 @@ function starter(id: string, projectName: string): Files {
 
 export function Stacks({ route, role, onNavigate }: { route: Route; role: string; onNavigate: (route: Route) => void }) {
  if (role !== 'admin') return <Alert title="Stack access requires an administrator">Sign in as an administrator to manage Compose stacks.</Alert>
- if (route.id) return <StackEditor key={route.id} id={route.id} projectName={route.id} role={role} onNavigate={onNavigate} onBack={() => onNavigate(routeOf('stacks'))} />
- return <StackList role={role} onOpen={(id) => onNavigate(routeOf('stacks',id))} />
+ if (route.id) return <StackEditor key={route.id} id={route.id} projectName={route.id} role={role} onNavigate={onNavigate} onBack={() => onNavigate(routeOf('stacks'))} pullOnOpen={route.sub === 'pull'} />
+ return <StackList role={role} onOpen={(id) => onNavigate(routeOf('stacks', id))} onPull={(id) => onNavigate(routeOf('stacks', id, 'pull'))} />
 }
 
-function StackEditor({ id, projectName, onBack, role, onNavigate }: { id: string; projectName: string; onBack: () => void; role: string; onNavigate: (route: Route) => void }) {
+function StackEditor({ id, projectName, onBack, role, onNavigate, pullOnOpen }: { id: string; projectName: string; onBack: () => void; role: string; onNavigate: (route: Route) => void; pullOnOpen?: boolean }) {
   const [detail, setDetail] = useState<Detail | null>(null)
   const [files, setFiles] = useState<Files>({})
   const [draft, setDraft] = useState<Draft>({ base: '', files: null, version: 0 })
@@ -113,6 +113,15 @@ function StackEditor({ id, projectName, onBack, role, onNavigate }: { id: string
     window.addEventListener('beforeunload', warn)
     return () => window.removeEventListener('beforeunload', warn)
   }, [dirty, unpersisted])
+  // "Pull & recreate" in the stack list lands here (#/stacks/<id>/pull) and opens the same review.
+  const pullStarted = useRef(false)
+  useEffect(() => {
+    if (!pullOnOpen || !detail || pullStarted.current) return
+    pullStarted.current = true
+    onNavigate(routeOf('stacks', id))
+    if (detail.snapshot.commit && detail.assigned && !detail.draft.files) void action(() => preview(true))
+    // Runs once, when the stack has loaded; the ref keeps later reloads from reopening it.
+  }, [pullOnOpen, detail])
 
   async function action(work: () => Promise<void>) { setSecretEpoch((epoch) => epoch + 1); setBusy(true); setError(''); setNotice(''); try { await work() } catch (cause) { setError(cause instanceof Error ? cause.message : 'The operation failed.') } finally { setBusy(false) } }
   async function persistDraft(nextFiles = filesRef.current) {

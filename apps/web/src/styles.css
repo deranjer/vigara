@@ -262,3 +262,30 @@ code, kbd, pre, samp { font-family: var(--mantine-font-family-monospace); }
 .vg-inspect { max-height: none; font-size: 11.5px; }
 @media (min-width: 75em) { .vg-containers[data-panel] { padding-right: 600px; } }
 @media (max-width: 47.99em) { .vg-sidepanel { top: 0; bottom: var(--app-shell-footer-offset, 0px); z-index: 210; } .vg-filterbar { flex-wrap: wrap; } .vg-filter { flex: 1 1 100%; } }
+
+/* P6 Stacks list */
+.vg-pill[data-tone] { background: color-mix(in srgb, var(--pill-tone) 15%, transparent); color: color-mix(in srgb, var(--pill-tone) 75%, var(--mantine-color-text)); white-space: nowrap; }
+.vg-pill[data-tone="warn"] { --pill-tone: var(--vg-warn); }
+.vg-pill[data-tone="crit"] { --pill-tone: var(--vg-crit); }
+.vg-pill[data-tone="info"] { --pill-tone: var(--vg-info); }
+.vg-pill[data-tone="ok"] { --pill-tone: var(--vg-ok); }
+.vg-pill[data-tone="idle"] { --pill-tone: var(--mantine-color-dimmed); }
+.vg-meta-row { display: flex; flex-wrap: wrap; align-items: center; }
+.vg-meta-row > * + *::before { content: "·"; margin: 0 7px; color: var(--mantine-color-dimmed); }
+.vg-meta-row svg { vertical-align: -2px; }
+.vg-click-row { cursor: pointer; }
+.vg-row-link { font-size: inherit; color: inherit; }
+.vg-row-link:focus-visible { outline: 2px solid var(--mantine-primary-color-filled); outline-offset: 2px; border-radius: 3px; }
+.vg-row-actions { justify-content: flex-end; }
+/* Row actions appear on hover or keyboard focus; touch screens always show them. */
+@media (hover: hover) {
+  .vg-stack-table .vg-row-actions { opacity: 0; transition: opacity 120ms; }
+  .vg-stack-table tr:hover .vg-row-actions, .vg-stack-table tr:focus-within .vg-row-actions, .vg-row-actions:has([aria-expanded="true"]) { opacity: 1; }
+}
+.vg-stack-card { display: flex; flex-direction: column; gap: 6px; }
+.vg-stack-card-status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 4px; }
+.vg-stack-card-actions { margin-top: auto; padding-top: 6px; }
+.vg-stack-card-actions .vg-row-actions { justify-content: flex-start; }
+.vg-confirm-list { max-height: 220px; overflow: auto; }
+.vg-corner-loader { position: fixed; right: 16px; bottom: 16px; }
+@media (max-width: 47.99em) { .vg-scroll-x { max-width: 100%; overflow-x: auto; } }
