@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Alert, Badge, Button, Checkbox, Code, Group, List, Loader, Modal, Progress, Select, Stack, Switch, Table, Text, TextInput } from '@mantine/core'
-import { actionLabels, actionPast, actionsFor, canManage, drainRecords, manageBlocker, needsConfirmation, runLimited, shortImageId, type ActionName, type BulkOutcome, type FleetRow, type RecreateResult, type RecreateStep } from './container-utils'
+import { ActionIcon, Alert, Badge, Button, Checkbox, Code, Group, List, Loader, Menu, Modal, Progress, Select, Stack, Switch, Table, Text, TextInput } from '@mantine/core'
+import { IconDots, IconPlayerPlay, IconPlayerStop, IconRefresh } from '@tabler/icons-react'
+import { actionLabels, actionPast, actionsFor, canManage, drainRecords, manageBlocker, runLimited, shortImageId, type ActionName, type BulkOutcome, type FleetRow, type RecreateResult, type RecreateStep } from './container-utils'
 
 export type ActionResult = { id: string; name: string; action: string; changed: boolean; message?: string }
 export type ActionOptions = { force?: boolean; removeVolumes?: boolean; signal?: string; timeoutSeconds?: number }
@@ -77,10 +78,29 @@ type BarProps = {
   hostId: string; reference: string; name: string; state: string; project?: string
   role: string; hostTier?: string
   onChanged: () => void; onRemoved: () => void; onRecreated: (name: string) => void
+  /** Extra buttons placed after the actions, such as Shell or Open full page. */
+  extra?: React.ReactNode
 }
 
-/** The buttons for changing one container, or the reason they are unavailable. */
-export function ActionBar({ hostId, reference, name, state, project, role, hostTier, onChanged, onRemoved, onRecreated }: BarProps) {
+/** The buttons a container in `state` shows directly; everything else is in the ⋯ menu. */
+export function primaryActions(state: string): ActionName[] {
+  switch (state) {
+    case 'running': return ['restart', 'stop']
+    case 'paused': return ['unpause', 'stop']
+    case 'restarting': return ['stop']
+    default: return ['start']
+  }
+}
+
+const actionIcons: Partial<Record<ActionName, React.ReactNode>> = {
+  restart: <IconRefresh size={14} />, stop: <IconPlayerStop size={14} />, start: <IconPlayerPlay size={14} />, unpause: <IconPlayerPlay size={14} />,
+}
+
+/**
+ * Tiered actions for one container: Restart and Stop (or Start) as buttons; Pause, Kill and
+ * Recreate in the menu, each behind a confirmation; Remove asks for the container's name.
+ */
+export function ActionBar({ hostId, reference, name, state, project, role, hostTier, onChanged, onRemoved, onRecreated, extra }: BarProps) {
   const [busy, setBusy] = useState<ActionName | null>(null)
   const [notice, setNotice] = useState<{ color: string; text: string } | null>(null)
   const [confirm, setConfirm] = useState<ActionName | null>(null)
@@ -91,8 +111,10 @@ export function ActionBar({ hostId, reference, name, state, project, role, hostT
   const [recreateOpen, setRecreateOpen] = useState(false)
 
   const blocker = manageBlocker(role, hostTier)
-  if (blocker) return <Text size="sm" c="dimmed" mt="sm">{blocker}</Text>
+  if (blocker) return <Stack gap="xs">{extra && <Group gap="xs">{extra}</Group>}<Text size="xs" c="dimmed">{blocker}</Text></Stack>
   const available = actionsFor(state)
+  const primary = primaryActions(state)
+  const menu = available.filter((action) => !primary.includes(action) && action !== 'remove')
 
   async function run(action: ActionName, options: ActionOptions = {}) {
     setBusy(action); setError(''); setNotice(null)
@@ -108,18 +130,30 @@ export function ActionBar({ hostId, reference, name, state, project, role, hostT
     } finally { setBusy(null) }
   }
 
-  function choose(action: ActionName) {
-    setError('')
-    if (needsConfirmation(action)) { setForce(state === 'running' || state === 'paused' || state === 'restarting'); setVolumes(false); setSignal('KILL'); setConfirm(action) } else void run(action)
+  function ask(action: ActionName) {
+    setError(''); setForce(state === 'running' || state === 'paused' || state === 'restarting'); setVolumes(false); setSignal('KILL'); setConfirm(action)
   }
+  const plain = confirm !== null && confirm !== 'pause' && confirm !== 'kill' && confirm !== 'remove'
 
-  return <Stack gap="xs" mt="sm">
+  return <Stack gap="xs">
     <Group gap="xs">
-      {available.filter((action) => action !== 'remove').map((action) => <Button key={action} size="xs" variant={action === 'kill' ? 'light' : 'default'} color={action === 'kill' ? 'red' : undefined} loading={busy === action} disabled={busy !== null} onClick={() => choose(action)}>{actionLabels[action]}</Button>)}
-      <Button size="xs" variant="default" disabled={busy !== null} onClick={() => setRecreateOpen(true)}>Recreate…</Button>
-      <Button size="xs" variant="light" color="red" disabled={busy !== null} onClick={() => choose('remove')}>Remove…</Button>
+      {primary.map((action) => <Button key={action} size="xs" variant={action === 'stop' ? 'default' : 'filled'} leftSection={actionIcons[action]} loading={busy === action} disabled={busy !== null} onClick={() => void run(action)}>{actionLabels[action]}</Button>)}
+      {extra}
+      <Menu position="bottom-end" withinPortal>
+        <Menu.Target><ActionIcon variant="default" size={30} aria-label={`More actions for ${name}`} disabled={busy !== null}><IconDots size={16} /></ActionIcon></Menu.Target>
+        <Menu.Dropdown>
+          {menu.map((action) => <Menu.Item key={action} color={action === 'kill' ? 'red' : undefined} onClick={() => ask(action)}>{actionLabels[action]}…</Menu.Item>)}
+          <Menu.Item onClick={() => setRecreateOpen(true)}>Recreate…</Menu.Item>
+          <Menu.Divider />
+          <Menu.Item color="red" onClick={() => ask('remove')}>Remove…</Menu.Item>
+        </Menu.Dropdown>
+      </Menu>
     </Group>
-    {notice && <Alert color={notice.color} withCloseButton onClose={() => setNotice(null)}>{notice.text}</Alert>}
+    {notice && <Alert color={notice.color} withCloseButton onClose={() => setNotice(null)} py={6}>{notice.text}</Alert>}
+
+    <ConfirmDialog opened={confirm === 'pause'} title={`Pause ${name}?`} confirmLabel="Pause" color="blue" busy={busy === 'pause'} error={error} onClose={() => setConfirm(null)} onConfirm={() => void run('pause')}>
+      <Text size="sm">Every process in the container is frozen until you resume it. Connections to it hang rather than fail.</Text>
+    </ConfirmDialog>
 
     <ConfirmDialog opened={confirm === 'kill'} title={`Kill ${name}?`} confirmLabel="Send signal" busy={busy === 'kill'} error={error} onClose={() => setConfirm(null)} onConfirm={() => void run('kill', { signal: signal ?? 'KILL' })}>
       <Text size="sm">This sends a signal straight to the container's main process. Work in progress can be lost, and with KILL nothing gets a chance to clean up.</Text>
@@ -132,6 +166,8 @@ export function ActionBar({ hostId, reference, name, state, project, role, hostT
       <Checkbox checked={volumes} onChange={(event) => setVolumes(event.currentTarget.checked)} label="Also delete its anonymous volumes" description="Named volumes and bind mounts are never deleted." />
       {project && <Alert color="yellow" title="Managed by Docker Compose">This container belongs to the Compose project {project}. Compose may create it again the next time that project is started.</Alert>}
     </ConfirmDialog>
+
+    <ConfirmDialog opened={plain} title={confirm ? `${actionLabels[confirm]} ${name}?` : ''} confirmLabel={confirm ? actionLabels[confirm] : ''} color="blue" busy={busy !== null} error={error} onClose={() => setConfirm(null)} onConfirm={() => { if (confirm) void run(confirm) }} />
 
     <RecreateDialog opened={recreateOpen} hostId={hostId} reference={reference} name={name} project={project} onClose={() => setRecreateOpen(false)} onDone={(result) => { onChanged(); onRecreated(result.name) }} />
   </Stack>

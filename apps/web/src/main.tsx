@@ -213,7 +213,7 @@ function Page({ user, route, onNavigate, onUserChanged, onSessionExpired }: Page
     case 'settings': return <Settings user={user} route={route} onNavigate={onNavigate} onUserChanged={onUserChanged} onSessionExpired={onSessionExpired} />
     case 'containers': case 'images': case 'networks': case 'volumes': {
       // A single container has its own detail page; the lists share one tab bar.
-      const detail = route.section === 'containers' && route.id && route.sub
+      const detail = route.section === 'containers' && route.id && route.sub && route.tab
       return <>
         {!detail && <Tabs value={route.section} onChange={(value) => { if (value) onNavigate(routeOf(value as Section)) }} mb="md" className="vg-page-tabs">
           <Tabs.List>{containerTabs.map((tab) => <Tabs.Tab key={tab} value={tab}>{sectionLabels[tab]}</Tabs.Tab>)}</Tabs.List>

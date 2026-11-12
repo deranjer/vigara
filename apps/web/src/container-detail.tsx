@@ -2,8 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { LineChart } from '@mantine/charts'
 import { Alert, Badge, Button, Card, Checkbox, Code, Group, Loader, Select, SimpleGrid, Stack, Switch, Table, Tabs, Text, TextInput, Title } from '@mantine/core'
 import { ActionBar } from './container-actions'
-import { appendBounded, filterLogLines, formatBytes, formatRate, logsToText, portSummary, stateColors, type DockerPort, type HostEntry, type LogLine, type StatsSample } from './container-utils'
+import { appendBounded, filterLogLines, formatBytes, formatRate, logsToText, portSummary, type DockerPort, type HostEntry, type LogLine, type StatsSample } from './container-utils'
+import { imageRef } from './container-list-utils'
 import { route as routeOf, type Route } from './route'
+import { StatusText } from './status'
 import { TerminalPanel } from './terminal-panel'
 import { useStream } from './use-stream'
 import { MountFiles } from './mount-files'
@@ -52,7 +54,7 @@ export function ContainerDetail({ hostId, reference, tab, hosts, role, onNavigat
     return () => window.clearTimeout(timer)
   }, [load])
 
-  const goTab = (value: string | null) => onNavigate(routeOf('containers', hostId, reference, value ?? 'overview'))
+  const goTab = (value: string | null) => onNavigate(routeOf('containers', hostId, reference, value ?? 'logs'))
   const title = inspect?.name || reference
   const running = inspect ? inspect.state.running : null
 
@@ -62,32 +64,38 @@ export function ContainerDetail({ hostId, reference, tab, hosts, role, onNavigat
     setRevealing(false)
   }
 
-  return <>
-    <Group mb="sm"><Button variant="default" size="xs" onClick={() => onNavigate(routeOf('containers'))}>← All containers</Button></Group>
-    <Text size="xs" fw={700} c="dimmed" tt="uppercase">{hostName}</Text>
-    <Group gap="sm" mt={4} align="center"><Title order={1}>{title}</Title>{inspect && <Badge size="lg" color={stateColors[inspect.state.status] ?? 'gray'} variant="light">{inspect.state.status}</Badge>}
-      {inspect?.state.health && <Badge color={inspect.state.health === 'healthy' ? 'green' : 'orange'} variant="outline">{inspect.state.health}</Badge>}</Group>
-    {inspect && <Text c="dimmed" mt={6} style={{ wordBreak: 'break-all' }}>{inspect.image}</Text>}
-    {inspect && <ActionBar hostId={hostId} reference={reference} name={title} state={inspect.state.status} project={inspect.labels?.['com.docker.compose.project']} role={role} hostTier={host?.dockerTier}
-      onChanged={() => { void load(false); refreshFleet() }}
-      onRemoved={() => { refreshFleet(); onNavigate(routeOf('containers')) }}
-      onRecreated={(newName) => { refreshFleet(); if (newName !== reference) onNavigate(routeOf('containers', hostId, newName, tab)); else void load(false) }} />}
+  const project = inspect?.labels?.['com.docker.compose.project']
+  const health = inspect?.state.health
+  return <div className="vg-page">
+    <header className="vg-device-head">
+      <div className="vg-device-title">
+        <Group gap="sm" align="center">
+          <Title order={1}>{title}</Title>
+          {inspect && <StatusText tone={health === 'unhealthy' || inspect.state.restarting ? 'warn' : inspect.state.running ? 'ok' : inspect.state.paused ? 'info' : 'idle'}>{health === 'unhealthy' ? 'Unhealthy' : inspect.state.status}</StatusText>}
+        </Group>
+        <Text size="sm" c="dimmed" mt={4}>{[project && `Stack ${project}`, hostName, inspect && imageRef(inspect.image)].filter(Boolean).join(' · ')}</Text>
+      </div>
+      {inspect && <ActionBar hostId={hostId} reference={reference} name={title} state={inspect.state.status} project={project} role={role} hostTier={host?.dockerTier}
+        onChanged={() => { void load(false); refreshFleet() }}
+        onRemoved={() => { refreshFleet(); onNavigate(routeOf('containers')) }}
+        onRecreated={(newName) => { refreshFleet(); if (newName !== reference) onNavigate(routeOf('containers', hostId, newName, tab)); else void load(false) }} />}
+    </header>
     {error && <Alert color="red" mt="md" title="This container could not be loaded">{error} <Button variant="subtle" size="xs" onClick={() => void load(false)}>Try again</Button></Alert>}
     {!inspect && !error && <Group mt="lg"><Loader size="sm" /><Text c="dimmed">Loading…</Text></Group>}
 
-    {inspect && <Tabs value={tab} onChange={goTab} mt="lg" keepMounted={false}>
-      <Tabs.List><Tabs.Tab value="overview">Overview</Tabs.Tab><Tabs.Tab value="logs">Logs</Tabs.Tab><Tabs.Tab value="stats">Stats</Tabs.Tab><Tabs.Tab value="terminal">Terminal</Tabs.Tab><Tabs.Tab value="inspect">Inspect</Tabs.Tab></Tabs.List>
-      <Tabs.Panel value="overview" pt="md"><Overview inspect={inspect} admin={role === 'admin'} revealing={revealing} onReveal={reveal} onBrowse={canBrowseFiles(role, host?.dockerTier) ? setBrowseMount : undefined} /></Tabs.Panel>
+    {inspect && <Tabs value={tab} onChange={goTab} mt="xs" keepMounted={false} className="vg-page-tabs">
+      <Tabs.List><Tabs.Tab value="logs">Logs</Tabs.Tab><Tabs.Tab value="overview">Overview</Tabs.Tab><Tabs.Tab value="stats">Stats</Tabs.Tab><Tabs.Tab value="terminal">Terminal</Tabs.Tab><Tabs.Tab value="inspect">Inspect</Tabs.Tab></Tabs.List>
+      <Tabs.Panel value="overview" pt="md"><ContainerOverview inspect={inspect} admin={role === 'admin'} revealing={revealing} onReveal={reveal} onBrowse={canBrowseFiles(role, host?.dockerTier) ? setBrowseMount : undefined} /></Tabs.Panel>
       <Tabs.Panel value="logs" pt="md"><LogsPanel hostId={hostId} reference={reference} name={title} /></Tabs.Panel>
       <Tabs.Panel value="stats" pt="md"><StatsPanel hostId={hostId} reference={reference} running={running} /></Tabs.Panel>
       <Tabs.Panel value="terminal" pt="md"><TerminalPanel hostId={hostId} reference={reference} name={title} running={running} role={role} hostTier={host?.dockerTier} /></Tabs.Panel>
       <Tabs.Panel value="inspect" pt="md"><Card withBorder radius="md" padding="md"><Text size="sm" c="dimmed" mb="xs">Environment values are {inspect.envRevealed ? 'shown' : 'hidden unless revealed on the Overview tab'}.</Text><Code block style={{ maxHeight: 560, overflow: 'auto' }}>{JSON.stringify(inspect, null, 2)}</Code></Card></Tabs.Panel>
     </Tabs>}
     {browseMount !== null && <MountFiles hostId={hostId} target={{ kind: 'mount', id: reference, mount: browseMount }} label={browseMount} onClose={() => setBrowseMount(null)} />}
-  </>
+  </div>
 }
 
-function Overview({ inspect, admin, revealing, onReveal, onBrowse }: { inspect: InspectResult; admin: boolean; revealing: boolean; onReveal: (show: boolean) => Promise<void>; onBrowse?: (mount: string) => void }) {
+export function ContainerOverview({ inspect, admin, revealing, onReveal, onBrowse }: { inspect: InspectResult; admin: boolean; revealing: boolean; onReveal: (show: boolean) => Promise<void>; onBrowse?: (mount: string) => void }) {
   const s = inspect.state
   const cpuLimit = inspect.nanoCpus ? `${(inspect.nanoCpus / 1e9).toFixed(2)} cores` : 'Unlimited'
   return <Stack gap="md">
@@ -140,7 +148,7 @@ const statusBadge: Record<string, { color: string; label: string }> = {
   idle: { color: 'gray', label: 'Idle' }, connecting: { color: 'blue', label: 'Connecting…' }, live: { color: 'green', label: 'Live' }, ended: { color: 'gray', label: 'Ended' }, failed: { color: 'red', label: 'Disconnected' },
 }
 
-function LogsPanel({ hostId, reference, name }: { hostId: string; reference: string; name: string }) {
+export function LogsPanel({ hostId, reference, name, height = 480, compact = false }: { hostId: string; reference: string; name: string; height?: number; compact?: boolean }) {
   const [tail, setTail] = useState<string | null>('200')
   const [follow, setFollow] = useState(true)
   const [timestamps, setTimestamps] = useState(false)
@@ -172,13 +180,17 @@ function LogsPanel({ hostId, reference, name }: { hostId: string; reference: str
 
   const badge = statusBadge[stream.status] ?? statusBadge.idle
   return <Stack gap="sm">
-    <Group gap="sm" align="flex-end">
+    {compact ? <Group gap="sm" wrap="nowrap">
+      <TextInput size="xs" placeholder="Search logs" aria-label="Filter log lines" value={search} onChange={(event) => setSearch(event.currentTarget.value)} style={{ flex: 1 }} />
+      <Switch size="xs" label="Follow" checked={follow} onChange={(event) => setFollow(event.currentTarget.checked)} />
+      <Switch size="xs" label="Wrap" checked={wrap} onChange={(event) => setWrap(event.currentTarget.checked)} />
+    </Group> : <Group gap="sm" align="flex-end">
       <Select label="Lines" value={tail} onChange={setTail} allowDeselect={false} w={110} data={['100', '200', '500', '1000', '5000']} />
       <TextInput label="Filter" placeholder="Show only lines containing…" value={search} onChange={(event) => setSearch(event.currentTarget.value)} style={{ flex: '1 1 200px' }} />
       <Switch label="Follow" checked={follow} onChange={(event) => setFollow(event.currentTarget.checked)} mb={6} />
       <Switch label="Timestamps" checked={timestamps} onChange={(event) => setTimestamps(event.currentTarget.checked)} mb={6} />
       <Switch label="Wrap" checked={wrap} onChange={(event) => setWrap(event.currentTarget.checked)} mb={6} />
-    </Group>
+    </Group>}
     <Group justify="space-between">
       <Group gap="xs"><Badge color={badge.color} variant="light">{badge.label}</Badge><Text size="xs" c="dimmed">{visible.length}{search ? ` of ${lines.length}` : ''} lines{lines.length >= logLimit ? ` (latest ${logLimit})` : ''}</Text></Group>
       <Group gap="xs">
@@ -192,16 +204,16 @@ function LogsPanel({ hostId, reference, name }: { hostId: string; reference: str
     {stream.status === 'ended' && stream.message && <Alert color="yellow" title="The log stream ended">{stream.message}</Alert>}
     <div ref={viewport} role="log" aria-label={`Logs for ${name}`} tabIndex={0}
       onScroll={(event) => { const el = event.currentTarget; setStick(el.scrollHeight - el.scrollTop - el.clientHeight < 24) }}
-      style={{ height: 480, overflow: 'auto', background: 'var(--mantine-color-dark-8)', color: 'var(--mantine-color-gray-3)', borderRadius: 8, padding: 12, fontFamily: 'var(--mantine-font-family-monospace)', fontSize: 12.5, lineHeight: 1.5 }}>
+      style={{ height, overflow: 'auto', background: 'var(--mantine-color-dark-8)', color: 'var(--mantine-color-gray-3)', borderRadius: 8, padding: 12, fontFamily: 'var(--mantine-font-family-monospace)', fontSize: 12.5, lineHeight: 1.5 }}>
       {visible.length === 0 ? <Text size="sm" c="dimmed">{stream.status === 'connecting' ? 'Connecting…' : lines.length === 0 ? 'No log lines yet.' : 'No lines match the filter.'}</Text>
         : visible.map((line, index) => <div key={index} style={{ whiteSpace: wrap ? 'pre-wrap' : 'pre', wordBreak: wrap ? 'break-word' : 'normal', color: line.s === 'e' ? 'var(--mantine-color-red-4)' : undefined }}>
           {line.t && <span style={{ color: 'var(--mantine-color-dimmed)' }}>{line.t} </span>}{line.m}{line.x && <span style={{ color: 'var(--mantine-color-yellow-5)' }}> …[line cut]</span>}</div>)}
     </div>
-    <Checkbox size="xs" checked={stick} onChange={(event) => setStick(event.currentTarget.checked)} label="Keep scrolled to the newest line" />
+    {!compact && <Checkbox size="xs" checked={stick} onChange={(event) => setStick(event.currentTarget.checked)} label="Keep scrolled to the newest line" />}
   </Stack>
 }
 
-function StatsPanel({ hostId, reference, running }: { hostId: string; reference: string; running: boolean | null }) {
+export function StatsPanel({ hostId, reference, running }: { hostId: string; reference: string; running: boolean | null }) {
   const [samples, setSamples] = useState<StatsSample[]>([])
   const path = running ? `/api/containers/${encodeURIComponent(hostId)}/${encodeURIComponent(reference)}/stats` : null
   const stream = useStream<StatsSample>(path, (records) => setSamples((current) => appendBounded(current, records, sampleLimit)))
