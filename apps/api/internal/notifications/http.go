@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -19,6 +20,8 @@ type Handler struct {
 	pool         *pgxpool.Pool
 	auth         *auth.Service
 	destinations []Destination
+	// pushClient sends to phones; nil uses the bounded default client.
+	pushClient *http.Client
 }
 
 func NewHandler(pool *pgxpool.Pool, service *auth.Service, destinations []Destination) *Handler {
@@ -31,6 +34,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/notifications", h.get)
 	mux.HandleFunc("PUT /api/notifications/settings", h.put)
 	mux.HandleFunc("POST /api/notifications/channels/{id}/test", h.test)
+	h.registerPush(mux)
 }
 func (h *Handler) RegisterActions(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/alerts/actions/{token}", h.action)
@@ -77,6 +81,10 @@ type Channel struct {
 	LastErrorAt     *time.Time `json:"lastErrorAt,omitempty"`
 	Pending         int        `json:"pending"`
 	Held            int        `json:"held"`
+	// Phones lists the app installs behind the Android channel that the
+	// signed-in user can see: their own, or all of them for an admin.
+	Phones     []Phone `json:"phones,omitempty"`
+	PhoneCount int     `json:"phoneCount,omitempty"`
 }
 type Settings struct {
 	Channels   []Channel  `json:"channels"`
@@ -108,6 +116,22 @@ func (h *Handler) read(ctx context.Context) (Settings, error) {
 		if lastError != nil {
 			c.LastError = *lastError
 		}
+		if d.ID == PushChannelID {
+			var phones int
+			if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM push_phones`).Scan(&phones); err != nil {
+				return out, err
+			}
+			c.PhoneCount = phones
+			switch phones {
+			case 0:
+				// Alerts "delivered" to no phones are not deliveries.
+				c.Target, c.LastDeliveredAt = "No phones yet", nil
+			case 1:
+				c.Target = "1 phone"
+			default:
+				c.Target = fmt.Sprintf("%d phones", phones)
+			}
+		}
 		// A failure older than the last delivery is history, not current status.
 		if c.LastErrorAt != nil && c.LastDeliveredAt != nil && c.LastDeliveredAt.After(*c.LastErrorAt) {
 			c.LastError, c.LastErrorAt = "", nil
@@ -128,6 +152,10 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out.CanManage = u.Can(auth.PermHostsManage)
+	if err := h.attachPhones(r.Context(), u, &out); err != nil {
+		http.Error(w, "could not read notification settings", 500)
+		return
+	}
 	writeJSON(w, out)
 }
 
@@ -156,7 +184,12 @@ func validQuiet(q QuietHours) error {
 }
 
 func (h *Handler) put(w http.ResponseWriter, r *http.Request) {
-	if !h.admin(w, r) {
+	u, ok := h.user(w, r)
+	if !ok {
+		return
+	}
+	if !u.Can(auth.PermHostsManage) {
+		http.Error(w, "only administrators can change notifications", 403)
 		return
 	}
 	var q settingsRequest
@@ -211,6 +244,10 @@ func (h *Handler) put(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out.CanManage = true
+	if err := h.attachPhones(ctx, u, &out); err != nil {
+		http.Error(w, "could not read notification settings", 500)
+		return
+	}
 	writeJSON(w, out)
 }
 
@@ -224,6 +261,13 @@ func (h *Handler) test(w http.ResponseWriter, r *http.Request) {
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), SendTimeout)
 		defer cancel()
+		if d.ID == PushChannelID {
+			var phones int
+			if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM push_phones`).Scan(&phones); err != nil || phones == 0 {
+				writeJSON(w, map[string]any{"ok": false, "error": "no_phones"})
+				return
+			}
+		}
 		open, _, _ := policy{public: configuredPublicURL()}.links("", time.Now())
 		err := d.Send(ctx, Message{EventID: "test", Transition: "test", RuleName: "Test notification", Severity: "warning",
 			Summary: "This is a test from Vigara. Alerts will arrive here.", OccurredAt: time.Now().UTC(), OpenURL: open})

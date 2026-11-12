@@ -99,6 +99,8 @@ func main() {
 		logger.Error("database schema readiness check failed", "error", err)
 		os.Exit(1)
 	}
+	// The Android channel is always on; it sends to the phones signed in to the Vigara app.
+	destinations = append(destinations, notifications.PushDestination(database.Pool, nil))
 	notificationCtx, cancelNotifications := context.WithTimeout(context.Background(), 5*time.Second)
 	err = notifications.Initialize(notificationCtx, database.Pool, destinations)
 	cancelNotifications()

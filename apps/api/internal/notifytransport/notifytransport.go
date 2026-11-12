@@ -28,6 +28,7 @@ const (
 // It deliberately contains no raw event payload.
 type Message struct {
 	EventID    string
+	IncidentID string
 	Transition string
 	DeviceName string
 	RuleName   string
@@ -104,6 +105,8 @@ func safeTargetName(value string) string {
 		return DiscordTargetID
 	case NtfyTargetID:
 		return NtfyTargetID
+	case PushTargetID:
+		return PushTargetID
 	default:
 		return "notification"
 	}

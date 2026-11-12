@@ -5,10 +5,13 @@ export type QuietHours = { enabled: boolean; start: string; end: string; timezon
 export type Channel = {
   id: string; kind: string; target: string; route: Route
   lastDeliveredAt?: string; lastError?: string; lastErrorAt?: string; pending: number; held: number
+  /** Android channel only: the phones the viewer can see, and how many there are in all. */
+  phones?: Phone[]; phoneCount?: number
 }
+export type Phone = { id: string; name: string; user: string; mine: boolean; createdAt: string; lastSuccessAt?: string; lastError?: string }
 export type NotificationSettings = { channels: Channel[]; quietHours: QuietHours; linksEnabled: boolean; canManage: boolean }
 
-export const kindLabels: Record<string, string> = { ntfy: 'ntfy', gotify: 'Gotify', discord: 'Discord' }
+export const kindLabels: Record<string, string> = { ntfy: 'ntfy', gotify: 'Gotify', discord: 'Discord', android: 'Vigara app' }
 
 const errorWords: Record<string, string> = {
   request_failed: 'Could not reach the server',
@@ -20,11 +23,16 @@ const errorWords: Record<string, string> = {
   payload_too_large: 'Message too large',
   attempt_limit: 'Gave up after repeated failures',
   policy_unavailable: 'Settings could not be read',
+  gone: 'The phone is no longer registered with its push app',
+  no_phones: 'No phones registered yet',
+  invalid_registration: 'The phone’s registration is invalid',
+  encryption_failed: 'The message could not be encrypted',
 }
 export const errorText = (code: string) => errorWords[code] ?? code.replace(/_/g, ' ')
 
 /** The channel's health in a few words, for the channels table. */
 export function channelStatus(channel: Channel, relative: (at: string) => string): { tone: StatusTone; text: string } {
+  if (channel.kind === 'android' && !channel.phoneCount) return { tone: 'idle', text: 'No phones yet' }
   if (channel.lastError) return { tone: 'crit', text: `${errorText(channel.lastError)}${channel.pending ? ` · ${channel.pending} waiting to retry` : ''}` }
   if (channel.pending) return { tone: 'info', text: `Sending ${channel.pending}` }
   const held = channel.held ? ` · ${channel.held} held for quiet hours` : ''

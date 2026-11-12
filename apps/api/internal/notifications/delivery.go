@@ -15,6 +15,7 @@ import (
 
 type Message struct {
 	EventID    string
+	IncidentID string
 	Transition string
 	DeviceName string
 	RuleName   string
@@ -170,7 +171,7 @@ func RunOneBatch(ctx context.Context, pool *pgxpool.Pool, d Destination) (bool, 
 			continue
 		}
 		attemptCtx, cancel := context.WithTimeout(ctx, SendTimeout)
-		msg := Message{EventID: it.eventID, Transition: it.transition, RuleName: it.ruleName, Summary: it.summary, OccurredAt: it.occurredAt, Severity: it.severity}
+		msg := Message{EventID: it.eventID, IncidentID: it.incidentID, Transition: it.transition, RuleName: it.ruleName, Summary: it.summary, OccurredAt: it.occurredAt, Severity: it.severity}
 		msg.OpenURL, msg.AcknowledgeURL, msg.MuteURL = p.links(it.incidentID, time.Now())
 		msg.DeviceName = deviceName(attemptCtx, pool, it.dimension)
 		sendErr := d.Send(attemptCtx, msg)

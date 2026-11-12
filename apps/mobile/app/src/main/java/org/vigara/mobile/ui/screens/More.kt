@@ -77,6 +77,8 @@ fun MoreScreen(user: User, onNavigate: (String) -> Unit) {
             MoreRow("Images", "Pull, inspect and prune images") { onNavigate("resources/image") }
             MoreRow("Networks", "Docker networks per host") { onNavigate("resources/network") }
             MoreRow("Volumes", "Docker volumes per host") { onNavigate("resources/volume") }
+            SectionTitle("This phone", Modifier.padding(horizontal = 16.dp))
+            MoreRow("Notifications", "Get alerts on this phone through ntfy or another push app") { onNavigate("notifications") }
             SectionTitle("Integrations", Modifier.padding(horizontal = 16.dp))
             MoreRow("Claude and ChatGPT (MCP)", "Connection URL and connected applications") { onNavigate("mcp") }
             if (user.isAdmin) MoreRow("Git settings", "Repository for stack storage") { onNavigate("git-settings") }
@@ -107,6 +109,7 @@ fun AccountScreen(api: VigaraApi, user: User, onBack: () -> Unit, onUserChanged:
     var error by remember { mutableStateOf<String?>(null) }
     var done by remember { mutableStateOf(false) }
     val version = rememberLoad { runCatching { api.get<VersionInfo>("/api/version").version }.getOrDefault("") }
+    val context = androidx.compose.ui.platform.LocalContext.current
     val pw = PasswordVisualTransformation()
     val kb = KeyboardOptions(keyboardType = KeyboardType.Password)
 
@@ -140,6 +143,8 @@ fun AccountScreen(api: VigaraApi, user: User, onBack: () -> Unit, onUserChanged:
             SectionTitle("Session")
             OutlinedButton({
                 scope.launch {
+                    // A signed-out phone should stop getting this server's alerts.
+                    if (org.vigara.mobile.push.Push.status.value.enabled) org.vigara.mobile.push.Push.disable(context, api)
                     runCatching { api.postUnit("/api/auth/logout") }
                     api.forgetSession()
                     onSignedOut()

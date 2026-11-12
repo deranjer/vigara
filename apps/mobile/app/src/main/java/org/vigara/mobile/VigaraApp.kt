@@ -10,5 +10,7 @@ class VigaraApp : Application() {
     override fun onCreate() {
         super.onCreate()
         api = VigaraApi(this)
+        org.vigara.mobile.push.Push.createChannels(this)
+        org.vigara.mobile.push.Push.load(this)
     }
 }

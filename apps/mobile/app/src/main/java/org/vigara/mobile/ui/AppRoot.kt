@@ -55,6 +55,8 @@ import org.vigara.mobile.ui.screens.ImageUpdatesScreen
 import org.vigara.mobile.ui.screens.LoginScreen
 import org.vigara.mobile.ui.screens.MoreScreen
 import org.vigara.mobile.ui.screens.OverviewScreen
+import org.vigara.mobile.ui.screens.PushSettingsScreen
+import org.vigara.mobile.push.Push
 import org.vigara.mobile.ui.common.rememberLoad
 import org.vigara.mobile.ui.screens.ResourcesScreen
 import org.vigara.mobile.ui.screens.StackDetailScreen
@@ -121,6 +123,11 @@ private fun MainShell(api: VigaraApi, user: User, onUserChanged: (User) -> Unit,
     val openAlerts = rememberLoad(pollMs = 60_000) { runCatching { api.get<List<Incident>>("/api/alerts/incidents").count { it.bucket() == "open" } }.getOrDefault(0) }
     val tabRoutes = tabs.map { it.route }.toSet()
     val go = { route: String -> if (route in tabRoutes) nav.goTab(route) else nav.navigate(route) }
+    val activity = androidx.compose.ui.platform.LocalContext.current as android.app.Activity
+    // An enabled phone re-registers on start so the server always has its current endpoint.
+    LaunchedEffect(user.id) { Push.refresh(activity) }
+    val openRequest by Push.openRequest.collectAsState()
+    LaunchedEffect(openRequest) { openRequest?.let { go(it); Push.openRequest.value = null; openAlerts.refresh() } }
     val backStack by nav.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route.orEmpty()
     val groupOf = { route: String ->
@@ -192,6 +199,7 @@ private fun MainShell(api: VigaraApi, user: User, onUserChanged: (User) -> Unit,
                 ResourcesScreen(api, user, it.arguments?.getString("kind").orEmpty(), onBack = { nav.popBackStack() })
             }
             composable("alerts") { AlertsScreen(api, onOpenDevice = { nav.navigate("device/${Uri.encode(it)}") }, onRules = { nav.navigate("alert-rules") }) }
+            composable("notifications") { PushSettingsScreen(api, onBack = { nav.popBackStack() }) }
             composable("account") { AccountScreen(api, user, onBack = { nav.popBackStack() }, onUserChanged = onUserChanged, onSignedOut = onSignedOut) }
             composable("admin") { AdminScreen(api, user, onBack = { nav.popBackStack() }) }
         }

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Alert, Button, Checkbox, Code, Group, Loader, Select, Stack, Switch, Table, Text, TextInput } from '@mantine/core'
-import { channelStatus, errorText, kindLabels, quietSummary, sameSettings, type NotificationSettings, type QuietHours, type Route } from './notification-utils'
+import { channelStatus, errorText, kindLabels, quietSummary, sameSettings, type Channel, type NotificationSettings, type QuietHours, type Route } from './notification-utils'
 import { relativeTime } from './overview-utils'
 import { StatusText } from './status'
 import { Panel } from './ui'
@@ -47,6 +47,8 @@ export function NotificationSettingsPanel() {
       .catch((e: unknown) => setTests((t) => ({ ...t, [id]: e instanceof Error ? e.message : 'Failed' })))
   }
   const channels = settings.channels
+  const external = channels.filter((c) => c.kind !== 'android')
+  const android = channels.find((c) => c.kind === 'android')
   const severities: { key: keyof Route; label: string; tone: 'crit' | 'warn' | 'ok' }[] = [{ key: 'critical', label: 'Critical', tone: 'crit' }, { key: 'warning', label: 'Warning', tone: 'warn' }, { key: 'resolved', label: 'Cleared', tone: 'ok' }]
 
   return <Stack gap="lg" maw={960}>
@@ -54,19 +56,21 @@ export function NotificationSettingsPanel() {
     {error && <Alert color="red" withCloseButton onClose={() => setError('')}>{error}</Alert>}
     {!settings.linksEnabled && channels.length > 0 && <Alert color="yellow" title="Notifications can’t link back to Vigara">Set <Code>VIGIRA_PUBLIC_URL</Code> on the server so tapping a notification opens Alerts, and ntfy notifications get Acknowledge and Mute buttons.</Alert>}
     <Panel title="Channels" count={channels.length} flush>
-      {channels.length === 0 ? <Stack gap={6} p="md">
-        <Text size="sm">No channels set up. Channels are configured on the server; restart it after setting them.</Text>
-        <Text size="sm" c="dimmed">ntfy: <Code>VIGIRA_NTFY_URL</Code>, <Code>VIGIRA_NTFY_TOPIC</Code> and optionally <Code>VIGIRA_NTFY_TOKEN</Code>. Gotify: <Code>VIGIRA_GOTIFY_URL</Code> and <Code>VIGIRA_GOTIFY_TOKEN</Code>. Discord: <Code>VIGIRA_DISCORD_WEBHOOK_URL</Code>.</Text>
-      </Stack> : <div className="table-scroll"><Table verticalSpacing="sm">
+      {channels.length > 0 && <div className="table-scroll"><Table verticalSpacing="sm">
         <Table.Thead><Table.Tr><Table.Th>Channel</Table.Th><Table.Th className="vg-wide">Target</Table.Th><Table.Th>Status</Table.Th><Table.Th /></Table.Tr></Table.Thead>
         <Table.Tbody>{channels.map((c) => { const s = channelStatus(c, (at) => relativeTime(at)); return <Table.Tr key={c.id}>
           <Table.Td><Text size="sm" fw={600}>{kindLabels[c.kind] ?? c.kind}</Text><Text size="xs" c="dimmed" ff="monospace" className="vg-narrow vg-break">{c.target}</Text></Table.Td>
           <Table.Td className="vg-wide"><Text size="sm" c="dimmed" ff="monospace">{c.target}</Text></Table.Td>
           <Table.Td><StatusText tone={s.tone}>{s.text}</StatusText>{tests[c.id] && <Text size="xs" c="dimmed" mt={2}>{tests[c.id]}</Text>}</Table.Td>
-          <Table.Td className="vg-num">{manage && <Button size="xs" variant="default" onClick={() => test(c.id)} loading={tests[c.id] === 'Sending…'}>Send test</Button>}</Table.Td>
+          <Table.Td className="vg-num">{manage && (c.kind !== 'android' || !!c.phoneCount) && <Button size="xs" variant="default" onClick={() => test(c.id)} loading={tests[c.id] === 'Sending…'}>Send test</Button>}</Table.Td>
         </Table.Tr> })}</Table.Tbody>
       </Table></div>}
+      {external.length === 0 && <Stack gap={6} p="md">
+        <Text size="sm">Other channels are configured on the server; restart it after setting them.</Text>
+        <Text size="sm" c="dimmed">ntfy: <Code>VIGIRA_NTFY_URL</Code>, <Code>VIGIRA_NTFY_TOPIC</Code> and optionally <Code>VIGIRA_NTFY_TOKEN</Code>. Gotify: <Code>VIGIRA_GOTIFY_URL</Code> and <Code>VIGIRA_GOTIFY_TOKEN</Code>. Discord: <Code>VIGIRA_DISCORD_WEBHOOK_URL</Code>.</Text>
+      </Stack>}
     </Panel>
+    {android && <PhonesPanel channel={android} admin={manage} onChanged={() => { void load() }} />}
     {channels.length > 0 && <div className="vg-notify-grid">
       <Panel title="Which alerts each channel gets" flush>
         <Table verticalSpacing="sm">
@@ -96,4 +100,42 @@ export function NotificationSettingsPanel() {
     </Group>}
     {!manage && <Text size="sm" c="dimmed">Only administrators can change notification settings.</Text>}
   </Stack>
+}
+
+/** Phones running the Vigara app. Each person manages their own; admins see everyone's. */
+function PhonesPanel({ channel, admin, onChanged }: { channel: Channel; admin: boolean; onChanged: () => void }) {
+  const phones = channel.phones ?? []
+  const [status, setStatus] = useState<Record<string, string>>({})
+  const [busy, setBusy] = useState('')
+  const test = (id: string) => {
+    setStatus((s) => ({ ...s, [id]: 'Sending…' }))
+    call<{ ok: boolean; error?: string }>('POST', `/api/notifications/phones/${id}/test`)
+      .then((r) => { setStatus((s) => ({ ...s, [id]: r.ok ? 'Sent. Check the phone.' : `Failed: ${errorText(r.error ?? '')}` })); if (!r.ok) onChanged() })
+      .catch((e: unknown) => setStatus((s) => ({ ...s, [id]: e instanceof Error ? e.message : 'Failed' })))
+  }
+  const remove = (id: string) => {
+    setBusy(id)
+    fetch(`/api/notifications/phones/${id}`, { method: 'DELETE', credentials: 'same-origin' })
+      .then(async (r) => { if (!r.ok) throw new Error((await r.text()).trim() || 'The phone could not be removed.'); onChanged() })
+      .catch((e: unknown) => setStatus((s) => ({ ...s, [id]: e instanceof Error ? e.message : 'Failed' }))).finally(() => setBusy(''))
+  }
+  return <Panel title="Phones" count={phones.length} flush>
+    {phones.length === 0 ? <Stack gap={6} p="md">
+      <Text size="sm">{admin && channel.phoneCount ? 'None of the registered phones are yours.' : 'No phones yet.'} Install the Vigara Android app, sign in, and turn on notifications under More › Notifications.</Text>
+      <Text size="sm" c="dimmed">Alerts reach the phone through UnifiedPush, so it also needs a push app such as ntfy. They are encrypted on this server, so the push app only relays them.</Text>
+    </Stack> : <div className="table-scroll"><Table verticalSpacing="sm">
+      <Table.Thead><Table.Tr><Table.Th>Phone</Table.Th><Table.Th>Status</Table.Th><Table.Th /></Table.Tr></Table.Thead>
+      <Table.Tbody>{phones.map((p) => <Table.Tr key={p.id}>
+        <Table.Td><Text size="sm" fw={600}>{p.name}</Text><Text size="xs" c="dimmed">{p.mine ? 'You' : p.user} · added {relativeTime(p.createdAt)}</Text></Table.Td>
+        <Table.Td>{p.lastError ? <StatusText tone="crit">{errorText(p.lastError)}</StatusText>
+          : p.lastSuccessAt ? <StatusText tone="ok">Last delivered {relativeTime(p.lastSuccessAt)}</StatusText>
+          : <StatusText tone="idle">Nothing sent yet</StatusText>}
+          {status[p.id] && <Text size="xs" c="dimmed" mt={2}>{status[p.id]}</Text>}</Table.Td>
+        <Table.Td className="vg-num"><Group gap="xs" justify="flex-end">
+          <Button size="xs" variant="default" onClick={() => test(p.id)} loading={status[p.id] === 'Sending…'}>Send test</Button>
+          <Button size="xs" variant="subtle" color="red" onClick={() => remove(p.id)} loading={busy === p.id}>Remove</Button>
+        </Group></Table.Td>
+      </Table.Tr>)}</Table.Tbody>
+    </Table></div>}
+  </Panel>
 }
