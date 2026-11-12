@@ -13,7 +13,7 @@ async function request<T>(method = 'GET', body?: unknown): Promise<T> {
 const validID = (value: string) => value.length <= 63 && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value)
 const same = (a: Files, b: Files) => JSON.stringify(Object.entries(a).sort()) === JSON.stringify(Object.entries(b).sort())
 
-export function StackProfiles({ stacks, onClose }: { stacks: { id: string; name: string; commit?: string }[]; onClose: () => void }) {
+export function StackProfiles({ stacks, onClose }: { stacks: { id: string; name: string; commit?: string }[]; onClose?: () => void }) {
   const [saved, setSaved] = useState<Placements | null>(null)
   const [files, setFiles] = useState<Files>({})
   const [selected, setSelected] = useState<string | null>(null)
@@ -113,7 +113,7 @@ export function StackProfiles({ stacks, onClose }: { stacks: { id: string; name:
         <Group justify="space-between"><Button variant="subtle" color="red" disabled={busy || !selected} onClick={() => { if (!selected) return; const next = { ...files }; delete next[selected]; setFiles(next); setSelected(Object.keys(next).sort()[0] ?? null) }}>Remove from draft</Button><Text size="xs" c="dimmed">Remove a profile’s assignments before removing its profile.</Text></Group>
       </> : <Text c="dimmed">No profiles yet. Add a logical server profile above.</Text>}
     </>}
-    {discard && <Alert color="yellow" title="Discard unsaved changes?"><Stack gap="xs"><Text size="sm">Your changes are held in this editor until saved to Git.</Text><Group><Button variant="default" onClick={() => setDiscard(null)}>Keep editing</Button><Button color="red" onClick={() => { if (discard === 'close') onClose(); else void reload() }}>Discard and {discard === 'close' ? 'close' : 'reload'}</Button></Group></Stack></Alert>}
-    <Group justify="end"><Button variant="default" disabled={busy} onClick={() => { if (dirty) setDiscard('close'); else onClose() }}>Close</Button><Button variant="default" disabled={busy} onClick={() => { if (dirty) setDiscard('reload'); else void reload() }}>Reload saved manifests</Button><Button loading={busy} disabled={!dirty || !saved} onClick={() => void save()}>Save to branch</Button></Group>
+    {discard && <Alert color="yellow" title="Discard unsaved changes?"><Stack gap="xs"><Text size="sm">Your changes are held in this editor until saved to Git.</Text><Group><Button variant="default" onClick={() => setDiscard(null)}>Keep editing</Button><Button color="red" onClick={() => { if (discard === 'close') onClose?.(); else void reload() }}>Discard and {discard === 'close' ? 'close' : 'reload'}</Button></Group></Stack></Alert>}
+    <Group justify="end">{onClose && <Button variant="default" disabled={busy} onClick={() => { if (dirty) setDiscard('close'); else onClose() }}>Close</Button>}<Button variant="default" disabled={busy} onClick={() => { if (dirty) setDiscard('reload'); else void reload() }}>Reload saved manifests</Button><Button loading={busy} disabled={!dirty || !saved} onClick={() => void save()}>Save to branch</Button></Group>
   </Stack>
 }

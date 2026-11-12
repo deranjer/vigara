@@ -47,13 +47,13 @@ private fun statusColor(status: String) = when (status) {
 }
 
 @Composable
-fun ImageUpdatesScreen(api: VigaraApi, user: User, onOpenContainer: (String, String) -> Unit) {
+fun ImageUpdatesScreen(api: VigaraApi, user: User, onOpenContainer: (String, String) -> Unit, onBack: (() -> Unit)? = null) {
     val overview = rememberLoad(pollMs = 30_000) { api.get<UpdateOverview>("/api/image-updates") }
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     var filter by remember { mutableStateOf<String?>(null) }
     AppScaffold(
-        "Image updates", snackbar = snackbar,
+        "Image updates", onBack = onBack, snackbar = snackbar,
         actions = {
             if (user.canOperate) TextButton({
                 scope.launch {
@@ -72,23 +72,21 @@ fun ImageUpdatesScreen(api: VigaraApi, user: User, onOpenContainer: (String, Str
                 val shown = data.items.filter { filter == null || it.result.status == filter }
                     .sortedWith(compareBy<UpdateItem> { it.result.status != "update-available" && it.result.status != "update_available" }.thenBy { it.result.name })
                 if (shown.isEmpty() && data.hosts.isEmpty()) EmptyState("No image checks yet. Run \"Check all\" to start.")
-                else LazyColumn(contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                else LazyColumn(contentPadding = PaddingValues(bottom = 16.dp)) {
                     items(shown, key = { "${it.agentId}/${it.containerId}" }) { item ->
-                        ItemCard(onClick = { onOpenContainer(item.agentId, item.containerId) }) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(item.result.name.ifBlank { item.containerId.take(12) }, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-                                StatusChip(item.result.status.ifBlank { "unknown" }, statusColor(item.result.status))
-                            }
-                            Text("${item.device} · ${item.result.image}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            if (item.result.available.isNotBlank()) Text("Available: ${item.result.available.take(19)}", style = MaterialTheme.typography.bodySmall)
-                            if (item.result.message.isNotBlank()) Text(item.result.message, style = MaterialTheme.typography.bodySmall)
-                            Text("Checked ${formatTime(item.checkedAt)}${if (item.ignored) " · ignored" else ""}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
+                        org.vigara.mobile.ui.common.TwoLineRow(
+                            title = item.result.name.ifBlank { item.containerId.take(12) },
+                            subtitle = listOf("${item.device} · ${item.result.image}", item.result.message, if (item.ignored) "ignored" else "").filter { it.isNotBlank() }.joinToString(" · "),
+                            dot = statusColor(item.result.status),
+                            trailing = item.result.status.ifBlank { "unknown" }.replace('-', ' ').replace('_', ' '),
+                            trailingDetail = org.vigara.mobile.ui.common.relativeTime(item.checkedAt),
+                            onClick = { onOpenContainer(item.agentId, item.containerId) },
+                        )
                     }
                     if (data.hosts.isNotEmpty()) {
-                        item { SectionTitle("Hosts") }
+                        item { Column(Modifier.padding(horizontal = 12.dp)) { SectionTitle("Hosts") } }
                         items(data.hosts, key = { "h-${it.agentId}" }) { h ->
-                            ItemCard {
+                            ItemCard(Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
                                 Text(h.device, style = MaterialTheme.typography.titleSmall)
                                 Text("Last attempt ${formatTime(h.checkedAt, "never")} · next ${formatTime(h.nextCheck)}", style = MaterialTheme.typography.bodySmall)
                                 if (h.message.isNotBlank()) Text("${h.message} Existing results may be stale.", style = MaterialTheme.typography.bodySmall, color = Palette.warn)

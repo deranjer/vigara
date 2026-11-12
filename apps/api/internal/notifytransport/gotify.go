@@ -30,8 +30,14 @@ func newGotifyTarget(baseURL, token string, client *http.Client) (Target, error)
 	if client == nil {
 		client = newHTTPClient()
 	}
+	host := endpoint
+	if u, err := url.Parse(endpoint); err == nil {
+		host = u.Scheme + "://" + u.Host
+	}
 	return Target{
-		ID: GotifyTargetID,
+		ID:      GotifyTargetID,
+		Kind:    "gotify",
+		Display: host,
 		send: func(ctx context.Context, message Message) error {
 			title, content := renderGotify(message)
 			payload := gotifyPayload{Title: title, Message: content, Priority: 5}

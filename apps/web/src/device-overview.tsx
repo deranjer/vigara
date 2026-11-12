@@ -1,3 +1,4 @@
+import { DeviceBackupLine } from './backup-status'
 import { useEffect, useMemo, useState } from 'react'
 import { Button, Group, Loader, SegmentedControl, Table, Text } from '@mantine/core'
 import { LineChart } from '@mantine/charts'
@@ -126,7 +127,7 @@ export function DeviceOverview({ device, host, onNavigate, onOpenTab }: { device
         <Panel title="About" actions={<Button size="xs" variant="subtle" onClick={() => onOpenTab('settings')}>Details</Button>}>
           <dl className="vg-kv">
             {about.map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{value}</dd></div>)}
-            <div><dt>Backups</dt><dd><a href="#" onClick={(e) => { e.preventDefault(); onOpenTab('backups') }}>View backups</a></dd></div>
+            <div><dt>Backups</dt><dd><DeviceBackupLine deviceId={device.id} onOpen={() => onOpenTab('backups')} /></dd></div>
             <div><dt>Capabilities</dt><dd className="vg-chips">{device.capabilities.length ? device.capabilities.map((c) => <span key={c} className="vg-pill">{c}</span>) : '—'}</dd></div>
           </dl>
         </Panel>

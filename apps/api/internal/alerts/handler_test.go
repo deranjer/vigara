@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -393,7 +395,13 @@ func alertsTestPool(t *testing.T) *pgxpool.Pool {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	for _, name := range []string{"000001_initial_schema.up.sql"} {
+	names, err := filepath.Glob("../../migrations/*.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		name = filepath.Base(name)
 		migration, err := os.ReadFile("../../migrations/" + name)
 		if err != nil {
 			t.Fatal(err)
@@ -504,4 +512,13 @@ func TestRuleFailureDoesNotBlockOtherRules(t *testing.T) {
 	}
 	assertCount(t, pool, `SELECT count(*) FROM alert_incidents WHERE status='firing'`, 1)
 	assertCount(t, pool, `SELECT count(*) FROM alert_events WHERE transition='firing'`, 1)
+}
+
+func TestThresholdSummary(t *testing.T) {
+	if got := thresholdSummary(Config{Metric: "memory_used_percent", Operator: "gte", Threshold: 40}, 55.683, "", "nas-01"); got != "Memory on nas-01 at 55.7% (alert at or over 40%)" {
+		t.Fatal(got)
+	}
+	if got := thresholdSummary(Config{Metric: "filesystem_free_bytes", Operator: "lt", Threshold: 10 * 1024 * 1024 * 1024}, 9.5*1024*1024*1024, "/data", ""); got != "Free disk on /data at 9.5 GB (alert under 10 GB)" {
+		t.Fatal(got)
+	}
 }

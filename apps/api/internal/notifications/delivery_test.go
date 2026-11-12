@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -309,7 +311,13 @@ func notificationTestPool(t *testing.T) *pgxpool.Pool {
 		t.Fatal(err)
 	}
 	t.Cleanup(p.Close)
-	for _, name := range []string{"000001_initial_schema.up.sql"} {
+	names, err := filepath.Glob("../../migrations/*.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		name = filepath.Base(name)
 		b, err := os.ReadFile("../../migrations/" + name)
 		if err != nil {
 			t.Fatal(err)

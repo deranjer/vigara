@@ -1,3 +1,4 @@
+import { MountBackup } from './backup-status'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { LineChart } from '@mantine/charts'
 import { Alert, Badge, Button, Card, Checkbox, Code, Group, Loader, Select, SimpleGrid, Stack, Switch, Table, Tabs, Text, TextInput, Title } from '@mantine/core'
@@ -85,7 +86,7 @@ export function ContainerDetail({ hostId, reference, tab, hosts, role, onNavigat
 
     {inspect && <Tabs value={tab} onChange={goTab} mt="xs" keepMounted={false} className="vg-page-tabs">
       <Tabs.List><Tabs.Tab value="logs">Logs</Tabs.Tab><Tabs.Tab value="overview">Overview</Tabs.Tab><Tabs.Tab value="stats">Stats</Tabs.Tab><Tabs.Tab value="terminal">Terminal</Tabs.Tab><Tabs.Tab value="inspect">Inspect</Tabs.Tab></Tabs.List>
-      <Tabs.Panel value="overview" pt="md"><ContainerOverview inspect={inspect} admin={role === 'admin'} revealing={revealing} onReveal={reveal} onBrowse={canBrowseFiles(role, host?.dockerTier) ? setBrowseMount : undefined} /></Tabs.Panel>
+      <Tabs.Panel value="overview" pt="md"><ContainerOverview hostId={hostId} inspect={inspect} admin={role === 'admin'} revealing={revealing} onReveal={reveal} onBrowse={canBrowseFiles(role, host?.dockerTier) ? setBrowseMount : undefined} /></Tabs.Panel>
       <Tabs.Panel value="logs" pt="md"><LogsPanel hostId={hostId} reference={reference} name={title} /></Tabs.Panel>
       <Tabs.Panel value="stats" pt="md"><StatsPanel hostId={hostId} reference={reference} running={running} /></Tabs.Panel>
       <Tabs.Panel value="terminal" pt="md"><TerminalPanel hostId={hostId} reference={reference} name={title} running={running} role={role} hostTier={host?.dockerTier} /></Tabs.Panel>
@@ -95,7 +96,7 @@ export function ContainerDetail({ hostId, reference, tab, hosts, role, onNavigat
   </div>
 }
 
-export function ContainerOverview({ inspect, admin, revealing, onReveal, onBrowse }: { inspect: InspectResult; admin: boolean; revealing: boolean; onReveal: (show: boolean) => Promise<void>; onBrowse?: (mount: string) => void }) {
+export function ContainerOverview({ inspect, admin, revealing, onReveal, onBrowse, hostId }: { inspect: InspectResult; admin: boolean; revealing: boolean; onReveal: (show: boolean) => Promise<void>; onBrowse?: (mount: string) => void; hostId?: string }) {
   const s = inspect.state
   const cpuLimit = inspect.nanoCpus ? `${(inspect.nanoCpus / 1e9).toFixed(2)} cores` : 'Unlimited'
   return <Stack gap="md">
@@ -118,8 +119,8 @@ export function ContainerOverview({ inspect, admin, revealing, onReveal, onBrows
         : <Text size="sm" c="dimmed">No ports.</Text>}</Card>
 
     <Card withBorder radius="md" padding="md"><Title order={5} mb="sm">Mounts</Title>
-      {inspect.mounts?.length ? <Table.ScrollContainer minWidth={520}><Table verticalSpacing="xs"><Table.Thead><Table.Tr><Table.Th>Type</Table.Th><Table.Th>Source</Table.Th><Table.Th>Destination</Table.Th><Table.Th>Access</Table.Th>{onBrowse && <Table.Th />}</Table.Tr></Table.Thead>
-        <Table.Tbody>{inspect.mounts.map((mount, index) => <Table.Tr key={index}><Table.Td>{mount.type}</Table.Td><Table.Td style={{ wordBreak: 'break-all' }}>{mount.name || mount.source || '–'}</Table.Td><Table.Td style={{ wordBreak: 'break-all' }}>{mount.destination}</Table.Td><Table.Td>{mount.readWrite ? 'Read-write' : 'Read-only'}</Table.Td>{onBrowse && <Table.Td>{(mount.type === 'bind' || mount.type === 'volume') && <Button size="xs" variant="light" onClick={() => onBrowse(mount.destination)}>Browse files</Button>}</Table.Td>}</Table.Tr>)}</Table.Tbody></Table></Table.ScrollContainer>
+      {inspect.mounts?.length ? <Table.ScrollContainer minWidth={520}><Table verticalSpacing="xs"><Table.Thead><Table.Tr><Table.Th>Type</Table.Th><Table.Th>Source</Table.Th><Table.Th>Destination</Table.Th><Table.Th>Access</Table.Th>{hostId && <Table.Th>Backup</Table.Th>}{onBrowse && <Table.Th />}</Table.Tr></Table.Thead>
+        <Table.Tbody>{inspect.mounts.map((mount, index) => <Table.Tr key={index}><Table.Td>{mount.type}</Table.Td><Table.Td style={{ wordBreak: 'break-all' }}>{mount.name || mount.source || '–'}</Table.Td><Table.Td style={{ wordBreak: 'break-all' }}>{mount.destination}</Table.Td><Table.Td>{mount.readWrite ? 'Read-write' : 'Read-only'}</Table.Td>{hostId && <Table.Td>{mount.type === 'bind' || mount.type === 'volume' ? <MountBackup agentId={hostId} source={mount.source} /> : '–'}</Table.Td>}{onBrowse && <Table.Td>{(mount.type === 'bind' || mount.type === 'volume') && <Button size="xs" variant="light" onClick={() => onBrowse(mount.destination)}>Browse files</Button>}</Table.Td>}</Table.Tr>)}</Table.Tbody></Table></Table.ScrollContainer>
         : <Text size="sm" c="dimmed">No mounts.</Text>}</Card>
 
     <Card withBorder radius="md" padding="md"><Title order={5} mb="sm">Networks</Title>

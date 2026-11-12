@@ -25,9 +25,11 @@ describe('route', () => {
     expect(parseRoute('#/monitoring')).toEqual(route('overview'))
     expect(parseRoute('#/monitoring/0b1f3c2e-aaaa-4bbb-8ccc-123456789abc')).toEqual(route('devices', '0b1f3c2e-aaaa-4bbb-8ccc-123456789abc'))
     expect(parseRoute('#/account')).toEqual(route('settings', 'account'))
-    expect(parseRoute('#/admin')).toEqual(route('settings', 'server'))
-    for (const hash of ['#/monitoring', '#/account', '#admin']) expect(isLegacyHash(hash)).toBe(true)
-    for (const hash of ['#/overview', '#/containers', '']) expect(isLegacyHash(hash)).toBe(false)
+    expect(parseRoute('#/admin')).toEqual(route('settings', 'tasks'))
+    expect(parseRoute('#/settings/server')).toEqual(route('settings', 'tasks'))
+    expect(parseRoute('#/settings/about')).toEqual(route('settings', 'agents'))
+    for (const hash of ['#/monitoring', '#/account', '#admin', '#/settings/server']) expect(isLegacyHash(hash)).toBe(true)
+    for (const hash of ['#/overview', '#/containers', '', '#/settings/tasks', '#/settings/constructor']) expect(isLegacyHash(hash)).toBe(false)
   })
 
   it('keeps Docker resource pages under the Containers nav item', () => {
@@ -47,7 +49,7 @@ describe('route', () => {
   })
 
   it('round-trips valid routes and omits invalid parts when formatting', () => {
-    for (const value of [route('settings', 'server'), route('overview'), route('devices'), route('containers', 'abc-123'), route('backups', 'a.b_c'), route('containers', 'host', 'web'), route('containers', 'host', 'web', 'stats')]) {
+    for (const value of [route('settings', 'tasks'), route('overview'), route('devices'), route('containers', 'abc-123'), route('backups', 'a.b_c'), route('containers', 'host', 'web'), route('containers', 'host', 'web', 'stats')]) {
       expect(parseRoute(formatRoute(value))).toEqual(value)
     }
     expect(formatRoute(route('containers', '<bad>'))).toBe('#/containers')

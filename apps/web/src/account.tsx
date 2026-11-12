@@ -1,7 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { Alert, Badge, Button, Card, Group, PasswordInput, Stack, Text, TextInput, Title } from '@mantine/core'
 import { PasswordWhitespaceWarning } from './password-warning'
-import { McpConnections } from './mcp-connections'
 
 type AccountUser = { id: string; username: string; displayName: string; role: string }
 
@@ -51,6 +50,5 @@ export function Account({ user, onChanged, onSessionExpired }: { user: AccountUs
         <Button type="submit" loading={busy} disabled={!currentPassword || newPassword.length < 12 || newPassword !== confirmation} style={{ alignSelf: 'flex-start' }}>Change password</Button>
       </Stack></form>
     </Stack></Card>
-    <McpConnections admin={user.role === 'admin'} />
   </Stack></section>
 }

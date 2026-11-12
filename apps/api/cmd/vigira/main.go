@@ -99,6 +99,8 @@ func main() {
 		logger.Error("database schema readiness check failed", "error", err)
 		os.Exit(1)
 	}
+	// The Android channel is always on; it sends to the phones signed in to the Vigara app.
+	destinations = append(destinations, notifications.PushDestination(database.Pool, nil))
 	notificationCtx, cancelNotifications := context.WithTimeout(context.Background(), 5*time.Second)
 	err = notifications.Initialize(notificationCtx, database.Pool, destinations)
 	cancelNotifications()
@@ -108,6 +110,11 @@ func main() {
 	}
 	alertsMux := http.NewServeMux()
 	alerts.NewHandler(database.Pool, authService).Register(alertsMux)
+	notifications.Configure(os.Getenv("VIGIRA_PUBLIC_URL"))
+	notificationHandler := notifications.NewHandler(database.Pool, authService, destinations)
+	notificationHandler.RegisterActions(alertsMux)
+	notificationMux := http.NewServeMux()
+	notificationHandler.Register(notificationMux)
 	backupMux := http.NewServeMux()
 	backups.NewHandler(database.Pool, authService).Register(backupMux)
 	managedBackups, err := backups.NewManager(database.Pool, os.Getenv("VIGIRA_BACKUP_MASTER_KEY"), os.Getenv("VIGIRA_RESTIC_EXECUTABLE"))
@@ -241,6 +248,8 @@ func main() {
 	router.Handle("/api/backups/android/*", androidBackupMux)
 	router.Handle("/api/backups/*", backupMux)
 	router.Handle("/api/alerts/*", alertsMux)
+	router.Handle("/api/notifications", notificationMux)
+	router.Handle("/api/notifications/*", notificationMux)
 	router.Handle("/api/devices/{deviceID}/availability", alertsMux)
 	router.Handle("/api/devices/{deviceID}/maintenance", alertsMux)
 	router.Handle("/api/devices/{deviceID}/maintenance/{windowID}", alertsMux)

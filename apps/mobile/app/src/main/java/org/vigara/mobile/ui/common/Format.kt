@@ -55,19 +55,25 @@ fun formatDuration(seconds: Long): String {
 
 fun shortId(id: String, n: Int = 12) = id.removePrefix("sha256:").take(n)
 
-/** Status colours shared by every list: green good, amber caution, red problem, grey inactive. */
+/**
+ * Status colours shared by every list, matching the web app's status tokens: green good, amber caution,
+ * red problem, blue information, grey inactive. [dark] is set by VigaraTheme so the brighter dark-mode
+ * shades are used on dark backgrounds.
+ */
 object Palette {
-    val good = Color(0xFF2E9E5B)
-    val warn = Color(0xFFD9A400)
-    val bad = Color(0xFFD64545)
-    val info = Color(0xFF3B82C4)
-    val idle = Color(0xFF7A8794)
-    val accent = Color(0xFF8B5CF6)
+    @Volatile var dark = false
+    val good get() = if (dark) Color(0xFF43C285) else Color(0xFF17804F)
+    val warn get() = if (dark) Color(0xFFF0A73A) else Color(0xFFB76A00)
+    val bad get() = if (dark) Color(0xFFF0686C) else Color(0xFFC9353A)
+    val info get() = if (dark) Color(0xFF6AA6EE) else Color(0xFF1D5FB0)
+    val idle get() = if (dark) Color(0xFF6F7C8D) else Color(0xFF8893A2)
+    /** Vigara orange: the brand mark only, never a status. */
+    val brand = Color(0xFFFF8136)
 
     fun container(state: String) = when (state) {
         "running" -> good
         "paused" -> warn
-        "restarting" -> Color(0xFFE67E22)
+        "restarting" -> warn
         "dead" -> bad
         "created" -> info
         else -> idle

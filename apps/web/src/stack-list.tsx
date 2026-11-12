@@ -4,12 +4,11 @@ import { useMediaQuery } from '@mantine/hooks'
 import { Alert, Button, Card, Checkbox, Group, Loader, Menu, Modal, SegmentedControl, SimpleGrid, Stack, Table, Text, TextInput, Title, UnstyledButton } from '@mantine/core'
 import { IconDots, IconGitBranch, IconPlus, IconRefresh, IconSearch } from '@tabler/icons-react'
 import { relativeTime } from './overview-utils'
+import { formatRoute, route } from './route'
 import { deviceScopeAtom } from './scope'
 import { runStackActions } from './stack-actions'
 import { NewStack, type ApprovedTarget } from './stack-management'
 import { bulkStacks, excludedFromBulk, filterStacks, isReverseProxy, matchesStackFilter, stackActionBlocker, stackActionTargets, stackFilterCounts, stackLabels, stackRuntimeBadge, stackStatus, stacksWithUpdates, type StackAction, type StackFilter, type StackHost, type StackLabel, type StackSummary } from './stack-list-utils'
-import { StackProfiles } from './stack-profiles'
-import { GitSettings } from './git-settings'
 import { StackImport } from './stack-import'
 import { StackLoading } from './stack-loading'
 import { StatusText, toneOf } from './status'
@@ -82,8 +81,9 @@ export function StackList({ onOpen, onPull, role }: { onOpen: (id: string) => vo
   const [confirm, setConfirm] = useState<Confirm | null>(null)
   const [creating, setCreating] = useState(false)
   const [importing, setImporting] = useState(false)
-  const [settings, setSettings] = useState(() => new URLSearchParams(window.location.search).get('github_app') === 'connected')
-  const [profiles, setProfiles] = useState(false)
+  // Git settings and profiles live in Settings; an old GitHub App callback still lands here.
+  const openSettings = (section: 'git' | 'profiles') => { window.location.hash = formatRoute(route('settings', section)) }
+  useEffect(() => { if (new URLSearchParams(window.location.search).get('github_app') === 'connected') openSettings('git') }, [])
 
   useEffect(() => {
     let active = true
@@ -159,7 +159,7 @@ export function StackList({ onOpen, onPull, role }: { onOpen: (id: string) => vo
           {listing?.branch && <span className="vg-nowrap"><IconGitBranch size={13} aria-hidden="true" /> <span className="vg-mono">{listing.branch}</span></span>}
           {listing && <span>{scoped.length === all.length ? `${all.length} stack${all.length === 1 ? '' : 's'}` : `${scoped.length} of ${all.length} stacks`}</span>}
           {scopeName ? <span>on {scopeName} · <a href="#" onClick={(event) => { event.preventDefault(); setScope(null) }}>show all devices</a></span> : onlyDevice && <span>on {onlyDevice}</span>}
-          <a href="#" onClick={(event) => { event.preventDefault(); setSettings(true) }}>Repository settings</a>
+          <a href={formatRoute(route('settings', 'git'))}>Repository settings</a>
         </Text>
       </div>
       <Group gap="xs">
@@ -169,8 +169,8 @@ export function StackList({ onOpen, onPull, role }: { onOpen: (id: string) => vo
           <Menu.Target><Button variant="default" size="xs" px={8} aria-label="More stack actions"><IconDots size={16} /></Button></Menu.Target>
           <Menu.Dropdown>
             <Menu.Item leftSection={<IconRefresh size={14} />} onClick={() => setRefresh((value) => value + 1)}>Refresh</Menu.Item>
-            <Menu.Item disabled={!configured} onClick={() => setProfiles(true)}>Profiles and assignments</Menu.Item>
-            <Menu.Item onClick={() => setSettings(true)}>Git settings</Menu.Item>
+            <Menu.Item disabled={!configured} onClick={() => openSettings('profiles')}>Profiles and assignments</Menu.Item>
+            <Menu.Item onClick={() => openSettings('git')}>Git settings</Menu.Item>
             <Menu.Divider />
             <Menu.Item disabled={!!busy || !bulkStacks(all, hosts, true).length} onClick={() => allFor('start')}>Start all stacks…</Menu.Item>
             <Menu.Item color="red" disabled={!!busy || !bulkStacks(all, hosts, true).length} onClick={() => allFor('stop')}>Stop all stacks…</Menu.Item>
@@ -184,7 +184,7 @@ export function StackList({ onOpen, onPull, role }: { onOpen: (id: string) => vo
     {error && <Alert mb="md" color="red" title="Could not load stacks">{error}</Alert>}
     {inventoryError && <Alert mb="md" color="yellow">{inventoryError}</Alert>}
     {!listing && loading && <StackLoading />}
-    {listing && !configured && <Card withBorder padding="lg"><Stack><Title order={3}>Connect your stack repository</Title><Text>Choose a Git repository and branch to keep a history of your Compose files.</Text><Group><Button onClick={() => setSettings(true)}>Open Git settings</Button></Group></Stack></Card>}
+    {listing && !configured && <Card withBorder padding="lg"><Stack><Title order={3}>Connect your stack repository</Title><Text>Choose a Git repository and branch to keep a history of your Compose files.</Text><Group><Button onClick={() => openSettings('git')}>Open Git settings</Button></Group></Stack></Card>}
 
     {configured && <>
       {!all.length && <Alert mb="md" color="blue" title="Already running Vigara, Caddy, or other Compose projects?"><Text size="sm">Import them from your enrolled host to add their configuration to Git without restarting containers.</Text><Button mt="sm" variant="light" onClick={() => setImporting(true)}>Find existing stacks</Button></Alert>}
@@ -219,9 +219,7 @@ export function StackList({ onOpen, onPull, role }: { onOpen: (id: string) => vo
 
     <BulkConfirm confirm={confirm} hosts={hosts} onCancel={() => setConfirm(null)} onConfirm={(ids) => { const action = confirm?.action; setConfirm(null); if (action) void run(action, ids) }} />
     <Modal opened={creating} onClose={() => setCreating(false)} title="New Compose stack" size="lg" centered>{creating && <NewStack approved={listing?.targets?.filter((target) => !all.some((stack) => stack.id === target.id)) ?? []} onOpen={onOpen} />}</Modal>
-    <Modal opened={settings} onClose={() => setSettings(false)} title="Git settings" size="lg" centered>{settings && <GitSettings onSaved={() => { setSettings(false); setRefresh((value) => value + 1); if (!listing?.configured) setImporting(true) }} />}</Modal>
     <Modal opened={importing} onClose={() => {}} withCloseButton={false} closeOnEscape={false} closeOnClickOutside={false} title="Import existing stack" size="xl" centered>{importing && <StackImport onClose={() => { setImporting(false); setRefresh((value) => value + 1) }} onImported={(id) => { setImporting(false); setRefresh((value) => value + 1); onOpen(id) }} />}</Modal>
-    <Modal opened={profiles} onClose={() => {}} withCloseButton={false} closeOnEscape={false} closeOnClickOutside={false} title="Server profiles and assignments" size="xl" centered>{profiles && <StackProfiles stacks={all} onClose={() => setProfiles(false)} />}</Modal>
     {loading && listing && <Loader size="xs" className="vg-corner-loader" aria-label="Refreshing" />}
   </div>
 }

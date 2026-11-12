@@ -21,8 +21,10 @@ export function route(section: Section, id: string | null = null, sub: string | 
   return { section, id, sub, tab }
 }
 
-/** Settings tabs, addressed as #/settings/<tab>. */
-export const settingsTabs = ['account', 'server', 'about'] as const
+/** Settings sections, addressed as #/settings/<section>. */
+export const settingsTabs = ['account', 'notifications', 'users', 'git', 'profiles', 'ai', 'agents', 'tasks'] as const
+// Settings sections that were renamed when Settings got its own menu.
+const legacySettings: Record<string, SettingsTab> = { server: 'tasks', about: 'agents' }
 export type SettingsTab = (typeof settingsTabs)[number]
 
 /** Docker resource pages shown as tabs of Containers. */
@@ -43,9 +45,10 @@ export function parseRoute(hash: string): Route {
   const legacy = legacySections.find((candidate) => candidate === rawSection)
   if (legacy === 'monitoring') return id ? route('devices', id) : route('overview')
   if (legacy === 'account') return route('settings', 'account')
-  if (legacy === 'admin') return route('settings', 'server')
+  if (legacy === 'admin') return route('settings', 'tasks')
   const section = sections.find((candidate) => candidate === rawSection)
   if (!section) return defaultRoute
+  if (section === 'settings' && id && Object.hasOwn(legacySettings, id)) return route('settings', legacySettings[id])
   // Later segments only mean something when the earlier ones are valid.
   const sub = id ? decodeSegment(rawSub, idPattern) : null
   const tab = sub ? decodeSegment(rawTab, tabPattern) : null
@@ -54,8 +57,8 @@ export function parseRoute(hash: string): Route {
 
 /** True when the hash is an old address that parseRoute rewrote, so the address bar should be updated. */
 export function isLegacyHash(hash: string): boolean {
-  const first = hash.replace(/^#\/?/, '').split('/')[0]
-  return legacySections.some((candidate) => candidate === first)
+  const [first, second] = hash.replace(/^#\/?/, '').split('/')
+  return legacySections.some((candidate) => candidate === first) || (first === 'settings' && !!second && Object.hasOwn(legacySettings, second))
 }
 
 /** The location hash for a route; the inverse of parseRoute for valid routes. */

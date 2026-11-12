@@ -102,21 +102,19 @@ fun StacksScreen(api: VigaraApi, user: User, onOpen: (String) -> Unit, onImport:
                     .sortedBy { it.name.ifBlank { it.id }.lowercase() }
                 if (!listing.configured) EmptyState("Stack storage is not configured yet. Admins can set up the Git repository from the Git button.")
                 else if (shown.isEmpty()) EmptyState(if (list.isEmpty()) "No stacks yet. Use New to create one or Import to adopt an existing Compose project." else "No stacks match.")
-                else LazyColumn(contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                else LazyColumn(contentPadding = PaddingValues(bottom = 16.dp)) {
                     items(shown, key = { it.id }) { stack ->
                         val (label, color) = stackStatus(stack)
                         val runtime = runtimeOf(stack, hosts)
-                        ItemCard(onClick = { onOpen(stack.id) }) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(stack.name.ifBlank { stack.id }, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-                                StatusChip(label, color)
-                            }
-                            Text(stack.deviceName.ifBlank { stack.agentId.ifBlank { "No device assigned" } }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            runtime?.let { (running, total, partial) ->
-                                val c = if (total == 0) Palette.idle else if (running < total) Palette.bad else Palette.good
-                                Text("${if (partial) "At least " else ""}$running / $total running", style = MaterialTheme.typography.bodySmall, color = c)
-                            }
-                        }
+                        org.vigara.mobile.ui.common.TwoLineRow(
+                            title = stack.name.ifBlank { stack.id },
+                            subtitle = "$label · ${stack.deviceName.ifBlank { stack.agentId.ifBlank { "no device assigned" } }}",
+                            dot = color,
+                            trailing = runtime?.let { (running, total, partial) -> "${if (partial) "≥" else ""}$running/$total" },
+                            trailingDetail = runtime?.let { "running" },
+                            trailingColor = runtime?.let { (running, total, _) -> if (total == 0) Palette.idle else if (running < total) Palette.bad else null },
+                            onClick = { onOpen(stack.id) },
+                        )
                     }
                 }
             }

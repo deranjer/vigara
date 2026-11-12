@@ -15,18 +15,24 @@ import (
 
 type Message struct {
 	EventID    string
+	IncidentID string
 	Transition string
 	DeviceName string
 	RuleName   string
 	Summary    string
 	OccurredAt time.Time
+	Severity   string
+	// Links back into Vigara; empty without a public URL.
+	OpenURL, AcknowledgeURL, MuteURL string
 }
 
 // Destination IDs are persistent identities. An absent destination is paused;
 // reusing its ID resumes its prior acknowledgments and pending deliveries.
 type Destination struct {
-	ID   string
-	Send func(context.Context, Message) error
+	ID string
+	// Kind and Target describe the channel in settings without credentials.
+	Kind, Target string
+	Send         func(context.Context, Message) error
 }
 type Logger interface{ Error(string, ...any) }
 
@@ -45,8 +51,9 @@ type retryAfter interface{ RetryAfter() time.Duration }
 type errorCoder interface{ ErrorCode() string }
 
 type item struct {
-	eventID, incidentID, transition, ruleName, summary, dimension, token string
-	occurredAt                                                           time.Time
+	eventID, incidentID, transition, ruleName, summary, dimension, token, severity string
+	occurredAt                                                                     time.Time
+	muted, superseded                                                              bool
 }
 
 // Initialize activates each configured destination once and checks that the
@@ -143,9 +150,29 @@ func RunOneBatch(ctx context.Context, pool *pgxpool.Pool, d Destination) (bool, 
 	if err != nil || len(items) == 0 {
 		return false, err
 	}
+	p, err := loadPolicy(ctx, pool, d.ID)
+	if err != nil {
+		for _, it := range items {
+			_ = finish(ctx, pool, d.ID, it, "pending", time.Now().Add(MinRetryDelay), "policy_unavailable")
+		}
+		return true, err
+	}
 	for _, it := range items {
+		switch verdict, until := p.decide(it, time.Now()); verdict {
+		case skipMuted, skipRoute, skipSuperseded:
+			if err := finish(ctx, pool, d.ID, it, "skipped", time.Time{}, string(verdict)); err != nil {
+				return true, err
+			}
+			continue
+		case holdQuiet:
+			if err := hold(ctx, pool, d.ID, it, until); err != nil {
+				return true, err
+			}
+			continue
+		}
 		attemptCtx, cancel := context.WithTimeout(ctx, SendTimeout)
-		msg := Message{EventID: it.eventID, Transition: it.transition, RuleName: it.ruleName, Summary: it.summary, OccurredAt: it.occurredAt}
+		msg := Message{EventID: it.eventID, IncidentID: it.incidentID, Transition: it.transition, RuleName: it.ruleName, Summary: it.summary, OccurredAt: it.occurredAt, Severity: it.severity}
+		msg.OpenURL, msg.AcknowledgeURL, msg.MuteURL = p.links(it.incidentID, time.Now())
 		msg.DeviceName = deviceName(attemptCtx, pool, it.dimension)
 		sendErr := d.Send(attemptCtx, msg)
 		cancel()
@@ -189,16 +216,22 @@ func claim(ctx context.Context, pool *pgxpool.Pool, id string) ([]item, error) {
  AND ((d.status='pending' AND d.next_attempt_at<=now()) OR (d.status='sending' AND d.lease_until<=now()))
  AND NOT EXISTS (SELECT 1 FROM notification_deliveries prior JOIN alert_events pe ON pe.id=prior.event_id
    WHERE prior.destination_id=d.destination_id AND pe.incident_id=e.incident_id
-   AND (pe.occurred_at,pe.id)<(e.occurred_at,e.id) AND prior.status NOT IN ('delivered','dead'))
+   AND (pe.occurred_at,pe.id)<(e.occurred_at,e.id) AND prior.status NOT IN ('delivered','dead','skipped')
+   AND NOT (prior.status='pending' AND prior.last_error_code='quiet_hours' AND prior.next_attempt_at>now()))
  ORDER BY e.occurred_at,e.id FOR UPDATE OF d SKIP LOCKED LIMIT $3
 ), leased AS (
  UPDATE notification_deliveries d SET status='sending',lease_token=gen_random_uuid(),lease_until=now()+$4::interval,
  attempts=d.attempts+1,updated_at=now() FROM picked p
  WHERE d.event_id=p.event_id AND d.destination_id=p.destination_id
- RETURNING d.event_id,d.lease_token
+ RETURNING d.event_id,d.lease_token,d.last_error_code
 )
 SELECT l.event_id::text,e.incident_id::text,e.transition,e.occurred_at,COALESCE(NULLIF(e.payload->>'rule',''),r.name,'Alert'),
- left(COALESCE(e.payload->>'summary',''),240),COALESCE(e.payload->>'dimension',''),l.lease_token
+ left(COALESCE(e.payload->>'summary',''),240),COALESCE(e.payload->>'dimension',''),l.lease_token,COALESCE(r.severity,'warning'),COALESCE(i.muted_until>now(),false),
+ (COALESCE(l.last_error_code,'')='quiet_hours' AND EXISTS (SELECT 1 FROM alert_events later WHERE later.incident_id=e.incident_id AND (later.occurred_at,later.id)>(e.occurred_at,e.id)))
+ OR (e.transition='resolved' AND COALESCE((SELECT pd.last_error_code IN ('quiet_hours','superseded') AND pd.status IN ('pending','skipped')
+   FROM notification_deliveries pd JOIN alert_events pe ON pe.id=pd.event_id
+   WHERE pd.destination_id=$1 AND pe.incident_id=e.incident_id AND pe.transition='firing' AND (pe.occurred_at,pe.id)<(e.occurred_at,e.id)
+   ORDER BY pe.occurred_at DESC,pe.id DESC LIMIT 1),false))
 FROM leased l JOIN alert_events e ON e.id=l.event_id
 JOIN alert_incidents i ON i.id=e.incident_id LEFT JOIN alert_rules r ON r.id=i.rule_id
 ORDER BY e.occurred_at,e.id`, id, MaxAttempts, BatchSize, LeaseDuration.String())
@@ -208,7 +241,7 @@ ORDER BY e.occurred_at,e.id`, id, MaxAttempts, BatchSize, LeaseDuration.String()
 	var result []item
 	for rows.Next() {
 		var x item
-		if err := rows.Scan(&x.eventID, &x.incidentID, &x.transition, &x.occurredAt, &x.ruleName, &x.summary, &x.dimension, &x.token); err != nil {
+		if err := rows.Scan(&x.eventID, &x.incidentID, &x.transition, &x.occurredAt, &x.ruleName, &x.summary, &x.dimension, &x.token, &x.severity, &x.muted, &x.superseded); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -229,6 +262,14 @@ func finish(ctx context.Context, pool *pgxpool.Pool, id string, it item, status 
 	_, err := pool.Exec(ctx, `UPDATE notification_deliveries SET status=$1,next_attempt_at=CASE WHEN $2::timestamptz IS NULL THEN next_attempt_at ELSE $2 END,
  lease_token=NULL,lease_until=NULL,last_error_code=NULLIF($3,''),updated_at=now()
  WHERE event_id=$4 AND destination_id=$5 AND status='sending' AND lease_token=$6`, status, nullTime(next), code, it.eventID, id, it.token)
+	return err
+}
+
+// hold puts a leased delivery back without counting the attempt, to be sent at until.
+func hold(ctx context.Context, pool *pgxpool.Pool, id string, it item, until time.Time) error {
+	_, err := pool.Exec(ctx, `UPDATE notification_deliveries SET status='pending',attempts=GREATEST(attempts-1,0),next_attempt_at=$1,
+ lease_token=NULL,lease_until=NULL,last_error_code='quiet_hours',updated_at=now()
+ WHERE event_id=$2 AND destination_id=$3 AND status='sending' AND lease_token=$4`, until, it.eventID, id, it.token)
 	return err
 }
 

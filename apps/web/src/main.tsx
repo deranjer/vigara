@@ -6,7 +6,8 @@ import { ImageUpdates } from './image-updates'
 import { Containers } from './containers'
 import { Stacks } from './stacks'
 import { Devices } from './devices'
-import { BackupHistory } from './backup-history'
+import { Backups } from './backups'
+import { SnapshotPage } from './snapshot-page'
 import { Resources } from './resources'
 import { Alerts } from './alerts'
 import { Overview } from './overview'
@@ -205,9 +206,11 @@ function Page({ user, route, onNavigate, onUserChanged, onSessionExpired }: Page
   const role = user.role
   switch (route.section) {
     case 'overview': return <Overview key={user.id} userName={user.displayName || user.username} onNavigate={onNavigate} />
-    case 'alerts': return <Alerts key={user.id} />
+    case 'alerts': return <Alerts key={user.id} route={route} onNavigate={onNavigate} />
     case 'devices': return <Devices key={user.id} role={role} route={route} onNavigate={onNavigate} />
-    case 'backups': return <div key={user.id} className="vg-page"><Title order={1} mb="lg">Backups</Title><BackupHistory /></div>
+    case 'backups': return route.id && route.sub
+      ? <div key={`${user.id}-${route.id}-${route.sub}`} className="vg-page"><SnapshotPage deviceId={route.id} snapshotId={route.sub} onNavigate={onNavigate} /></div>
+      : <div key={user.id} className="vg-page"><Title order={1} mb="xs">Backups</Title><Backups role={role} /></div>
     case 'stacks': return <Stacks key={user.id} route={route} role={role} onNavigate={onNavigate} />
     case 'updates': return <ImageUpdates key={user.id} role={role} onNavigate={onNavigate} />
     case 'settings': return <Settings user={user} route={route} onNavigate={onNavigate} onUserChanged={onUserChanged} onSessionExpired={onSessionExpired} />

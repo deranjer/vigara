@@ -57,9 +57,11 @@ export function ContainerPanel({ hostId, reference, row, hosts, usage, role, onN
         onRecreated={(newName) => { refreshFleet(); if (newName !== reference) onNavigate(routeOf('containers', hostId, newName)); else void load(false) }}
         extra={<>
           <Button size="xs" variant="default" leftSection={<IconTerminal2 size={14} />} onClick={() => full('terminal')}>Shell</Button>
-          <Button size="xs" variant="subtle" leftSection={<IconArrowsMaximize size={14} />} onClick={() => full(tab ?? 'logs')}>Open full page</Button>
+          <Button size="xs" variant="subtle" className="vg-wide" leftSection={<IconArrowsMaximize size={14} />} onClick={() => full(tab ?? 'logs')}>Open full page</Button>
         </>} />
-      <Group gap="lg" mt={8} className="vg-sidepanel-facts">
+    </div>
+    <div className="vg-sidepanel-summary">
+      <Group gap="lg" className="vg-sidepanel-facts">
         {statusRow && <StatusText tone={rowTone(statusRow)}>{stateText(statusRow)}</StatusText>}
         <span><Text span size="xs" c="dimmed">CPU </Text><b className="vg-num">{live?.cpu == null ? '—' : `${live.cpu.toFixed(1)}%`}</b></span>
         <span><Text span size="xs" c="dimmed">Memory </Text><b className="vg-num">{live?.memoryBytes == null ? '—' : formatBytes(live.memoryBytes)}</b></span>
@@ -71,7 +73,7 @@ export function ContainerPanel({ hostId, reference, row, hosts, usage, role, onN
       <Tabs.List px="md"><Tabs.Tab value="logs">Logs</Tabs.Tab><Tabs.Tab value="overview">Overview</Tabs.Tab><Tabs.Tab value="stats">Stats</Tabs.Tab><Tabs.Tab value="inspect">Inspect</Tabs.Tab></Tabs.List>
       <div className="vg-sidepanel-body">
         <Tabs.Panel value="logs"><LogsPanel key={`${hostId}/${reference}`} hostId={hostId} reference={reference} name={name} height={440} compact /></Tabs.Panel>
-        <Tabs.Panel value="overview">{inspect ? <ContainerOverview inspect={inspect} admin={role === 'admin'} revealing={revealing} onReveal={async (show) => { setRevealing(true); await load(show); setRevealing(false) }} onBrowse={canBrowseFiles(role, host?.dockerTier) ? setBrowseMount : undefined} /> : !error && <Loader size="sm" />}</Tabs.Panel>
+        <Tabs.Panel value="overview">{inspect ? <ContainerOverview hostId={hostId} inspect={inspect} admin={role === 'admin'} revealing={revealing} onReveal={async (show) => { setRevealing(true); await load(show); setRevealing(false) }} onBrowse={canBrowseFiles(role, host?.dockerTier) ? setBrowseMount : undefined} /> : !error && <Loader size="sm" />}</Tabs.Panel>
         <Tabs.Panel value="stats"><StatsPanel hostId={hostId} reference={reference} running={inspect ? inspect.state.running : null} /></Tabs.Panel>
         <Tabs.Panel value="inspect">{inspect ? <Code block className="vg-inspect">{JSON.stringify(inspect, null, 2)}</Code> : !error && <Loader size="sm" />}</Tabs.Panel>
       </div>

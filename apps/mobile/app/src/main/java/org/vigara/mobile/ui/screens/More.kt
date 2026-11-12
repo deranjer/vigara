@@ -69,14 +69,16 @@ import org.vigara.mobile.ui.common.relativeTime
 fun MoreScreen(user: User, onNavigate: (String) -> Unit) {
     AppScaffold("More") { padding ->
         Column(Modifier.padding(padding).verticalScroll(rememberScrollState())) {
+            SectionTitle("Fleet", Modifier.padding(horizontal = 16.dp))
+            MoreRow("Devices", "Every device, its health and metrics") { onNavigate("devices") }
+            MoreRow("Image updates", "Newer images for running containers") { onNavigate("updates") }
+            if (user.isAdmin) MoreRow("Add device", "Create an agent installer") { onNavigate("add-device") }
             SectionTitle("Docker", Modifier.padding(horizontal = 16.dp))
             MoreRow("Images", "Pull, inspect and prune images") { onNavigate("resources/image") }
             MoreRow("Networks", "Docker networks per host") { onNavigate("resources/network") }
             MoreRow("Volumes", "Docker volumes per host") { onNavigate("resources/volume") }
-            SectionTitle("Monitoring", Modifier.padding(horizontal = 16.dp))
-            MoreRow("Alerts", "Open and resolved incidents") { onNavigate("alerts") }
-            MoreRow("Alert rules", "Create and disable rules") { onNavigate("alert-rules") }
-            if (user.isAdmin) MoreRow("Add device", "Create an agent installer") { onNavigate("add-device") }
+            SectionTitle("This phone", Modifier.padding(horizontal = 16.dp))
+            MoreRow("Notifications", "Get alerts on this phone through ntfy or another push app") { onNavigate("notifications") }
             SectionTitle("Integrations", Modifier.padding(horizontal = 16.dp))
             MoreRow("Claude and ChatGPT (MCP)", "Connection URL and connected applications") { onNavigate("mcp") }
             if (user.isAdmin) MoreRow("Git settings", "Repository for stack storage") { onNavigate("git-settings") }
@@ -98,14 +100,6 @@ private fun MoreRow(title: String, subtitle: String, onClick: () -> Unit) {
 }
 
 @Composable
-fun AlertsScreen(api: VigaraApi, onBack: () -> Unit) {
-    val incidents = rememberLoad(pollMs = 30_000) { api.get<List<Incident>>("/api/alerts/incidents") }
-    AppScaffold("Alerts", onBack = onBack) { padding ->
-        Column(Modifier.padding(padding)) { LoadedContent(incidents) { IncidentList(it) } }
-    }
-}
-
-@Composable
 fun AccountScreen(api: VigaraApi, user: User, onBack: () -> Unit, onUserChanged: (User) -> Unit, onSignedOut: () -> Unit) {
     val scope = rememberCoroutineScope()
     var current by remember { mutableStateOf("") }
@@ -115,6 +109,7 @@ fun AccountScreen(api: VigaraApi, user: User, onBack: () -> Unit, onUserChanged:
     var error by remember { mutableStateOf<String?>(null) }
     var done by remember { mutableStateOf(false) }
     val version = rememberLoad { runCatching { api.get<VersionInfo>("/api/version").version }.getOrDefault("") }
+    val context = androidx.compose.ui.platform.LocalContext.current
     val pw = PasswordVisualTransformation()
     val kb = KeyboardOptions(keyboardType = KeyboardType.Password)
 
@@ -148,6 +143,8 @@ fun AccountScreen(api: VigaraApi, user: User, onBack: () -> Unit, onUserChanged:
             SectionTitle("Session")
             OutlinedButton({
                 scope.launch {
+                    // A signed-out phone should stop getting this server's alerts.
+                    if (org.vigara.mobile.push.Push.status.value.enabled) org.vigara.mobile.push.Push.disable(context, api)
                     runCatching { api.postUnit("/api/auth/logout") }
                     api.forgetSession()
                     onSignedOut()

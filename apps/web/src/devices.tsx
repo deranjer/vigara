@@ -106,7 +106,7 @@ function DeviceList({ devices, error, onNavigate, onAdd, onRefresh }: { devices:
       : !devices.length ? <div className="device-empty"><Text fw={600}>No devices yet</Text><Text c="dimmed" size="sm" mt={6}>Install the agent on a computer to see it here.</Text><Button mt="md" onClick={onAdd}>Add device</Button></div>
       : view === 'compare' ? <Compare devices={devices} trends={trends} metric={metric} range={range} onMetric={setMetric} onRange={setRange} />
       : <Panel flush><div className="table-scroll"><Table className="vg-table vg-device-table" highlightOnHover verticalSpacing={9}>
-        <Table.Thead><Table.Tr><Table.Th>Device</Table.Th><Table.Th>CPU · 24 h</Table.Th><Table.Th>Memory</Table.Th><Table.Th>Disk (fullest)</Table.Th><Table.Th ta="right">Containers</Table.Th><Table.Th>Agent</Table.Th><Table.Th ta="right">Check-in</Table.Th></Table.Tr></Table.Thead>
+        <Table.Thead><Table.Tr><Table.Th>Device</Table.Th><Table.Th>CPU · 24 h</Table.Th><Table.Th className="vg-wide">Memory</Table.Th><Table.Th className="vg-wide">Disk (fullest)</Table.Th><Table.Th ta="right" className="vg-wide">Containers</Table.Th><Table.Th className="vg-wide">Agent</Table.Th><Table.Th ta="right">Check-in</Table.Th></Table.Tr></Table.Thead>
         <Table.Tbody>{rows.map((row) => {
           const device = devices.find((d) => d.id === row.id)!
           const health = agentHealth(device)
@@ -115,10 +115,10 @@ function DeviceList({ devices, error, onNavigate, onAdd, onRefresh }: { devices:
           return <Table.Tr key={row.id} className="device-row" tabIndex={0} onClick={open} onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); open() } }} aria-label={`Open device ${row.name}`}>
             <Table.Td><span className="vg-cell-name"><span className="vg-status-dot" data-tone={row.tone} title={row.status} /><span><b>{row.name}</b><small>{[row.detail, os].filter(Boolean).join(' · ') || row.status}</small></span></span></Table.Td>
             <Table.Td><span className="vg-metric"><Sparkline width={80} values={trends[row.id] ? compareValues(trends[row.id], 'cpu') : []} label={`${row.name} CPU over 24 hours`} /><span className="vg-num">{row.cpu === null ? '—' : `${row.cpu.toFixed(1)}%`}</span></span></Table.Td>
-            <Table.Td><MetricBar width={64} value={row.memory} label={`${row.name} memory used`} /></Table.Td>
-            <Table.Td><span className="vg-metric"><MetricBar width={64} warnAt={85} value={row.disk} label={`${row.name} fullest disk used`} />{row.diskMount && <small className="vg-dim vg-mount">{row.diskMount}</small>}</span></Table.Td>
-            <Table.Td ta="right" className="vg-num">{row.containers ?? '—'}</Table.Td>
-            <Table.Td><span className="vg-agent" title={`${health.label} · ${health.detail}`}><span className="vg-status-dot" data-tone={health.tone} aria-hidden="true" />{device.agentId ? (device.latest?.host?.agentVersion || device.agentVersion || 'unknown') : 'none'}</span></Table.Td>
+            <Table.Td className="vg-wide"><MetricBar width={64} value={row.memory} label={`${row.name} memory used`} /></Table.Td>
+            <Table.Td className="vg-wide"><span className="vg-metric"><MetricBar width={64} warnAt={85} value={row.disk} label={`${row.name} fullest disk used`} />{row.diskMount && <small className="vg-dim vg-mount">{row.diskMount}</small>}</span></Table.Td>
+            <Table.Td ta="right" className="vg-num vg-wide">{row.containers ?? '—'}</Table.Td>
+            <Table.Td className="vg-wide"><span className="vg-agent" title={`${health.label} · ${health.detail}`}><span className="vg-status-dot" data-tone={health.tone} aria-hidden="true" />{device.agentId ? (device.latest?.host?.agentVersion || device.agentVersion || 'unknown') : 'none'}</span></Table.Td>
             <Table.Td ta="right"><Text size="sm" c="dimmed" title={row.lastSeenAt ? new Date(row.lastSeenAt).toLocaleString() : undefined}>{relativeTime(row.lastSeenAt)}</Text></Table.Td>
           </Table.Tr>
         })}</Table.Tbody>

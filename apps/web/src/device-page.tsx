@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ActionIcon, Button, Group, Menu, Stack, Table, Tabs, Text, Title, UnstyledButton } from '@mantine/core'
 import { IconChevronDown, IconDots, IconMinus, IconTerminal2, IconX } from '@tabler/icons-react'
-import { BackupHistory } from './backup-history'
+import { DeviceRuns } from './backups'
 import { DeviceBackups } from './backup-config'
 import type { ContainerInfo, HostEntry } from './container-utils'
 import { DeviceMetrics } from './device-metrics'
@@ -106,7 +106,7 @@ export function DevicePage({ device, tab: rawTab, role, onNavigate, onRefresh, o
       <Tabs.Panel value="overview"><DeviceOverview device={device} host={host} onNavigate={onNavigate} onOpenTab={go} /></Tabs.Panel>
       <Tabs.Panel value="metrics"><DeviceMetrics device={device} /></Tabs.Panel>
       <Tabs.Panel value="containers"><DeviceContainers device={device} host={host} onNavigate={onNavigate} /></Tabs.Panel>
-      <Tabs.Panel value="backups"><Stack gap="lg"><DeviceBackups key={`setup-${device.id}`} deviceId={device.id} /><BackupHistory key={device.id} deviceId={device.id} /></Stack></Tabs.Panel>
+      <Tabs.Panel value="backups"><Stack gap="lg"><DeviceBackups key={`setup-${device.id}`} deviceId={device.id} /><DeviceRuns key={device.id} deviceId={device.id} deviceName={device.name} /></Stack></Tabs.Panel>
       <Tabs.Panel value="settings"><Stack gap="lg"><DeviceInfo device={device} onReinstall={onReinstall} /><DeviceSettings key={device.id} device={device} onDeleted={onDeleted} onSaved={onRefresh} /></Stack></Tabs.Panel>
     </Tabs>
 
@@ -138,12 +138,12 @@ function DeviceContainers({ device, host, onNavigate }: { device: Device; host: 
     {groups.map((group) => <Panel key={group.project || 'standalone'} title={group.project || 'Standalone containers'} count={group.rows.length} flush
       actions={group.project ? <Button size="xs" variant="subtle" onClick={() => onNavigate(route('stacks'))}>Stacks</Button> : undefined}>
       <div className="table-scroll"><Table className="vg-table" highlightOnHover verticalSpacing={8}>
-        <Table.Thead><Table.Tr><Table.Th>Container</Table.Th><Table.Th>Image</Table.Th><Table.Th>Status</Table.Th><Table.Th>Ports</Table.Th></Table.Tr></Table.Thead>
+        <Table.Thead><Table.Tr><Table.Th>Container</Table.Th><Table.Th className="vg-wide">Image</Table.Th><Table.Th>Status</Table.Th><Table.Th className="vg-wide">Ports</Table.Th></Table.Tr></Table.Thead>
         <Table.Tbody>{group.rows.map((c) => <Table.Tr key={c.id} className="device-row" tabIndex={0} onClick={() => onNavigate(route('containers', host.agentId, c.name))} onKeyDown={(e) => { if (e.key === 'Enter') onNavigate(route('containers', host.agentId, c.name)) }} aria-label={`Open container ${c.name}`}>
           <Table.Td><span className="vg-cell-name"><span className="vg-status-dot" data-tone={containerTone(c)} aria-hidden="true" /><span><b>{c.name}</b>{c.service && <small>{c.service}</small>}</span></span></Table.Td>
-          <Table.Td><Text size="sm" ff="monospace" className="vg-ellipsis" title={c.image}>{c.image}</Text></Table.Td>
+          <Table.Td className="vg-wide"><Text size="sm" ff="monospace" className="vg-ellipsis" title={c.image}>{c.image}</Text></Table.Td>
           <Table.Td><Text size="sm" c={containerTone(c) === 'warn' ? 'orange' : undefined}>{c.status || c.state}</Text></Table.Td>
-          <Table.Td><Text size="xs" c="dimmed" className="vg-num">{c.ports?.filter((p) => p.publicPort).map((p) => `${p.publicPort}→${p.privatePort}`).join(', ') || '—'}</Text></Table.Td>
+          <Table.Td className="vg-wide"><Text size="xs" c="dimmed" className="vg-num">{c.ports?.filter((p) => p.publicPort).map((p) => `${p.publicPort}→${p.privatePort}`).join(', ') || '—'}</Text></Table.Td>
         </Table.Tr>)}</Table.Tbody>
       </Table></div>
     </Panel>)}

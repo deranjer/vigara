@@ -5,7 +5,10 @@ import { Spotlight, spotlight, type SpotlightActionGroupData } from '@mantine/sp
 import { useAtom } from 'jotai'
 import { IconArchive, IconArrowUpCircle, IconBell, IconBox, IconCheck, IconChevronDown, IconDots, IconHome, IconLogout, IconMoon, IconSearch, IconServer, IconSettings, IconStack2, IconSun, IconUser } from '@tabler/icons-react'
 import { navSection, route as routeOf, type Route, type Section } from './route'
+import { alertsChangedEvent, openCount } from './alerts-utils'
 import { deviceScopeAtom } from './scope'
+import { useReleaseStatus } from './release-check'
+import { settingsSections } from './settings'
 import '@mantine/spotlight/styles.css'
 
 export type ShellUser = { id: string; username: string; displayName: string; role: string }
@@ -44,15 +47,17 @@ function useSummary(): Summary {
   const [summary, setSummary] = useState<Summary>({ devices: null, firing: null, stacks: null, updates: null })
   useEffect(() => {
     let active = true
+    const loadAlerts = () => void read<{ status: string; acknowledgedAt?: string; mutedUntil?: string }[]>('/api/alerts/incidents').then((v) => { if (active) setSummary((s) => ({ ...s, firing: openCount(v) })) }).catch(() => undefined)
     const load = () => {
       void read<{ devices: SummaryDevice[] }>('/api/inventory/devices?limit=100&offset=0').then((v) => { if (active) setSummary((s) => ({ ...s, devices: v.devices })) }).catch(() => undefined)
-      void read<{ status: string }[]>('/api/alerts/incidents').then((v) => { if (active) setSummary((s) => ({ ...s, firing: v.filter((i) => i.status === 'firing').length })) }).catch(() => undefined)
+      loadAlerts()
       void read<{ stacks: { id: string }[] }>('/api/stacks').then((v) => { if (active) setSummary((s) => ({ ...s, stacks: v.stacks.map((stack) => stack.id) })) }).catch(() => undefined)
       void read<{ items: { ignored: boolean; result: { status: string } }[] }>('/api/image-updates').then((v) => { if (active) setSummary((s) => ({ ...s, updates: v.items.filter((i) => !i.ignored && i.result.status === 'available').length })) }).catch(() => undefined)
     }
     load()
     const timer = window.setInterval(load, 60_000)
-    return () => { active = false; window.clearInterval(timer) }
+    window.addEventListener(alertsChangedEvent, loadAlerts)
+    return () => { active = false; window.clearInterval(timer); window.removeEventListener(alertsChangedEvent, loadAlerts) }
   }, [])
   return summary
 }
@@ -70,10 +75,11 @@ function BrandMark() {
   return <div className="vg-logo"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4 L10 20 L13 13" stroke="currentColor" strokeWidth="3.4" fill="none" strokeLinecap="round" strokeLinejoin="round" /><path d="M15 9 L20 4" stroke="var(--vg-brand)" strokeWidth="3.4" strokeLinecap="round" /></svg>vigara</div>
 }
 
-function NavItem({ item, active, count, onClick }: { item: Item; active: boolean; count?: { value: number; hot?: boolean }; onClick: () => void }) {
+function NavItem({ item, active, count, dot, onClick }: { item: Item; active: boolean; count?: { value: number; hot?: boolean }; dot?: string; onClick: () => void }) {
   const Icon = item.icon
   return <UnstyledButton className="vg-nav-item" data-active={active || undefined} aria-current={active ? 'page' : undefined} onClick={onClick}>
     <Icon size={17} stroke={1.7} aria-hidden="true" /><span>{item.label}</span>
+    {dot && <span className="vg-nav-dot" title={dot} aria-label={dot} />}
     {count && <span className="vg-count" data-hot={count.hot || undefined} aria-label={`${count.value} ${count.hot ? 'firing' : 'total'}`}>{count.value}</span>}
   </UnstyledButton>
 }
@@ -122,11 +128,15 @@ function Breadcrumbs({ route, summary, onNavigate }: { route: Route; summary: Su
   if (nav !== route.section) crumbs.push({ label: sectionLabels[route.section], to: routeOf(route.section) })
   if (route.id) {
     const device = summary.devices?.find((d) => d.id === route.id || d.agentId === route.id)
-    const label = route.section === 'settings' ? { account: 'Account', server: 'Server', about: 'About' }[route.id] ?? route.id : device?.name ?? route.id
+    const label = route.section === 'settings' ? settingsSections.find((s) => s.id === route.id)?.label ?? route.id
+      : route.section === 'alerts' ? route.id.charAt(0).toUpperCase() + route.id.slice(1)
+      : device?.name ?? route.id
     // A device's tab is shown by its tab bar, so the device is the last crumb.
     const sub = route.section === 'devices' ? null : route.sub
-    crumbs.push({ label, to: sub ? routeOf(route.section, route.id) : undefined })
-    if (sub) crumbs.push({ label: sub })
+    // A snapshot is addressed by its device; that crumb leads to the device's Backups tab.
+    const to = route.section === 'backups' ? routeOf('devices', route.id, 'backups') : routeOf(route.section, route.id)
+    crumbs.push({ label, to: sub ? to : undefined })
+    if (sub) crumbs.push({ label: route.section === 'backups' ? (sub === 'latest' ? 'Latest snapshot' : `Snapshot ${sub.slice(0, 8)}`) : sub })
   }
   return <nav className="vg-crumbs" aria-label="Breadcrumb">{crumbs.map((crumb, index) => {
     const last = index === crumbs.length - 1
@@ -134,7 +144,7 @@ function Breadcrumbs({ route, summary, onNavigate }: { route: Route; summary: Su
   })}</nav>
 }
 
-function useSearchActions(summary: Summary, onNavigate: (route: Route) => void, isAdmin: boolean): { actions: SpotlightActionGroupData[]; loadContainers: () => void } {
+function useSearchActions(summary: Summary, onNavigate: (route: Route) => void): { actions: SpotlightActionGroupData[]; loadContainers: () => void } {
   const [containers, setContainers] = useState<SearchContainer[] | null>(null)
   const [loadedAt, setLoadedAt] = useState(0)
   const loadContainers = useCallback(() => {
@@ -145,13 +155,13 @@ function useSearchActions(summary: Summary, onNavigate: (route: Route) => void, 
       .catch(() => setContainers([]))
   }, [loadedAt])
   const actions = useMemo<SpotlightActionGroupData[]>(() => {
-    const pages = [...primary, ...(isAdmin ? [settingsItem] : []), { key: 'images', label: 'Images', icon: IconBox }, { key: 'networks', label: 'Networks', icon: IconBox }, { key: 'volumes', label: 'Volumes', icon: IconBox }] as { key: Section; label: string; icon: typeof IconHome }[]
+    const pages = [...primary, settingsItem, { key: 'images', label: 'Images', icon: IconBox }, { key: 'networks', label: 'Networks', icon: IconBox }, { key: 'volumes', label: 'Volumes', icon: IconBox }] as { key: Section; label: string; icon: typeof IconHome }[]
     const groups: SpotlightActionGroupData[] = [{ group: 'Pages', actions: pages.map((page) => ({ id: `page:${page.key}`, label: page.label, leftSection: <page.icon size={16} />, onClick: () => onNavigate(routeOf(page.key)) })) }]
     if (summary.devices?.length) groups.push({ group: 'Devices', actions: summary.devices.map((device) => ({ id: `device:${device.id}`, label: device.name, description: device.status, leftSection: <IconServer size={16} />, onClick: () => onNavigate(routeOf('devices', device.id)) })) })
     if (containers?.length) groups.push({ group: 'Containers', actions: containers.map((c) => ({ id: `container:${c.hostId}/${c.name}`, label: c.name, description: `${c.image} · ${c.hostName}`, keywords: [c.image, c.hostName], leftSection: <IconBox size={16} />, onClick: () => onNavigate(routeOf('containers', c.hostId, c.name)) })) })
     if (summary.stacks?.length) groups.push({ group: 'Stacks', actions: summary.stacks.map((id) => ({ id: `stack:${id}`, label: id, leftSection: <IconStack2 size={16} />, onClick: () => onNavigate(routeOf('stacks', id)) })) })
     return groups
-  }, [summary.devices, summary.stacks, containers, onNavigate, isAdmin])
+  }, [summary.devices, summary.stacks, containers, onNavigate])
   return { actions, loadContainers }
 }
 
@@ -162,9 +172,12 @@ export function AppFrame({ user, route, onNavigate, onLogout, children }: { user
   const count = counts(summary)
   const active = navSection(route.section)
   const isAdmin = user.role === 'admin'
-  const { actions, loadContainers } = useSearchActions(summary, onNavigate, isAdmin)
+  const { actions, loadContainers } = useSearchActions(summary, onNavigate)
   const go = (key: NavKey) => onNavigate(routeOf(key))
-  const moreItems = primary.filter((item) => !phoneTabs.includes(item.key)).concat(isAdmin ? [settingsItem] : [])
+  const moreItems = primary.filter((item) => !phoneTabs.includes(item.key)).concat([settingsItem])
+  // Only admins can act on a server update, so only their browsers check for one.
+  const release = useReleaseStatus(isAdmin)
+  const updateDot = isAdmin && release.updateAvailable ? `Update available: ${release.latest}` : undefined
 
   return <AppShell layout="alt" header={{ height: 52 }} navbar={{ width: 232, breakpoint: 'sm', collapsed: { mobile: true } }} footer={phone ? { height: 62 } : undefined} padding="lg">
     <AppShell.Header className="vg-topbar">
@@ -181,8 +194,8 @@ export function AppFrame({ user, route, onNavigate, onLogout, children }: { user
     <AppShell.Navbar className="vg-rail" aria-label="Main navigation">
       <BrandMark />
       <nav className="vg-nav">{primary.map((item) => <NavItem key={item.key} item={item} active={active === item.key} count={count[item.key]} onClick={() => go(item.key)} />)}
-        {isAdmin && <><div className="vg-nav-group">Admin</div><NavItem item={settingsItem} active={active === 'settings'} onClick={() => go('settings')} /></>}
-        {!isAdmin && <NavItem item={{ ...settingsItem, label: 'Account' }} active={active === 'settings'} onClick={() => onNavigate(routeOf('settings', 'account'))} />}
+        {isAdmin && <div className="vg-nav-group">Admin</div>}
+        <NavItem item={settingsItem} active={active === 'settings'} dot={updateDot} onClick={() => go('settings')} />
       </nav>
       <div className="vg-rail-foot"><UserMenu user={user} onNavigate={onNavigate} onLogout={onLogout} /></div>
     </AppShell.Navbar>
