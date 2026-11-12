@@ -330,7 +330,7 @@ func (a *API) githubInstallationCallback(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	a.record(ctx, u, "repository", "github-app-connected", audit.OutcomeSuccess, map[string]any{"appId": v.ID, "installationId": v.InstallationID})
-	http.Redirect(w, r, "/?github_app=connected#/stacks", http.StatusSeeOther)
+	http.Redirect(w, r, "/?github_app=connected#/settings/git", http.StatusSeeOther)
 }
 
 func (a *API) githubStatus(ctx context.Context, r *http.Request) (map[string]any, error) {

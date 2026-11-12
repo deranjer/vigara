@@ -50,7 +50,7 @@ export function NotificationSettingsPanel() {
   const severities: { key: keyof Route; label: string; tone: 'crit' | 'warn' | 'ok' }[] = [{ key: 'critical', label: 'Critical', tone: 'crit' }, { key: 'warning', label: 'Warning', tone: 'warn' }, { key: 'resolved', label: 'Cleared', tone: 'ok' }]
 
   return <Stack gap="lg" maw={960}>
-    <Text c="dimmed" size="sm">Where alerts reach you outside Vigara. Alerts you mute from the inbox are never sent, whatever these settings say.</Text>
+    <Text c="dimmed" size="sm">Alerts you mute from the inbox are never sent, whatever these settings say.</Text>
     {error && <Alert color="red" withCloseButton onClose={() => setError('')}>{error}</Alert>}
     {!settings.linksEnabled && channels.length > 0 && <Alert color="yellow" title="Notifications can’t link back to Vigara">Set <Code>VIGIRA_PUBLIC_URL</Code> on the server so tapping a notification opens Alerts, and ntfy notifications get Acknowledge and Mute buttons.</Alert>}
     <Panel title="Channels" count={channels.length} flush>
