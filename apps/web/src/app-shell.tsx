@@ -130,8 +130,10 @@ function Breadcrumbs({ route, summary, onNavigate }: { route: Route; summary: Su
       : device?.name ?? route.id
     // A device's tab is shown by its tab bar, so the device is the last crumb.
     const sub = route.section === 'devices' ? null : route.sub
-    crumbs.push({ label, to: sub ? routeOf(route.section, route.id) : undefined })
-    if (sub) crumbs.push({ label: sub })
+    // A snapshot is addressed by its device; that crumb leads to the device's Backups tab.
+    const to = route.section === 'backups' ? routeOf('devices', route.id, 'backups') : routeOf(route.section, route.id)
+    crumbs.push({ label, to: sub ? to : undefined })
+    if (sub) crumbs.push({ label: route.section === 'backups' ? (sub === 'latest' ? 'Latest snapshot' : `Snapshot ${sub.slice(0, 8)}`) : sub })
   }
   return <nav className="vg-crumbs" aria-label="Breadcrumb">{crumbs.map((crumb, index) => {
     const last = index === crumbs.length - 1

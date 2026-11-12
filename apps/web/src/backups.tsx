@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Alert, Button, Checkbox, Drawer, Group, Loader, Modal, Select, Stack, Table, Text, Title, UnstyledButton } from '@mantine/core'
+import { Alert, Button, Checkbox, Drawer, Group, Loader, Select, Stack, Table, Text, Title, UnstyledButton } from '@mantine/core'
 import { IconPlus } from '@tabler/icons-react'
-import { BackupFields, newBackupConfig, setupErrors, SnapshotBrowser, type BackupConfig, type ManagedView } from './backup-config'
+import { BackupFields, newBackupConfig, setupErrors, type BackupConfig, type ManagedView } from './backup-config'
 import { isAbsoluteBackupPath } from './backup-path-utils'
 import { lastRun, pathCovers, policyLabel, runDuration, runState, runStrip, scheduleText, uncoveredVolumes, untilTime, type BackupPolicy, type BackupRun, type UncoveredVolume, type VolumeInfo } from './backup-utils'
 import { formatBytes } from './container-utils'
@@ -159,7 +159,6 @@ export function Backups({ role }: { role: string }) {
 function RunsPanel({ policy, label, runs, admin, onEdit }: { policy: BackupPolicy; label: string; runs: BackupRun[]; admin: boolean; onEdit: () => void }) {
   const managed = policy.profileId === 'managed'
   const [view, setView] = useState<ManagedView | null>(null)
-  const [browse, setBrowse] = useState<{ snapshot: string; when: string } | null>(null)
   const [open, setOpen] = useState<string | null>(null)
   useEffect(() => {
     if (!managed) return
@@ -185,15 +184,12 @@ function RunsPanel({ policy, label, runs, admin, onEdit }: { policy: BackupPolic
             <Table.Td className="vg-num"><Text size="sm" c="dimmed">{size ? formatBytes(size) : ''}</Text></Table.Td>
             <Table.Td className="vg-num">
               {s.kind === 'fail' && (r.errorMessage || r.errorCode) && <Button size="xs" variant="subtle" onClick={() => setOpen(open === r.id ? null : r.id)}>{open === r.id ? 'Hide error' : 'Show error'}</Button>}
-              {browsable && r.snapshotIds?.length ? <Button size="xs" variant="subtle" onClick={() => setBrowse({ snapshot: r.snapshotIds![0], when: new Date(r.scheduledFor).toLocaleString() })}>Browse files</Button> : null}
+              {browsable && r.snapshotIds?.length ? <Button size="xs" variant="subtle" component="a" href={formatRoute(route('backups', policy.deviceId, r.snapshotIds[0]))}>Browse files</Button> : null}
             </Table.Td>
           </Table.Tr>, open === r.id && <Table.Tr key={`${r.id}-error`}><Table.Td colSpan={4}><Text size="sm" c="red">{r.errorMessage || r.errorCode}{r.errorMessage && r.errorCode ? ` (${r.errorCode})` : ''}</Text></Table.Td></Table.Tr>]
         })}</Table.Tbody>
       </Table></div>}
     {managed && view?.configured && !view.config?.serverRepository && <Text size="xs" c="dimmed" p="md" pt={0}>To browse snapshots here, set the repository path on the server in this policy.</Text>}
-    <Modal opened={!!browse} onClose={() => setBrowse(null)} size="xl" title={browse ? `${label} › ${browse.when}` : ''}>
-      {browse && <Stack gap="xs"><SnapshotBrowser base={deviceBase(policy.deviceId)} snapshotId={browse.snapshot} /><Text size="xs" c="dimmed">Read-only. Download a file or a folder as a ZIP; nothing is restored.</Text></Stack>}
-    </Modal>
   </Panel>
 }
 

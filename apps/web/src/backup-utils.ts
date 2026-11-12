@@ -108,3 +108,19 @@ export function untilTime(at: string | null | undefined, now = Date.now()): stri
   if (seconds < 86400) return `in ${Math.round(seconds / 3600)} h`
   return `in ${Math.round(seconds / 86400)} d`
 }
+
+/** "/home/me/docs" as clickable steps: "/", "/home", "/home/me", "/home/me/docs". */
+export function pathSteps(directory: string): { name: string; path: string }[] {
+  const parts = directory.split('/').filter(Boolean)
+  return [{ name: '/', path: '/' }, ...parts.map((name, i) => ({ name, path: `/${parts.slice(0, i + 1).join('/')}` }))]
+}
+
+/** Text files up to this size open in the viewer; larger ones are download-only. */
+export const previewLimit = 1024 * 1024
+
+/** A file with a NUL byte near the start is treated as binary rather than shown as text. */
+export function looksBinary(bytes: Uint8Array): boolean {
+  const n = Math.min(bytes.length, 8192)
+  for (let i = 0; i < n; i++) if (bytes[i] === 0) return true
+  return false
+}

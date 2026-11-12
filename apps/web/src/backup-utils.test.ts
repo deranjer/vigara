@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { coveringPolicies, lastRun, untilTime, pathCovers, policyLabel, runDuration, runState, runStrip, scheduleText, uncoveredVolumes, type BackupPolicy, type BackupRun } from './backup-utils'
+import { coveringPolicies, lastRun, looksBinary, pathSteps, untilTime, pathCovers, policyLabel, runDuration, runState, runStrip, scheduleText, uncoveredVolumes, type BackupPolicy, type BackupRun } from './backup-utils'
 
 const policy = (over: Partial<BackupPolicy> = {}): BackupPolicy => ({ id: 'p1', deviceId: 'd1', agentId: 'a1', profileId: 'managed', name: 'Managed backup', destination: '/repo', includedPaths: ['/var/lib/docker/volumes/db/_data'], schedule: { weekdays: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'], time: '03:00', timezone: 'UTC' }, enabled: true, nextRunAt: '', ...over })
 const run = (over: Partial<BackupRun>): BackupRun => ({ id: 'r', policyId: 'p1', scheduledFor: '2026-11-12T03:00:00Z', status: 'completed', executionStatus: 'succeeded', ...over })
@@ -57,5 +57,16 @@ describe('run strip', () => {
     expect(strip[12].kind).toBe('fail')
     expect(strip[11].kind).toBe('none')
     expect(strip.some((d) => d.day === new Date(2026, 9, 20).toDateString())).toBe(false)
+  })
+})
+
+describe('snapshot browsing helpers', () => {
+  it('splits a folder into clickable steps', () => {
+    expect(pathSteps('/')).toEqual([{ name: '/', path: '/' }])
+    expect(pathSteps('/home/me/docs').map((s) => s.path)).toEqual(['/', '/home', '/home/me', '/home/me/docs'])
+  })
+  it('spots binary content by its NUL bytes', () => {
+    expect(looksBinary(new TextEncoder().encode('hello from P9\n'))).toBe(false)
+    expect(looksBinary(new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x00]))).toBe(true)
   })
 })
