@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Alert, Button, Checkbox, Code, Group, Loader, Select, Stack, Switch, Table, Text, TextInput } from '@mantine/core'
-import { channelStatus, errorText, kindLabels, quietSummary, sameSettings, type Channel, type NotificationSettings, type QuietHours, type Route } from './notification-utils'
+import { ActionIcon, Alert, Button, Checkbox, Code, Group, Loader, Menu, Modal, PasswordInput, SegmentedControl, Select, Stack, Switch, Table, Text, TextInput } from '@mantine/core'
+import { IconDots, IconPlus } from '@tabler/icons-react'
+import { blankForm, channelBody, channelStatus, errorText, formOf, formProblem, kindLabels, quietSummary, sameSettings, type Channel, type ChannelForm, type ChannelKind, type NotificationSettings, type QuietHours, type Route } from './notification-utils'
 import { relativeTime } from './overview-utils'
 import { StatusText } from './status'
 import { Panel } from './ui'
@@ -24,6 +25,11 @@ export function NotificationSettingsPanel() {
   const [saved, setSaved] = useState(false)
   const [busy, setBusy] = useState(false)
   const [tests, setTests] = useState<Record<string, string>>({})
+  // The channel being edited, 'new' while adding one, or null.
+  const [editing, setEditing] = useState<Channel | 'new' | null>(null)
+  const [removing, setRemoving] = useState<Channel | null>(null)
+  const [removeBusy, setRemoveBusy] = useState(false)
+  const [removeError, setRemoveError] = useState('')
   const load = () => call<NotificationSettings>('GET', '/api/notifications').then((s) => { setSettings(s); setDraft(draftOf(s)); setError('') }).catch((e: unknown) => setError(e instanceof Error ? e.message : 'Notification settings could not be loaded.'))
   useEffect(() => { void load() }, [])
   const dirty = useMemo(() => !!settings && !!draft && !sameSettings(draftOf(settings), draft), [settings, draft])
@@ -46,8 +52,15 @@ export function NotificationSettingsPanel() {
       .then((r) => setTests((t) => ({ ...t, [id]: r.ok ? 'Sent. Check your device.' : `Failed: ${errorText(r.error ?? '')}` })))
       .catch((e: unknown) => setTests((t) => ({ ...t, [id]: e instanceof Error ? e.message : 'Failed' })))
   }
+  const remove = (c: Channel) => {
+    setRemoveBusy(true); setRemoveError('')
+    fetch(`/api/notifications/channels/${encodeURIComponent(c.id)}`, { method: 'DELETE', credentials: 'same-origin' })
+      .then(async (r) => { if (!r.ok) throw new Error((await r.text()).trim() || 'The channel could not be removed.'); setRemoving(null); void load() })
+      .catch((e: unknown) => setRemoveError(e instanceof Error ? e.message : 'The channel could not be removed.')).finally(() => setRemoveBusy(false))
+  }
   const channels = settings.channels
   const external = channels.filter((c) => c.kind !== 'android')
+  const fromServer = channels.filter((c) => c.source === 'server')
   const android = channels.find((c) => c.kind === 'android')
   const severities: { key: keyof Route; label: string; tone: 'crit' | 'warn' | 'ok' }[] = [{ key: 'critical', label: 'Critical', tone: 'crit' }, { key: 'warning', label: 'Warning', tone: 'warn' }, { key: 'resolved', label: 'Cleared', tone: 'ok' }]
 
@@ -55,29 +68,46 @@ export function NotificationSettingsPanel() {
     <Text c="dimmed" size="sm">Alerts you mute from the inbox are never sent, whatever these settings say.</Text>
     {error && <Alert color="red" withCloseButton onClose={() => setError('')}>{error}</Alert>}
     {!settings.linksEnabled && channels.length > 0 && <Alert color="yellow" title="Notifications can’t link back to Vigara">Set <Code>VIGIRA_PUBLIC_URL</Code> on the server so tapping a notification opens Alerts, and ntfy notifications get Acknowledge and Mute buttons.</Alert>}
-    <Panel title="Channels" count={channels.length} flush>
+    {manage && !settings.canStore && <Alert color="yellow" title="Channels can’t be added here yet">Set <Code>VIGIRA_NOTIFICATION_MASTER_KEY</Code> on the server to a random 32-byte key in base64 (for example from <Code>openssl rand -base64 32</Code>) and restart it. Channel tokens are encrypted with it.{fromServer.length > 0 && ' Channels set by environment variables are then copied here once, and the variables are ignored from then on.'}</Alert>}
+    <Panel title="Channels" count={channels.length} flush actions={manage && settings.canStore && <Button size="xs" variant="default" leftSection={<IconPlus size={14} />} onClick={() => setEditing('new')}>Add channel</Button>}>
       {channels.length > 0 && <div className="table-scroll"><Table verticalSpacing="sm">
         <Table.Thead><Table.Tr><Table.Th>Channel</Table.Th><Table.Th className="vg-wide">Target</Table.Th><Table.Th>Status</Table.Th><Table.Th /></Table.Tr></Table.Thead>
         <Table.Tbody>{channels.map((c) => { const s = channelStatus(c, (at) => relativeTime(at)); return <Table.Tr key={c.id}>
-          <Table.Td><Text size="sm" fw={600}>{kindLabels[c.kind] ?? c.kind}</Text><Text size="xs" c="dimmed" ff="monospace" className="vg-narrow vg-break">{c.target}</Text></Table.Td>
+          <Table.Td><Text size="sm" fw={600}>{c.name}</Text>{channelSubtitle(c) && <Text size="xs" c="dimmed">{channelSubtitle(c)}</Text>}<Text size="xs" c="dimmed" ff="monospace" className="vg-narrow vg-break">{c.target}</Text></Table.Td>
           <Table.Td className="vg-wide"><Text size="sm" c="dimmed" ff="monospace">{c.target}</Text></Table.Td>
           <Table.Td><StatusText tone={s.tone}>{s.text}</StatusText>{tests[c.id] && <Text size="xs" c="dimmed" mt={2}>{tests[c.id]}</Text>}</Table.Td>
-          <Table.Td className="vg-num">{manage && (c.kind !== 'android' || !!c.phoneCount) && <Button size="xs" variant="default" onClick={() => test(c.id)} loading={tests[c.id] === 'Sending…'}>Send test</Button>}</Table.Td>
+          <Table.Td className="vg-num"><Group gap="xs" justify="flex-end" wrap="nowrap">
+            {manage && (c.kind !== 'android' || !!c.phoneCount) && !c.target.startsWith('Cannot send') && <Button size="xs" variant="default" onClick={() => test(c.id)} loading={tests[c.id] === 'Sending…'}>Send test</Button>}
+            {manage && c.source === 'settings' && <Menu position="bottom-end" withinPortal>
+              <Menu.Target><ActionIcon variant="subtle" color="gray" aria-label={`More for ${c.name}`}><IconDots size={16} /></ActionIcon></Menu.Target>
+              <Menu.Dropdown>
+                <Menu.Item disabled={!settings.canStore} onClick={() => setEditing(c)}>Edit</Menu.Item>
+                <Menu.Item color="red" onClick={() => { setRemoveError(''); setRemoving(c) }}>Remove</Menu.Item>
+              </Menu.Dropdown>
+            </Menu>}
+          </Group></Table.Td>
         </Table.Tr> })}</Table.Tbody>
       </Table></div>}
       {external.length === 0 && <Stack gap={6} p="md">
-        <Text size="sm">Other channels are configured on the server; restart it after setting them.</Text>
-        <Text size="sm" c="dimmed">ntfy: <Code>VIGIRA_NTFY_URL</Code>, <Code>VIGIRA_NTFY_TOPIC</Code> and optionally <Code>VIGIRA_NTFY_TOKEN</Code>. Gotify: <Code>VIGIRA_GOTIFY_URL</Code> and <Code>VIGIRA_GOTIFY_TOKEN</Code>. Discord: <Code>VIGIRA_DISCORD_WEBHOOK_URL</Code>.</Text>
+        <Text size="sm">{manage && settings.canStore ? 'Add ntfy, Gotify or Discord to get alerts there as well.' : 'No ntfy, Gotify or Discord channels yet.'}</Text>
       </Stack>}
     </Panel>
+    {editing && <ChannelDialog channel={editing === 'new' ? null : editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); void load() }} />}
+    <Modal opened={!!removing} onClose={() => !removeBusy && setRemoving(null)} title={`Remove ${removing?.name ?? 'channel'}?`} centered>
+      <Stack>
+        <Text size="sm">Alerts stop going to this channel, and its delivery history is deleted.{removing?.id && ['ntfy', 'gotify', 'discord'].includes(removing.id) && ' It was imported from environment variables, which stay ignored.'}</Text>
+        {removeError && <Alert color="red">{removeError}</Alert>}
+        <Group justify="flex-end"><Button variant="default" disabled={removeBusy} onClick={() => setRemoving(null)}>Cancel</Button><Button color="red" loading={removeBusy} onClick={() => removing && remove(removing)}>Remove</Button></Group>
+      </Stack>
+    </Modal>
     {android && <PhonesPanel channel={android} admin={manage} onChanged={() => { void load() }} />}
     {channels.length > 0 && <div className="vg-notify-grid">
       <Panel title="Which alerts each channel gets" flush>
         <Table verticalSpacing="sm">
-          <Table.Thead><Table.Tr><Table.Th>Severity</Table.Th>{channels.map((c) => <Table.Th key={c.id} ta="center">{kindLabels[c.kind] ?? c.kind}</Table.Th>)}</Table.Tr></Table.Thead>
+          <Table.Thead><Table.Tr><Table.Th>Severity</Table.Th>{channels.map((c) => <Table.Th key={c.id} ta="center">{c.name}</Table.Th>)}</Table.Tr></Table.Thead>
           <Table.Tbody>{severities.map((sev) => <Table.Tr key={sev.key}>
             <Table.Td><StatusText tone={sev.tone}>{sev.label}</StatusText></Table.Td>
-            {channels.map((c) => <Table.Td key={c.id}><Checkbox mx="auto" w="fit-content" disabled={!manage} aria-label={`${sev.label} alerts to ${kindLabels[c.kind] ?? c.kind}`} checked={draft.routes[c.id]?.[sev.key] ?? true} onChange={(e) => setRoute(c.id, { [sev.key]: e.currentTarget.checked })} /></Table.Td>)}
+            {channels.map((c) => <Table.Td key={c.id}><Checkbox mx="auto" w="fit-content" disabled={!manage} aria-label={`${sev.label} alerts to ${c.name}`} checked={draft.routes[c.id]?.[sev.key] ?? true} onChange={(e) => setRoute(c.id, { [sev.key]: e.currentTarget.checked })} /></Table.Td>)}
           </Table.Tr>)}</Table.Tbody>
         </Table>
       </Panel>
@@ -100,6 +130,58 @@ export function NotificationSettingsPanel() {
     </Group>}
     {!manage && <Text size="sm" c="dimmed">Only administrators can change notification settings.</Text>}
   </Stack>
+}
+
+/** The kind, when the name doesn't already say it, and where a channel is set. */
+const channelSubtitle = (c: Channel) => [(kindLabels[c.kind] ?? c.kind) !== c.name && (kindLabels[c.kind] ?? c.kind), c.source === 'server' && 'set by server environment'].filter(Boolean).join(' · ')
+
+const kindOptions: { value: ChannelKind; label: string }[] = [{ value: 'ntfy', label: 'ntfy' }, { value: 'gotify', label: 'Gotify' }, { value: 'discord', label: 'Discord' }]
+
+/** Add or edit a channel. Saved secrets are never shown; leaving the field alone keeps them. */
+function ChannelDialog({ channel, onClose, onSaved }: { channel: Channel | null; onClose: () => void; onSaved: () => void }) {
+  const [form, setForm] = useState<ChannelForm>(() => channel ? formOf(channel) : blankForm())
+  const [busy, setBusy] = useState<'' | 'save' | 'test'>('')
+  const [error, setError] = useState('')
+  const [tested, setTested] = useState('')
+  const set = (patch: Partial<ChannelForm>) => { setForm((f) => ({ ...f, ...patch })); setTested('') }
+  const changeKind = (kind: ChannelKind) => setForm((f) => ({ ...blankForm(kind), name: f.name && f.name !== kindLabels[f.kind] ? f.name : kindLabels[kind] }))
+  const problem = formProblem(form, channel)
+  const saved = !!channel?.config?.hasToken && !form.secretTouched
+  const discord = form.kind === 'discord'
+  const send = (kind: 'save' | 'test') => {
+    setBusy(kind); setError('')
+    const body = channelBody(form)
+    const request = kind === 'test'
+      ? call<{ ok: boolean; error?: string }>('POST', '/api/notifications/channels/check', channel ? { ...body, id: channel.id, kind: undefined } : body)
+        .then((r) => setTested(r.ok ? 'Sent. Check that it arrived.' : `Failed: ${errorText(r.error ?? '')}`))
+      : call<{ id: string }>(channel ? 'PUT' : 'POST', channel ? `/api/notifications/channels/${encodeURIComponent(channel.id)}` : '/api/notifications/channels', channel ? { ...body, kind: undefined } : body).then(onSaved)
+    request.catch((e: unknown) => setError(e instanceof Error ? e.message : 'That did not work.')).finally(() => setBusy(''))
+  }
+  return <Modal opened onClose={busy ? () => undefined : onClose} title={channel ? `Edit ${channel.name}` : 'Add a channel'} centered>
+    <Stack>
+      {!channel && <SegmentedControl fullWidth data={kindOptions} value={form.kind} onChange={(v) => changeKind(v as ChannelKind)} />}
+      <TextInput label="Name" description="Shown in these settings, for example “Phone” or “Ops room”." value={form.name} maxLength={80} onChange={(e) => set({ name: e.currentTarget.value })} data-autofocus />
+      {!discord && <TextInput label="Server URL" placeholder={form.kind === 'ntfy' ? 'https://ntfy.sh' : 'https://gotify.example.com'} value={form.url} onChange={(e) => set({ url: e.currentTarget.value })} />}
+      {form.kind === 'ntfy' && <TextInput label="Topic" description="Subscribe to it in the ntfy app. On ntfy.sh anyone who knows the name can read it, so pick something hard to guess." value={form.topic} onChange={(e) => set({ topic: e.currentTarget.value })} />}
+      <Stack gap={4}>
+        {discord
+          ? <PasswordInput label="Webhook URL" description="Server settings › Integrations › Webhooks › Copy Webhook URL." placeholder={saved ? 'Saved. Paste a new URL to replace it.' : 'https://discord.com/api/webhooks/…'} value={form.secret} onChange={(e) => set({ secret: e.currentTarget.value, secretTouched: true })} />
+          : <PasswordInput label={form.kind === 'gotify' ? 'Application token' : 'Access token (optional)'} description={form.kind === 'gotify' ? 'Create an application in Gotify and copy its token.' : 'Only needed when the topic is protected.'} placeholder={saved ? 'Saved. Type to replace it.' : ''} value={form.secret} onChange={(e) => set({ secret: e.currentTarget.value, secretTouched: true })} />}
+        {saved && form.kind === 'ntfy' && <Button size="compact-xs" variant="subtle" color="red" w="fit-content" onClick={() => set({ secret: '', secretTouched: true })}>Remove saved token</Button>}
+        {channel?.config?.hasToken && form.secretTouched && !form.secret && form.kind === 'ntfy' && <Text size="xs" c="dimmed">The saved token will be removed.</Text>}
+      </Stack>
+      {error && <Alert color="red">{error}</Alert>}
+      {tested && <Text size="sm" c={tested.startsWith('Sent') ? undefined : 'red'}>{tested}</Text>}
+      <Group justify="space-between">
+        <Button variant="default" disabled={!!problem || !!busy} loading={busy === 'test'} onClick={() => send('test')}>Send test</Button>
+        <Group gap="xs">
+          <Button variant="subtle" disabled={!!busy} onClick={onClose}>Cancel</Button>
+          <Button disabled={!!problem || !!busy} loading={busy === 'save'} onClick={() => send('save')}>{channel ? 'Save' : 'Add channel'}</Button>
+        </Group>
+      </Group>
+      {problem && form.name && <Text size="xs" c="dimmed">{problem}</Text>}
+    </Stack>
+  </Modal>
 }
 
 /** Phones running the Vigara app. Each person manages their own; admins see everyone's. */

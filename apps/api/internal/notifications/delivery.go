@@ -30,9 +30,10 @@ type Message struct {
 // reusing its ID resumes its prior acknowledgments and pending deliveries.
 type Destination struct {
 	ID string
-	// Kind and Target describe the channel in settings without credentials.
-	Kind, Target string
-	Send         func(context.Context, Message) error
+	// Kind and Target describe the channel in settings without credentials;
+	// Name is what people call it, and Source where it is defined.
+	Kind, Target, Name, Source string
+	Send                       func(context.Context, Message) error
 }
 type Logger interface{ Error(string, ...any) }
 

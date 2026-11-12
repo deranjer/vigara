@@ -1,37 +1,42 @@
 # Notification channels
 
-Vigira can deliver alert transitions to ntfy, Gotify, Discord and phones running the Vigara Android app. The ntfy, Gotify and Discord destinations are optional; each is enabled only when its environment settings are present. The Vigara app channel needs no settings. A partial Gotify configuration prevents startup so delivery is not silently disabled.
+Vigira can deliver alert transitions to ntfy, Gotify, Discord and phones running the Vigara Android app. The Vigara app channel is always present and needs no settings. Administrators add ntfy, Gotify and Discord channels under Settings > Notifications, any number of each (up to 20 in all); **Send test** tries the settings before they are saved.
+
+## Master key
+
+Channel tokens and webhook URLs are stored encrypted (AES-256-GCM) with a key the server reads from its environment. Without it, channels cannot be added or edited, and the page says so.
+
+```dotenv
+VIGIRA_NOTIFICATION_MASTER_KEY=<output of: openssl rand -base64 32>
+```
+
+Keep the key with your other server secrets and back it up: a database restored without the same key keeps its channels, but they cannot send until each one is edited and its token entered again.
+
+## Channels from environment variables
+
+Earlier versions configured channels with the environment variables below. On the first start with a master key, each configured channel is copied into Settings > Notifications, keeping its delivery history and routing, and from then on its variables are ignored (the log says so; remove them). A channel that was imported and later removed in Settings is not imported again. Without a master key these channels keep working as before and are shown read-only. A partial configuration still prevents startup so delivery is not silently disabled.
+
+| Channel | Variables |
+| --- | --- |
+| ntfy | `VIGIRA_NTFY_URL`, `VIGIRA_NTFY_TOPIC`, optional `VIGIRA_NTFY_TOKEN` |
+| Gotify | `VIGIRA_GOTIFY_URL`, `VIGIRA_GOTIFY_TOKEN` |
+| Discord | `VIGIRA_DISCORD_WEBHOOK_URL` |
 
 ## ntfy
 
-Set the ntfy server's base URL and a topic. A token is optional and is sent as a Bearer token for servers that require access control.
-
-```dotenv
-VIGIRA_NTFY_URL=https://ntfy.example.com
-VIGIRA_NTFY_TOPIC=vigara-alerts
-VIGIRA_NTFY_TOKEN=<optional-access-token>
-```
+Enter the ntfy server's base URL and a topic. A token is optional and is sent as a Bearer token for servers that require access control. On the public ntfy.sh anyone who knows a topic can read it, so pick a name that is hard to guess.
 
 Critical alerts are sent at priority 5, warnings at 4, cleared alerts at 2. When `VIGIRA_PUBLIC_URL` is set, tapping a notification opens Alerts, and firing alerts carry **Acknowledge** and **Mute 24 h** buttons. Each button is a signed link for that one alert and action; it works without signing in and expires after seven days.
 
 ## Gotify
 
-Set the base URL of a self-hosted Gotify server and an application token. The adapter appends `/message` to the base URL and sends the token in the `X-Gotify-Key` request header.
-
-```dotenv
-VIGIRA_GOTIFY_URL=http://gotify:80
-VIGIRA_GOTIFY_TOKEN=<gotify-application-token>
-```
+Enter the base URL of a self-hosted Gotify server, such as `http://gotify:80`, and an application token. The adapter appends `/message` to the base URL and sends the token in the `X-Gotify-Key` request header.
 
 Gotify supports HTTP for self-hosted installations. Use HTTPS when traffic crosses an untrusted network. The URL cannot contain credentials, a query, or a fragment.
 
 ## Discord
 
-Set the complete incoming webhook URL. Only HTTPS URLs hosted on `discord.com` are accepted. The webhook URL contains a secret token; store it as a secret and never publish it in logs or support output.
-
-```dotenv
-VIGIRA_DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/<webhook-id>/<webhook-token>
-```
+Paste the complete incoming webhook URL (`https://discord.com/api/webhooks/<webhook-id>/<webhook-token>`). Only HTTPS URLs hosted on `discord.com` are accepted. The webhook URL contains a secret token, so it is stored encrypted like other tokens and never shown again after saving.
 
 Discord delivery waits for server confirmation, disables allowed mentions, and bounds message content to Discord's documented 2,000-character limit. Both adapters sanitize and Markdown-escape user-provided fields.
 

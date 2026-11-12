@@ -69,12 +69,16 @@ func main() {
 		logger.Error("invalid server configuration", "error", err)
 		os.Exit(1)
 	}
-	transportTargets, err := notifytransport.FromEnv()
+	envChannels, err := notifytransport.EnvChannels(os.Getenv)
 	if err != nil {
 		logger.Error("invalid notification configuration", "error", err)
 		os.Exit(1)
 	}
-	destinations := buildNotificationDestinations(transportTargets)
+	channelSealer, err := notifications.NewSealer(os.Getenv(notifications.MasterKeyVar))
+	if err != nil {
+		logger.Error("invalid notification configuration", "error", err)
+		os.Exit(1)
+	}
 	connectCtx, cancelConnect := context.WithTimeout(context.Background(), 10*time.Second)
 	database, err := database.Open(connectCtx, cfg.DatabaseURL)
 	cancelConnect()
@@ -107,19 +111,39 @@ func main() {
 		logger.Error("push key initialization failed", "error", "vapid_initialization_failed")
 		os.Exit(1)
 	}
-	destinations = append(destinations, notifications.PushDestination(database.Pool, nil, vapid))
+	// Channels set by environment variables are copied into Settings once (this
+	// needs the master key); after that the variables are ignored.
 	notificationCtx, cancelNotifications := context.WithTimeout(context.Background(), 5*time.Second)
-	err = notifications.Initialize(notificationCtx, database.Pool, destinations)
+	ignoredEnv, readOnlyEnv, err := notifications.ImportEnv(notificationCtx, database.Pool, channelSealer, envChannels)
+	var destinations []notifications.Destination
+	if err == nil {
+		destinations, err = notifications.EnvDestinations(readOnlyEnv)
+	}
+	destinations = append(destinations, notifications.PushDestination(database.Pool, nil, vapid))
+	if err == nil {
+		err = notifications.Initialize(notificationCtx, database.Pool, destinations)
+	}
+	notificationRegistry := notifications.NewRegistry(database.Pool, channelSealer, destinations)
+	if err == nil {
+		err = notificationRegistry.Reload(notificationCtx)
+	}
 	cancelNotifications()
 	if err != nil {
 		logger.Error("notification delivery initialization failed", "error", "notification_initialization_failed")
 		os.Exit(1)
+	}
+	for _, c := range ignoredEnv {
+		logger.Warn("notification environment variables are ignored: the channel was imported into Settings > Notifications; remove them", "channel", c.ID)
+	}
+	for _, c := range readOnlyEnv {
+		logger.Warn("notification channel set by environment variables is read-only; set "+notifications.MasterKeyVar+" to import it into Settings > Notifications", "channel", c.ID)
 	}
 	alertsMux := http.NewServeMux()
 	alerts.NewHandler(database.Pool, authService).Register(alertsMux)
 	notifications.Configure(os.Getenv("VIGIRA_PUBLIC_URL"))
 	notificationHandler := notifications.NewHandler(database.Pool, authService, destinations)
 	notificationHandler.SetVAPID(vapid)
+	notificationHandler.SetRegistry(notificationRegistry)
 	notificationHandler.RegisterActions(alertsMux)
 	notificationMux := http.NewServeMux()
 	notificationHandler.Register(notificationMux)
@@ -315,7 +339,7 @@ func main() {
 	}()
 	go stackAPI.Run(ctx)
 	go stackAPI.RunImageUpdates(ctx)
-	go notifications.Run(ctx, database.Pool, destinations, logger)
+	go notificationRegistry.Run(ctx, logger)
 	logger.Info("starting Vigara API", "addr", cfg.Address)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("server failed", "error", err)
