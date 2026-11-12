@@ -198,7 +198,8 @@ func (h *Handler) history(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "range must be 1h, 6h, 24h, 7d, 30d, 90d, or 365d", 400)
 		return
 	}
-	windowEnd := time.Now().UTC()
+	now := h.now().UTC()
+	windowEnd := now
 	windowStart := windowEnd.Add(-duration)
 	if custom {
 		var err error
@@ -214,7 +215,7 @@ func (h *Handler) history(w http.ResponseWriter, r *http.Request) {
 		}
 		windowStart, windowEnd = windowStart.UTC(), windowEnd.UTC()
 		duration = windowEnd.Sub(windowStart)
-		if duration <= 0 || duration > 365*24*time.Hour || windowEnd.After(time.Now().UTC().Add(time.Minute)) {
+		if duration <= 0 || duration > 365*24*time.Hour || windowEnd.After(now.Add(time.Minute)) {
 			http.Error(w, "custom interval must be positive, at most 365 days, and end no more than one minute in the future", 400)
 			return
 		}
