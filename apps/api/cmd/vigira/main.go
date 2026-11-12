@@ -100,7 +100,14 @@ func main() {
 		os.Exit(1)
 	}
 	// The Android channel is always on; it sends to the phones signed in to the Vigara app.
-	destinations = append(destinations, notifications.PushDestination(database.Pool, nil))
+	vapidCtx, cancelVAPID := context.WithTimeout(context.Background(), 5*time.Second)
+	vapid, err := notifications.LoadVAPID(vapidCtx, database.Pool, notifications.VAPIDSubject(os.Getenv("VIGIRA_VAPID_SUBJECT"), os.Getenv("VIGIRA_PUBLIC_URL")))
+	cancelVAPID()
+	if err != nil {
+		logger.Error("push key initialization failed", "error", "vapid_initialization_failed")
+		os.Exit(1)
+	}
+	destinations = append(destinations, notifications.PushDestination(database.Pool, nil, vapid))
 	notificationCtx, cancelNotifications := context.WithTimeout(context.Background(), 5*time.Second)
 	err = notifications.Initialize(notificationCtx, database.Pool, destinations)
 	cancelNotifications()
@@ -112,6 +119,7 @@ func main() {
 	alerts.NewHandler(database.Pool, authService).Register(alertsMux)
 	notifications.Configure(os.Getenv("VIGIRA_PUBLIC_URL"))
 	notificationHandler := notifications.NewHandler(database.Pool, authService, destinations)
+	notificationHandler.SetVAPID(vapid)
 	notificationHandler.RegisterActions(alertsMux)
 	notificationMux := http.NewServeMux()
 	notificationHandler.Register(notificationMux)

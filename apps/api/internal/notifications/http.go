@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/deranjer/vigara/apps/api/internal/auth"
+	"github.com/deranjer/vigara/apps/api/internal/notifytransport"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -22,6 +23,7 @@ type Handler struct {
 	destinations []Destination
 	// pushClient sends to phones; nil uses the bounded default client.
 	pushClient *http.Client
+	vapid      *notifytransport.VAPID
 }
 
 func NewHandler(pool *pgxpool.Pool, service *auth.Service, destinations []Destination) *Handler {

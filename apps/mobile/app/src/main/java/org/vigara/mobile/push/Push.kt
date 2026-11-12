@@ -35,6 +35,7 @@ import org.vigara.mobile.data.VigaraApi
 data class PushStatus(val enabled: Boolean = false, val phoneId: String = "", val distributor: String = "", val error: String = "", val waiting: Boolean = false)
 
 @Serializable private data class PhoneId(val id: String = "")
+@Serializable private data class PushKey(val vapidKey: String = "")
 
 /** The decrypted message the server sends (see RenderPush on the server). */
 @Serializable private data class AlertPush(
@@ -82,7 +83,7 @@ object Push {
     fun enable(activity: Activity) {
         save(activity) { it.copy(enabled = true, error = "", waiting = true) }
         UnifiedPush.tryUseCurrentOrDefaultDistributor(activity) { ok ->
-            if (ok) UnifiedPush.register(activity)
+            if (ok) register(activity)
             else save(activity) { it.copy(waiting = false, error = "No push app was chosen.") }
             status.value = status.value.copy(distributor = UnifiedPush.getSavedDistributor(activity).orEmpty())
         }
@@ -92,7 +93,25 @@ object Push {
     fun refresh(activity: Activity) {
         load(activity)
         if (!status.value.enabled) return
-        UnifiedPush.tryUseCurrentOrDefaultDistributor(activity) { ok -> if (ok) UnifiedPush.register(activity) }
+        UnifiedPush.tryUseCurrentOrDefaultDistributor(activity) { ok -> if (ok) register(activity) }
+    }
+
+    /**
+     * Register with the server's VAPID key, so push apps that require one accept the
+     * registration and only this server can push to the endpoint. A server without a
+     * key (an older version) gets a plain registration.
+     */
+    private fun register(activity: Activity) {
+        val context = activity.applicationContext
+        val api = (context as VigaraApp).api
+        scope.launch {
+            val key = runCatching { api.get<PushKey>("/api/notifications/push-key").vapidKey }.getOrDefault("")
+            try {
+                UnifiedPush.register(context, vapid = key.ifEmpty { null })
+            } catch (e: Exception) {
+                save(context) { it.copy(waiting = false, error = "The push app could not register this phone.") }
+            }
+        }
     }
 
     /** Stop notifications: unregister from the push app and forget this phone on the server. */
