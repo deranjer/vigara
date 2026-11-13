@@ -125,8 +125,35 @@ jobs:
             -PversionName="${{ steps.ver.outputs.name }}" \
             -PversionCode="${{ steps.ver.outputs.code }}"
 
+      # Fail before publishing if the APK is unsigned, signed with a different key than the
+      # keystore secret, or carries the wrong version. The certificate fingerprint is logged so it
+      # can be compared with the one F-Droid clients already trust.
+      - name: Verify the APK
+        env:
+          EXPECTED_NAME: ${{ steps.ver.outputs.name }}
+          EXPECTED_CODE: ${{ steps.ver.outputs.code }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          APK=apps/mobile/app/build/outputs/apk/release/app-release.apk
+          BT="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
+          "$BT/apksigner" verify --print-certs "$APK" | grep -E 'certificate (DN|SHA-256)'
+          SIGNED=$("$BT/apksigner" verify --print-certs "$APK" | grep -m1 'certificate SHA-256' | sed 's/.*: //')
+          KEYSTORE=$(keytool -list -v -keystore "$RUNNER_TEMP/release.jks" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" | grep 'SHA256:' | head -1 | sed 's/.*SHA256: //; s/://g' | tr 'A-F' 'a-f')
+          if [ -z "$SIGNED" ] || [ "$SIGNED" != "$KEYSTORE" ]; then
+            echo "::error::The APK is not signed with the release keystore (APK $SIGNED, keystore $KEYSTORE)."
+            exit 1
+          fi
+          BADGING=$("$BT/aapt2" dump badging "$APK" | grep '^package:')
+          echo "$BADGING"
+          case "$BADGING" in
+            *"name='org.vigara.mobile'"*"versionCode='$EXPECTED_CODE'"*"versionName='$EXPECTED_NAME'"*) ;;
+            *) echo "::error::The APK does not report org.vigara.mobile $EXPECTED_NAME ($EXPECTED_CODE)."; exit 1 ;;
+          esac
+
       - name: Attach APK to the release
         run: |
           APK="vigara-mobile-${{ steps.ver.outputs.name }}.apk"
           cp apps/mobile/app/build/outputs/apk/release/app-release.apk "$APK"
-          gh release upload "${{ steps.ver.outputs.tag }}" "$APK" --clobber
+          sha256sum "$APK" > "$APK.sha256"
+          gh release upload "${{ steps.ver.outputs.tag }}" "$APK" "$APK.sha256" --clobber
