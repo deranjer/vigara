@@ -107,8 +107,9 @@ func RenderPush(message Message) []byte {
 }
 
 // SendPush encrypts payload to the phone (RFC 8291, aes128gcm) and posts it to
-// its push endpoint (RFC 8030).
-func SendPush(ctx context.Context, client *http.Client, endpoint string, keys PushKeys, payload []byte, urgent bool) error {
+// its push endpoint (RFC 8030). With vapid set, the request carries a signed
+// VAPID token (RFC 8292) so push servers that bind endpoints to it accept it.
+func SendPush(ctx context.Context, client *http.Client, vapid *VAPID, endpoint string, keys PushKeys, payload []byte, urgent bool) error {
 	if len(payload) > maxPushPayload {
 		return &DeliveryError{target: PushTargetID, reason: "payload_too_large"}
 	}
@@ -126,6 +127,13 @@ func SendPush(ctx context.Context, client *http.Client, endpoint string, keys Pu
 	request.Header.Set("Content-Type", "application/octet-stream")
 	request.Header.Set("Content-Encoding", "aes128gcm")
 	request.Header.Set("TTL", pushTTLSeconds)
+	if vapid != nil {
+		header, err := vapid.Authorization(endpoint)
+		if err != nil {
+			return &DeliveryError{target: PushTargetID, reason: "vapid_failed"}
+		}
+		request.Header.Set("Authorization", header)
+	}
 	if urgent {
 		request.Header.Set("Urgency", "high")
 	} else {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/deranjer/vigara/apps/api/internal/auth"
+	"github.com/deranjer/vigara/apps/api/internal/notifytransport"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -22,6 +23,19 @@ type Handler struct {
 	destinations []Destination
 	// pushClient sends to phones; nil uses the bounded default client.
 	pushClient *http.Client
+	vapid      *notifytransport.VAPID
+	// registry, when set, supplies the live channel list instead of destinations.
+	registry *Registry
+}
+
+// SetRegistry makes the handler list and manage the registry's channels.
+func (h *Handler) SetRegistry(r *Registry) { h.registry = r }
+
+func (h *Handler) dests() []Destination {
+	if h.registry != nil {
+		return h.registry.Destinations()
+	}
+	return h.destinations
 }
 
 func NewHandler(pool *pgxpool.Pool, service *auth.Service, destinations []Destination) *Handler {
@@ -35,6 +49,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/notifications/settings", h.put)
 	mux.HandleFunc("POST /api/notifications/channels/{id}/test", h.test)
 	h.registerPush(mux)
+	h.registerChannels(mux)
 }
 func (h *Handler) RegisterActions(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/alerts/actions/{token}", h.action)
@@ -72,15 +87,21 @@ func (h *Handler) admin(w http.ResponseWriter, r *http.Request) bool {
 }
 
 type Channel struct {
-	ID              string     `json:"id"`
-	Kind            string     `json:"kind"`
-	Target          string     `json:"target"`
-	Route           Route      `json:"route"`
-	LastDeliveredAt *time.Time `json:"lastDeliveredAt,omitempty"`
-	LastError       string     `json:"lastError,omitempty"`
-	LastErrorAt     *time.Time `json:"lastErrorAt,omitempty"`
-	Pending         int        `json:"pending"`
-	Held            int        `json:"held"`
+	ID     string `json:"id"`
+	Kind   string `json:"kind"`
+	Name   string `json:"name"`
+	Target string `json:"target"`
+	// Source is "settings" (editable here), "server" (environment variables)
+	// or "app" (the built-in Vigara app channel).
+	Source string `json:"source"`
+	// Config fills the edit form for administrators; secrets only say if set.
+	Config          *ChannelConfigView `json:"config,omitempty"`
+	Route           Route              `json:"route"`
+	LastDeliveredAt *time.Time         `json:"lastDeliveredAt,omitempty"`
+	LastError       string             `json:"lastError,omitempty"`
+	LastErrorAt     *time.Time         `json:"lastErrorAt,omitempty"`
+	Pending         int                `json:"pending"`
+	Held            int                `json:"held"`
 	// Phones lists the app installs behind the Android channel that the
 	// signed-in user can see: their own, or all of them for an admin.
 	Phones     []Phone `json:"phones,omitempty"`
@@ -92,6 +113,8 @@ type Settings struct {
 	// LinksEnabled is false without VIGIRA_PUBLIC_URL: no tap target or action buttons.
 	LinksEnabled bool `json:"linksEnabled"`
 	CanManage    bool `json:"canManage"`
+	// CanStore is false without a master key: channels cannot be added or edited.
+	CanStore bool `json:"canStore"`
 }
 
 func (h *Handler) read(ctx context.Context) (Settings, error) {
@@ -99,8 +122,18 @@ func (h *Handler) read(ctx context.Context) (Settings, error) {
 	if err := h.pool.QueryRow(ctx, `SELECT quiet_enabled,to_char(quiet_start,'HH24:MI'),to_char(quiet_end,'HH24:MI'),timezone FROM notification_settings`).Scan(&out.QuietHours.Enabled, &out.QuietHours.Start, &out.QuietHours.End, &out.QuietHours.Timezone); err != nil {
 		return out, err
 	}
-	for _, d := range h.destinations {
-		c := Channel{ID: d.ID, Kind: d.Kind, Target: d.Target, Route: Route{true, true, true}}
+	out.CanStore = h.registry != nil && h.registry.CanStore()
+	for _, d := range h.dests() {
+		c := Channel{ID: d.ID, Kind: d.Kind, Name: d.Name, Target: d.Target, Source: d.Source, Route: Route{true, true, true}}
+		if c.Name == "" {
+			c.Name = kindName(d.Kind)
+		}
+		if c.Source == "" {
+			c.Source = SourceServer
+		}
+		if d.ID == PushChannelID {
+			c.Source, c.Name = SourceApp, "Vigara app"
+		}
 		var lastError *string
 		err := h.pool.QueryRow(ctx, `SELECT d.notify_critical,d.notify_warning,d.notify_resolved,
  (SELECT max(updated_at) FROM notification_deliveries WHERE destination_id=d.id AND status='delivered'),
@@ -152,6 +185,7 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out.CanManage = u.Can(auth.PermHostsManage)
+	h.attachConfig(&out)
 	if err := h.attachPhones(r.Context(), u, &out); err != nil {
 		http.Error(w, "could not read notification settings", 500)
 		return
@@ -205,7 +239,7 @@ func (h *Handler) put(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	known := map[string]bool{}
-	for _, d := range h.destinations {
+	for _, d := range h.dests() {
 		known[d.ID] = true
 	}
 	for id := range q.Routes {
@@ -244,6 +278,7 @@ func (h *Handler) put(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out.CanManage = true
+	h.attachConfig(&out)
 	if err := h.attachPhones(ctx, u, &out); err != nil {
 		http.Error(w, "could not read notification settings", 500)
 		return
@@ -255,7 +290,7 @@ func (h *Handler) test(w http.ResponseWriter, r *http.Request) {
 	if !h.admin(w, r) {
 		return
 	}
-	for _, d := range h.destinations {
+	for _, d := range h.dests() {
 		if d.ID != r.PathValue("id") {
 			continue
 		}
@@ -312,6 +347,17 @@ func (h *Handler) action(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, _ = io.WriteString(w, done+"\n")
+}
+
+func (h *Handler) attachConfig(out *Settings) {
+	if !out.CanManage {
+		return
+	}
+	for i := range out.Channels {
+		if out.Channels[i].Source == SourceSettings {
+			out.Channels[i].Config = h.configView(out.Channels[i].ID)
+		}
+	}
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

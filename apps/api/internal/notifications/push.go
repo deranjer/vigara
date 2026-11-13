@@ -36,9 +36,10 @@ type Phone struct {
 
 // PushDestination sends each alert to every registered phone. With no phones
 // it delivers to nobody and reports success, so nothing piles up as failed.
-func PushDestination(pool *pgxpool.Pool, client *http.Client) Destination {
+// vapid, when set, signs each push so push apps that require a server key work.
+func PushDestination(pool *pgxpool.Pool, client *http.Client, vapid *notifytransport.VAPID) Destination {
 	return Destination{ID: PushChannelID, Kind: "android", Target: "Vigara app", Send: func(ctx context.Context, m Message) error {
-		return sendToPhones(ctx, pool, client, m, "")
+		return sendToPhones(ctx, pool, client, vapid, m, "")
 	}}
 }
 
@@ -51,7 +52,7 @@ type phoneRow struct {
 // the distributor no longer knows is forgotten. Delivery succeeds when at
 // least one phone took the message, so a retry never repeats it on phones
 // that already have it.
-func sendToPhones(ctx context.Context, pool *pgxpool.Pool, client *http.Client, m Message, phoneID string) error {
+func sendToPhones(ctx context.Context, pool *pgxpool.Pool, client *http.Client, vapid *notifytransport.VAPID, m Message, phoneID string) error {
 	query := `SELECT id::text,endpoint,p256dh,auth FROM push_phones ORDER BY created_at`
 	args := []any{}
 	if phoneID != "" {
@@ -77,7 +78,7 @@ func sendToPhones(ctx context.Context, pool *pgxpool.Pool, client *http.Client, 
 	var firstErr error
 	delivered := false
 	for _, p := range phones {
-		err := notifytransport.SendPush(ctx, client, p.endpoint, p.keys, payload, urgent)
+		err := notifytransport.SendPush(ctx, client, vapid, p.endpoint, p.keys, payload, urgent)
 		switch {
 		case err == nil:
 			delivered = true
@@ -123,6 +124,51 @@ func (h *Handler) registerPush(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/notifications/phones", h.putPhone)
 	mux.HandleFunc("DELETE /api/notifications/phones/{id}", h.deletePhone)
 	mux.HandleFunc("POST /api/notifications/phones/{id}/test", h.testPhone)
+	mux.HandleFunc("GET /api/notifications/push-key", h.pushKey)
+}
+
+// SetVAPID gives the handler the server key that phones register with and
+// that signs test pushes.
+func (h *Handler) SetVAPID(v *notifytransport.VAPID) { h.vapid = v }
+
+// pushKey returns the public VAPID key the app hands its push app when it
+// registers. An empty key means the server sends without one.
+func (h *Handler) pushKey(w http.ResponseWriter, r *http.Request) {
+	if _, ok := h.user(w, r); !ok {
+		return
+	}
+	key := ""
+	if h.vapid != nil {
+		key = h.vapid.PublicKey()
+	}
+	writeJSON(w, map[string]string{"vapidKey": key})
+}
+
+// LoadVAPID returns the server's VAPID key, creating it on first use. It lives
+// in notification_settings so every replica and restart signs with the same
+// key; a new key would orphan every phone registered with the old one.
+func LoadVAPID(ctx context.Context, pool *pgxpool.Pool, subject string) (*notifytransport.VAPID, error) {
+	fresh, err := notifytransport.GenerateVAPIDKey()
+	if err != nil {
+		return nil, err
+	}
+	var key []byte
+	if err := pool.QueryRow(ctx, `UPDATE notification_settings SET vapid_key=COALESCE(vapid_key,$1) RETURNING vapid_key`, fresh).Scan(&key); err != nil {
+		return nil, err
+	}
+	return notifytransport.NewVAPID(key, subject)
+}
+
+// VAPIDSubject picks the contact sent to push servers: an explicit setting,
+// else the server's public https URL, else a placeholder address.
+func VAPIDSubject(explicit, publicURL string) string {
+	if notifytransport.ValidVAPIDSubject(explicit) {
+		return explicit
+	}
+	if u := strings.TrimRight(strings.TrimSpace(publicURL), "/"); strings.HasPrefix(u, "https://") && notifytransport.ValidVAPIDSubject(u) {
+		return u
+	}
+	return "mailto:vigara@localhost"
 }
 
 func (h *Handler) phones(ctx context.Context, u auth.User) ([]Phone, error) {
@@ -254,7 +300,7 @@ func (h *Handler) testPhone(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), SendTimeout)
 	defer cancel()
 	open, _, _ := policy{public: configuredPublicURL()}.links("", time.Now())
-	err := sendToPhones(ctx, h.pool, h.pushClient, Message{EventID: "test", Transition: "test", RuleName: "Test notification", Severity: "warning",
+	err := sendToPhones(ctx, h.pool, h.pushClient, h.vapid, Message{EventID: "test", Transition: "test", RuleName: "Test notification", Severity: "warning",
 		Summary: "This is a test from Vigara. Alerts will arrive on this phone.", OccurredAt: time.Now().UTC(), OpenURL: open}, id)
 	if err != nil {
 		writeJSON(w, map[string]any{"ok": false, "error": errorCode(err)})

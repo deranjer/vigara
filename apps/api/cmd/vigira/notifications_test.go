@@ -55,11 +55,14 @@ func TestAlertLifecycleDeliversThroughConfiguredGotifyWithRetry(t *testing.T) {
 	t.Setenv(notifytransport.GotifyURLVar, server.URL)
 	t.Setenv(notifytransport.GotifyTokenVar, "test-application-token")
 	t.Setenv(notifytransport.DiscordWebhookURLVar, "")
-	targets, err := notifytransport.FromEnv()
+	channels, err := notifytransport.EnvChannels(os.Getenv)
 	if err != nil {
 		t.Fatal(err)
 	}
-	destinations := buildNotificationDestinations(targets)
+	destinations, err := notifications.EnvDestinations(channels)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(destinations) != 1 || destinations[0].ID != "gotify" {
 		t.Fatalf("unexpected destinations")
 	}

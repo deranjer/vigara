@@ -62,7 +62,7 @@ func TestSendPushStatuses(t *testing.T) {
 			size = len(b)
 			w.WriteHeader(tc.status)
 		}))
-		err := SendPush(context.Background(), server.Client(), server.URL+"/up/abc", keys, []byte(`{"kind":"test"}`), true)
+		err := SendPush(context.Background(), server.Client(), nil, server.URL+"/up/abc", keys, []byte(`{"kind":"test"}`), true)
 		server.Close()
 		if (err == nil) != tc.ok || IsGone(err) != tc.gone {
 			t.Fatalf("status %d: err=%v", tc.status, err)
