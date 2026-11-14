@@ -432,10 +432,11 @@ func (c *Client) Logs(ctx context.Context, params protocol.DockerLogsParams, sen
 		query.Set("timestamps", "1")
 	}
 	if params.Since != "" {
-		if _, err := time.Parse(time.RFC3339Nano, params.Since); err != nil {
+		stamp, err := dockerLogTimestamp(params.Since)
+		if err != nil {
 			return ErrBadRequest
 		}
-		query.Set("since", params.Since)
+		query.Set("since", stamp)
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

@@ -75,7 +75,7 @@ type agentEnd struct {
 // Terminal limits used by the fixture; tests that exercise them set shorter values first.
 var execIdle, execMax time.Duration
 
-func newFixture(t *testing.T) *fixture {
+func newFixture(t *testing.T, configure ...func(*Config)) *fixture {
 	t.Helper()
 	capabilities := map[string][]string{agentShell: {protocol.CapabilityHostExec}, agentDocker: {}, agentPlain: {}, agentManage: {"docker.manage"}, agentExec: {"docker.manage", "docker.exec"}}
 	hub := channel.NewHub(channel.Options{
@@ -92,9 +92,13 @@ func newFixture(t *testing.T) *fixture {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/agent/channel", hub.ServeAgent)
 	captured := &captureAudit{}
-	RegisterAPI(mux, Config{Hub: hub, Authz: fakeAuthz{}, Audit: captured, ExecIdle: execIdle, ExecMax: execMax, Names: func(context.Context) (map[string]string, error) {
+	cfg := Config{Hub: hub, Authz: fakeAuthz{}, Audit: captured, ExecIdle: execIdle, ExecMax: execMax, Names: func(context.Context) (map[string]string, error) {
 		return map[string]string{agentDocker: "nas", agentOffline: "attic"}, nil
-	}})
+	}}
+	for _, change := range configure {
+		change(&cfg)
+	}
+	RegisterAPI(mux, cfg)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return &fixture{t: t, hub: hub, server: server, audit: captured}

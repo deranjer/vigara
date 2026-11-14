@@ -19,6 +19,7 @@ import (
 	"github.com/deranjer/vigara/apps/api/internal/auth"
 	"github.com/deranjer/vigara/apps/api/internal/channel"
 	"github.com/deranjer/vigara/internal/protocol"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const (
@@ -40,9 +41,11 @@ type AuditLog interface {
 
 // Config wires the API to its collaborators.
 type Config struct {
-	Hub   *channel.Hub
-	Authz channel.Authorizer
-	Audit AuditLog
+	Pool   *pgxpool.Pool
+	Grants grantReader
+	Hub    *channel.Hub
+	Authz  channel.Authorizer
+	Audit  AuditLog
 	// Names maps every enrolled agent's ID to its device name, so hosts that are
 	// offline can still be listed.
 	Names func(ctx context.Context) (map[string]string, error)
@@ -62,6 +65,7 @@ const (
 
 // Host is one machine's slice of the fleet list.
 type Host struct {
+	Access     map[string][]string            `json:"access,omitempty"`
 	AgentID    string                         `json:"agentId"`
 	Name       string                         `json:"name"`
 	State      string                         `json:"state"`
@@ -95,6 +99,7 @@ func RegisterAPI(mux *http.ServeMux, cfg Config) {
 	mux.HandleFunc("POST /api/containers/{agent}/host-run", a.hostRun)
 	a.registerResources(mux)
 	a.registerFiles(mux)
+	a.registerLogFeatures(mux)
 	mux.HandleFunc("POST /api/containers/{agent}/{id}/actions", a.action)
 	mux.HandleFunc("POST /api/containers/{agent}/{id}/recreate", a.recreate)
 }
@@ -164,8 +169,18 @@ func statusFor(err error) int {
 }
 
 func (a *api) fleet(w http.ResponseWriter, r *http.Request) {
-	if _, ok := a.Authz.Authorize(w, r, auth.PermContainersRead); !ok {
+	user, ok := a.Authz.Authorize(w, r, auth.PermContainersRead)
+	if !ok {
 		return
+	}
+	var grants []auth.ResourceGrant
+	if user.Role == auth.RoleRestricted {
+		var err error
+		grants, err = a.grants(r.Context(), user)
+		if err != nil {
+			http.Error(w, "could not read resource access", 503)
+			return
+		}
 	}
 	names := map[string]string{}
 	if a.Names != nil {
@@ -186,6 +201,18 @@ func (a *api) fleet(w http.ResponseWriter, r *http.Request) {
 	var mu sync.Mutex
 	var group sync.WaitGroup
 	for id, name := range names {
+		if user.Role == auth.RoleRestricted {
+			visible := false
+			for _, grant := range grants {
+				if grant.AgentID == id {
+					visible = true
+					break
+				}
+			}
+			if !visible {
+				continue
+			}
+		}
 		host := Host{AgentID: id, Name: name, State: StateOffline, Message: "This host is not connected.", Containers: []protocol.DockerContainerInfo{}}
 		info, connected := online[id]
 		if !connected {
@@ -214,6 +241,26 @@ func (a *api) fleet(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 	group.Wait()
+	if user.Role == auth.RoleRestricted {
+		for i := range hosts {
+			host := &hosts[i]
+			visible := []protocol.DockerContainerInfo{}
+			host.Access = map[string][]string{}
+			for _, container := range host.Containers {
+				if !allowed(grants, host.AgentID, container.ID, container.Project, container.Service, "view") {
+					continue
+				}
+				visible = append(visible, container)
+				for _, operation := range []string{"view", "logs", "restart", "recreate", "pull-recreate"} {
+					if allowed(grants, host.AgentID, container.ID, container.Project, container.Service, operation) {
+						host.Access[container.ID] = append(host.Access[container.ID], operation)
+					}
+				}
+			}
+			host.Containers = visible
+			host.Truncated = false // never disclose the size of hidden inventory
+		}
+	}
 	sort.Slice(hosts, func(i, j int) bool {
 		if hosts[i].Name != hosts[j].Name {
 			return hosts[i].Name < hosts[j].Name
@@ -249,6 +296,9 @@ func (a *api) inspect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reveal := r.URL.Query().Get("reveal") == "env"
+	if !a.requireResource(w, r, user, agentID, containerID, "view") {
+		return
+	}
 	event := audit.Event{ActorID: user.ID, ActorName: user.Username, Action: "container.env.reveal", TargetKind: "container", TargetID: containerID, AgentID: agentID}
 	if reveal && !user.Can(auth.PermSecretsReveal) {
 		event.Outcome = audit.OutcomeDenied
@@ -273,6 +323,12 @@ func (a *api) inspect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, message, statusFor(err))
 		return
 	}
+	if user.Role == auth.RoleRestricted {
+		result.State.Error = ""
+		result.State.Pid = 0
+		respond(w, http.StatusOK, map[string]any{"id": result.ID, "name": result.Name, "image": result.Image, "state": result.State})
+		return
+	}
 	respond(w, http.StatusOK, result)
 }
 
@@ -285,7 +341,8 @@ type endMessage struct {
 
 func (a *api) stream(method string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := a.Authz.Authorize(w, r, auth.PermContainersRead); !ok {
+		user, ok := a.Authz.Authorize(w, r, auth.PermContainersRead)
+		if !ok {
 			return
 		}
 		agentID, containerID, ok := target(w, r)
@@ -293,6 +350,13 @@ func (a *api) stream(method string) http.HandlerFunc {
 			return
 		}
 		var params any
+		operation := "view"
+		if method == protocol.MethodDockerLogs {
+			operation = "logs"
+		}
+		if !a.requireResource(w, r, user, agentID, containerID, operation) {
+			return
+		}
 		query := r.URL.Query()
 		switch method {
 		case protocol.MethodDockerLogs:
@@ -336,8 +400,15 @@ func (a *api) stream(method string) http.HandlerFunc {
 			return
 		}
 		defer stream.Close()
+		recheck := time.NewTicker(5 * time.Second)
+		defer recheck.Stop()
 		for {
 			select {
+			case <-recheck.C:
+				if !a.streamStillAllowed(r, user, agentID, containerID, operation) {
+					finish(endMessage{End: true, Code: "access_revoked", Message: "Your access has changed. Sign in again."})
+					return
+				}
 			case chunk, open := <-stream.C:
 				if !open {
 					end := endMessage{End: true}

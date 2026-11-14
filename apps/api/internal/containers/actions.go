@@ -32,6 +32,26 @@ func (a *api) managerFor(w http.ResponseWriter, r *http.Request, action, targetK
 	if !ok {
 		return auth.User{}, false
 	}
+	if user.Role == auth.RoleRestricted {
+		operation := ""
+		if action == "container.restart" {
+			operation = "restart"
+		}
+		if action == "container.recreate" {
+			operation = "recreate"
+		}
+		if action == "container.pull-recreate" {
+			operation = "pull-recreate"
+		}
+		if targetKind == "container" && operation != "" && a.requireResource(w, r, user, agentID, targetID, operation) {
+			return user, true
+		}
+		a.record(r.Context(), audit.Event{ActorID: user.ID, ActorName: user.Username, Action: action, TargetKind: targetKind, TargetID: targetID, AgentID: agentID, Outcome: audit.OutcomeDenied})
+		if operation == "" || targetKind != "container" {
+			http.Error(w, "your account does not allow this action", http.StatusForbidden)
+		}
+		return auth.User{}, false
+	}
 	if !user.Can(auth.PermContainersManage) {
 		a.record(r.Context(), audit.Event{ActorID: user.ID, ActorName: user.Username, Action: action, TargetKind: targetKind, TargetID: targetID, AgentID: agentID, Outcome: audit.OutcomeDenied})
 		http.Error(w, "your role does not allow changing containers", http.StatusForbidden)
@@ -88,6 +108,11 @@ func (a *api) action(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown action", http.StatusBadRequest)
 		return
 	}
+	if user.Role == auth.RoleRestricted && (params.Force || params.RemoveVolumes || params.Signal != "" || params.TimeoutSeconds < 0 || params.TimeoutSeconds > 120) {
+		a.record(r.Context(), audit.Event{ActorID: user.ID, ActorName: user.Username, Action: auditAction, TargetKind: "container", TargetID: containerID, AgentID: agentID, Outcome: audit.OutcomeDenied})
+		http.Error(w, "only a normal restart is allowed", http.StatusForbidden)
+		return
+	}
 	params.ID = containerID
 	ctx, cancel := context.WithTimeout(r.Context(), actionTimeout)
 	defer cancel()
@@ -126,15 +151,19 @@ func (a *api) recreate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	auditAction := "container." + protocol.ActionRecreate
-	user, ok := a.manager(w, r, auditAction, agentID, containerID)
-	if !ok {
-		return
-	}
 	var request struct {
 		Pull bool `json:"pull"`
 	}
 	if r.ContentLength != 0 && !decodeBody(w, r, &request) {
+		return
+	}
+	auditAction := "container." + protocol.ActionRecreate
+	authorizeAction := auditAction
+	if request.Pull {
+		authorizeAction = "container.pull-recreate"
+	}
+	user, ok := a.manager(w, r, authorizeAction, agentID, containerID)
+	if !ok {
 		return
 	}
 	params := protocol.DockerRecreateParams{ID: containerID, Pull: request.Pull}

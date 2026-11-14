@@ -12,13 +12,13 @@ describe('settings', () => {
     const html = render('operator', 'tasks')
     expect(html).toContain('Account')
     expect(html).toContain('AI connections')
-    for (const hidden of ['Users &amp; roles', 'Git repository', 'Scheduled tasks', 'Agents &amp; updates']) expect(html).not.toContain(hidden)
+    for (const hidden of ['Users &amp; access', 'Git repository', 'Scheduled tasks', 'Agents &amp; updates']) expect(html).not.toContain(hidden)
     // A section the role cannot see falls back to Account.
     expect(html).toContain('Change password')
   })
   it('lists every section for admins under You and Server', () => {
     const html = render('admin', 'account')
-    for (const label of ['You', 'Server', 'Users &amp; roles', 'Git repository', 'Stack profiles', 'AI connections', 'Agents &amp; updates', 'Scheduled tasks']) expect(html).toContain(label)
+    for (const label of ['You', 'Server', 'Users &amp; access', 'Git repository', 'Stack profiles', 'AI connections', 'Agents &amp; updates', 'Scheduled tasks']) expect(html).toContain(label)
   })
   it('shows scheduled task columns and keeps old admin links working', () => {
     const html = renderToStaticMarkup(<MantineProvider><ScheduledTasks /></MantineProvider>)

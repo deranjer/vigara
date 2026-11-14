@@ -16,7 +16,7 @@ import (
 
 func testAuthService(t *testing.T) (*Service, *pgxpool.Pool) {
 	t.Helper()
-	return testAuthServiceWithMigrations(t, "000001_initial_schema.up.sql")
+	return testAuthServiceWithMigrations(t, "000001_initial_schema.up.sql", "000015_resource_access.up.sql")
 }
 
 func testAuthServiceWithMigrations(t *testing.T, names ...string) (*Service, *pgxpool.Pool) {

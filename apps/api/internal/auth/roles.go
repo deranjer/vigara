@@ -28,8 +28,9 @@ const (
 )
 
 var rolePermissions = map[string]map[Permission]bool{
-	RoleViewer:   {PermDevicesRead: true, PermBackupsRead: true, PermAlertsRead: true, PermContainersRead: true},
-	RoleOperator: {PermDevicesExec: true, PermDevicesRead: true, PermBackupsRead: true, PermAlertsRead: true, PermContainersRead: true, PermContainersManage: true, PermContainersExec: true},
+	RoleRestricted: {PermContainersRead: true},
+	RoleViewer:     {PermDevicesRead: true, PermBackupsRead: true, PermAlertsRead: true, PermContainersRead: true},
+	RoleOperator:   {PermDevicesExec: true, PermDevicesRead: true, PermBackupsRead: true, PermAlertsRead: true, PermContainersRead: true, PermContainersManage: true, PermContainersExec: true},
 	RoleAdmin: {PermDevicesExec: true, PermDevicesRead: true, PermBackupsRead: true, PermAlertsRead: true, PermContainersRead: true, PermContainersManage: true, PermContainersExec: true, PermStacksDeploy: true,
 		PermSecretsReveal: true, PermHostsManage: true, PermUsersManage: true, PermAuditRead: true, PermTasksManage: true},
 }

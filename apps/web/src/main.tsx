@@ -11,6 +11,7 @@ import { SnapshotPage } from './snapshot-page'
 import { Resources } from './resources'
 import { Alerts } from './alerts'
 import { Overview } from './overview'
+import { SharedResources } from './shared-resources'
 import { Settings } from './settings'
 import { AppFrame, PublicFrame, sectionLabels } from './app-shell'
 import { PasswordWhitespaceWarning } from './password-warning'
@@ -204,6 +205,7 @@ type PageProps = { user: User; route: Route; onNavigate: (route: Route) => void;
 
 function Page({ user, route, onNavigate, onUserChanged, onSessionExpired }: PageProps) {
   const role = user.role
+  if (role === 'restricted' && route.section !== 'settings') return <SharedResources key={user.id} />
   switch (route.section) {
     case 'overview': return <Overview key={user.id} userName={user.displayName || user.username} onNavigate={onNavigate} />
     case 'alerts': return <Alerts key={user.id} route={route} onNavigate={onNavigate} />
