@@ -172,7 +172,7 @@ func main() {
 	channelMux := http.NewServeMux()
 	channelHub.RegisterAPI(channelMux, authService)
 	containersMux := http.NewServeMux()
-	containerConfig := containers.Config{Hub: channelHub, Authz: authService, Audit: auditRecorder, Names: func(ctx context.Context) (map[string]string, error) {
+	containerConfig := containers.Config{Pool: database.Pool, Grants: authService, Hub: channelHub, Authz: authService, Audit: auditRecorder, Names: func(ctx context.Context) (map[string]string, error) {
 		rows, err := database.Pool.Query(ctx, `SELECT ai.id::text, d.display_name FROM agent_identities ai JOIN devices d ON d.id = ai.device_id WHERE ai.revoked_at IS NULL`)
 		if err != nil {
 			return nil, err
@@ -339,6 +339,7 @@ func main() {
 	}()
 	go stackAPI.Run(ctx)
 	go stackAPI.RunImageUpdates(ctx)
+	go containers.RunLogValues(ctx, containerConfig)
 	go notificationRegistry.Run(ctx, logger)
 	logger.Info("starting Vigara API", "addr", cfg.Address)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

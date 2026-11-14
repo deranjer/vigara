@@ -43,9 +43,10 @@ async function read<T>(path: string): Promise<T> {
 }
 
 /** Counts for the nav and names for search. Each source fails on its own, leaving its count blank. */
-function useSummary(): Summary {
+function useSummary(enabled = true): Summary {
   const [summary, setSummary] = useState<Summary>({ devices: null, firing: null, stacks: null, updates: null })
   useEffect(() => {
+    if (!enabled) return
     let active = true
     const loadAlerts = () => void read<{ status: string; acknowledgedAt?: string; mutedUntil?: string }[]>('/api/alerts/incidents').then((v) => { if (active) setSummary((s) => ({ ...s, firing: openCount(v) })) }).catch(() => undefined)
     const load = () => {
@@ -58,7 +59,7 @@ function useSummary(): Summary {
     const timer = window.setInterval(load, 60_000)
     window.addEventListener(alertsChangedEvent, loadAlerts)
     return () => { active = false; window.clearInterval(timer); window.removeEventListener(alertsChangedEvent, loadAlerts) }
-  }, [])
+  }, [enabled])
   return summary
 }
 
@@ -144,16 +145,17 @@ function Breadcrumbs({ route, summary, onNavigate }: { route: Route; summary: Su
   })}</nav>
 }
 
-function useSearchActions(summary: Summary, onNavigate: (route: Route) => void): { actions: SpotlightActionGroupData[]; loadContainers: () => void } {
+function useSearchActions(summary: Summary, onNavigate: (route: Route) => void, enabled = true): { actions: SpotlightActionGroupData[]; loadContainers: () => void } {
   const [containers, setContainers] = useState<SearchContainer[] | null>(null)
   const [loadedAt, setLoadedAt] = useState(0)
   const loadContainers = useCallback(() => {
+    if (!enabled) return
     if (Date.now() - loadedAt < 60_000) return
     setLoadedAt(Date.now())
     void read<{ hosts: { agentId: string; name: string; containers: { name?: string; image?: string }[] }[] }>('/api/containers')
       .then((v) => setContainers(v.hosts.flatMap((host) => host.containers.filter((c) => c.name).map((c) => ({ hostId: host.agentId, hostName: host.name, name: c.name!, image: c.image ?? '' })))))
       .catch(() => setContainers([]))
-  }, [loadedAt])
+  }, [loadedAt, enabled])
   const actions = useMemo<SpotlightActionGroupData[]>(() => {
     const pages = [...primary, settingsItem, { key: 'images', label: 'Images', icon: IconBox }, { key: 'networks', label: 'Networks', icon: IconBox }, { key: 'volumes', label: 'Volumes', icon: IconBox }] as { key: Section; label: string; icon: typeof IconHome }[]
     const groups: SpotlightActionGroupData[] = [{ group: 'Pages', actions: pages.map((page) => ({ id: `page:${page.key}`, label: page.label, leftSection: <page.icon size={16} />, onClick: () => onNavigate(routeOf(page.key)) })) }]
@@ -168,11 +170,14 @@ function useSearchActions(summary: Summary, onNavigate: (route: Route) => void):
 /** The signed-in frame: navy rail, top bar with breadcrumbs, search and device scope, and phone tabs. */
 export function AppFrame({ user, route, onNavigate, onLogout, children }: { user: ShellUser; route: Route; onNavigate: (route: Route) => void; onLogout: () => void; children: ReactNode }) {
   const phone = useMediaQuery('(max-width: 47.99em)') ?? false
-  const summary = useSummary()
+  const restricted = user.role === 'restricted'
+  const summary = useSummary(!restricted)
   const count = counts(summary)
-  const active = navSection(route.section)
+  const active = restricted && route.section !== 'settings' ? 'containers' : navSection(route.section)
   const isAdmin = user.role === 'admin'
-  const { actions, loadContainers } = useSearchActions(summary, onNavigate)
+  const navItems: Item[] = restricted ? [{ key: 'containers', label: 'Shared resources', icon: IconBox }] : primary
+  const phoneNav: NavKey[] = restricted ? ['containers', 'settings'] : phoneTabs
+  const { actions, loadContainers } = useSearchActions(summary, onNavigate, !restricted)
   const go = (key: NavKey) => onNavigate(routeOf(key))
   const moreItems = primary.filter((item) => !phoneTabs.includes(item.key)).concat([settingsItem])
   // Only admins can act on a server update, so only their browsers check for one.
@@ -182,18 +187,18 @@ export function AppFrame({ user, route, onNavigate, onLogout, children }: { user
   return <AppShell layout="alt" header={{ height: 52 }} navbar={{ width: 232, breakpoint: 'sm', collapsed: { mobile: true } }} footer={phone ? { height: 62 } : undefined} padding="lg">
     <AppShell.Header className="vg-topbar">
       {phone && <BrandMark />}
-      {!phone && <Breadcrumbs route={route} summary={summary} onNavigate={onNavigate} />}
+      {!phone && (restricted ? <Text fw={600} size="sm">{route.section === 'settings' ? 'Account settings' : 'Shared resources'}</Text> : <Breadcrumbs route={route} summary={summary} onNavigate={onNavigate} />)}
       <Group gap="xs" ml="auto" wrap="nowrap">
-        {phone
+        {!restricted && (phone
           ? <ActionIcon variant="default" size="lg" aria-label="Search" onClick={() => { loadContainers(); spotlight.open() }}><IconSearch size={17} /></ActionIcon>
-          : <UnstyledButton className="vg-search" onClick={() => { loadContainers(); spotlight.open() }} aria-label="Search devices, containers and stacks (Ctrl K)"><IconSearch size={15} aria-hidden="true" /><span>Search devices, containers, stacks…</span><kbd>Ctrl K</kbd></UnstyledButton>}
-        <DeviceSwitcher devices={summary.devices} />
+          : <UnstyledButton className="vg-search" onClick={() => { loadContainers(); spotlight.open() }} aria-label="Search devices, containers and stacks (Ctrl K)"><IconSearch size={15} aria-hidden="true" /><span>Search devices, containers, stacks…</span><kbd>Ctrl K</kbd></UnstyledButton>)}
+        {!restricted && <DeviceSwitcher devices={summary.devices} />}
         {phone && <UserMenu user={user} onNavigate={onNavigate} onLogout={onLogout} compact />}
       </Group>
     </AppShell.Header>
     <AppShell.Navbar className="vg-rail" aria-label="Main navigation">
       <BrandMark />
-      <nav className="vg-nav">{primary.map((item) => <NavItem key={item.key} item={item} active={active === item.key} count={count[item.key]} onClick={() => go(item.key)} />)}
+      <nav className="vg-nav">{navItems.map((item) => <NavItem key={item.key} item={item} active={active === item.key} count={count[item.key]} onClick={() => go(item.key)} />)}
         {isAdmin && <div className="vg-nav-group">Admin</div>}
         <NavItem item={settingsItem} active={active === 'settings'} dot={updateDot} onClick={() => go('settings')} />
       </nav>
@@ -201,13 +206,13 @@ export function AppFrame({ user, route, onNavigate, onLogout, children }: { user
     </AppShell.Navbar>
     <AppShell.Main>{children}</AppShell.Main>
     {phone && <AppShell.Footer className="vg-tabbar" component="nav" aria-label="Main navigation">
-      {phoneTabs.map((key) => { const item = primary.find((p) => p.key === key)!; const Icon = item.icon; const c = count[key]; return <UnstyledButton key={key} className="vg-tab" data-active={active === key || undefined} aria-current={active === key ? 'page' : undefined} onClick={() => go(key)}><span className="vg-tab-icon"><Icon size={21} stroke={1.7} aria-hidden="true" />{c?.hot && <span className="vg-tab-badge">{c.value}</span>}</span>{item.label}</UnstyledButton> })}
-      <Menu position="top-end" width={200} withinPortal>
+      {phoneNav.map((key) => { const item = navItems.find((p) => p.key === key) ?? settingsItem; const Icon = item.icon; const c = count[key]; return <UnstyledButton key={key} className="vg-tab" data-active={active === key || undefined} aria-current={active === key ? 'page' : undefined} onClick={() => go(key)}><span className="vg-tab-icon"><Icon size={21} stroke={1.7} aria-hidden="true" />{c?.hot && <span className="vg-tab-badge">{c.value}</span>}</span>{item.label}</UnstyledButton> })}
+      {!restricted && <Menu position="top-end" width={200} withinPortal>
         <Menu.Target><UnstyledButton className="vg-tab" data-active={moreItems.some((item) => item.key === active) || undefined}><span className="vg-tab-icon"><IconDots size={21} stroke={1.7} aria-hidden="true" /></span>More</UnstyledButton></Menu.Target>
         <Menu.Dropdown>{moreItems.map((item) => <Menu.Item key={item.key} leftSection={<item.icon size={16} />} rightSection={count[item.key] ? <Text size="xs" c="dimmed">{count[item.key]!.value}</Text> : null} onClick={() => go(item.key)}>{item.label}</Menu.Item>)}</Menu.Dropdown>
-      </Menu>
+      </Menu>}
     </AppShell.Footer>}
-    <Spotlight actions={actions} nothingFound="Nothing matches" highlightQuery limit={40} scrollable maxHeight={420} onSpotlightOpen={loadContainers} searchProps={{ leftSection: <IconSearch size={18} />, placeholder: 'Search devices, containers, stacks and pages…' }} />
+    {!restricted && <Spotlight actions={actions} nothingFound="Nothing matches" highlightQuery limit={40} scrollable maxHeight={420} onSpotlightOpen={loadContainers} searchProps={{ leftSection: <IconSearch size={18} />, placeholder: 'Search devices, containers, stacks and pages…' }} />}
   </AppShell>
 }
 

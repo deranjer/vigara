@@ -22,7 +22,8 @@ type logSnapshotResult struct {
 // logSnapshot collects a finite, bounded log read over the existing agent channel.
 // Live following remains available through the browser's WebSocket route.
 func (a *api) logSnapshot(w http.ResponseWriter, r *http.Request) {
-	if _, ok := a.Authz.Authorize(w, r, auth.PermContainersRead); !ok {
+	user, ok := a.Authz.Authorize(w, r, auth.PermContainersRead)
+	if !ok {
 		return
 	}
 	agentID, containerID, ok := target(w, r)
@@ -30,6 +31,9 @@ func (a *api) logSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query := r.URL.Query()
+	if !a.requireResource(w, r, user, agentID, containerID, "logs") {
+		return
+	}
 	tail := protocol.DefaultLogTail
 	if query.Has("tail") {
 		var err error

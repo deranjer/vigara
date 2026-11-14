@@ -29,6 +29,7 @@ func TestManagementScopeAndRoleBoundary(t *testing.T) {
 			{"no consent", auth.RoleAdmin, nil, false},
 			{"old read consent", auth.RoleAdmin, []string{"devices.read", "containers.read", "backups.read", "alerts.read"}, op.scope == "containers.read"},
 			{"viewer", auth.RoleViewer, supportedScopes, op.scope == "containers.read"},
+			{"selected resources", auth.RoleRestricted, supportedScopes, false},
 			{"operator", auth.RoleOperator, supportedScopes, op.scope != "stacks.deploy"},
 			{"administrator", auth.RoleAdmin, []string{op.scope}, true},
 		} {

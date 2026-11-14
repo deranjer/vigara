@@ -1,4 +1,5 @@
 import { MountBackup } from './backup-status'
+import { HistoricalLogSearch, LogValues } from './log-values'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { LineChart } from '@mantine/charts'
 import { Alert, Badge, Button, Card, Checkbox, Code, Group, Loader, Select, SimpleGrid, Stack, Switch, Table, Tabs, Text, TextInput, Title } from '@mantine/core'
@@ -86,8 +87,8 @@ export function ContainerDetail({ hostId, reference, tab, hosts, role, onNavigat
 
     {inspect && <Tabs value={tab} onChange={goTab} mt="xs" keepMounted={false} className="vg-page-tabs">
       <Tabs.List><Tabs.Tab value="logs">Logs</Tabs.Tab><Tabs.Tab value="overview">Overview</Tabs.Tab><Tabs.Tab value="stats">Stats</Tabs.Tab><Tabs.Tab value="terminal">Terminal</Tabs.Tab><Tabs.Tab value="inspect">Inspect</Tabs.Tab></Tabs.List>
-      <Tabs.Panel value="overview" pt="md"><ContainerOverview hostId={hostId} inspect={inspect} admin={role === 'admin'} revealing={revealing} onReveal={reveal} onBrowse={canBrowseFiles(role, host?.dockerTier) ? setBrowseMount : undefined} /></Tabs.Panel>
-      <Tabs.Panel value="logs" pt="md"><LogsPanel hostId={hostId} reference={reference} name={title} /></Tabs.Panel>
+      <Tabs.Panel value="overview" pt="md"><Stack><LogValues hostId={hostId} reference={reference} admin={role === 'admin'} /><ContainerOverview hostId={hostId} inspect={inspect} admin={role === 'admin'} revealing={revealing} onReveal={reveal} onBrowse={canBrowseFiles(role, host?.dockerTier) ? setBrowseMount : undefined} /></Stack></Tabs.Panel>
+      <Tabs.Panel value="logs" pt="md"><Stack><HistoricalLogSearch hostId={hostId} reference={reference} /><LogsPanel hostId={hostId} reference={reference} name={title} /></Stack></Tabs.Panel>
       <Tabs.Panel value="stats" pt="md"><StatsPanel hostId={hostId} reference={reference} running={running} /></Tabs.Panel>
       <Tabs.Panel value="terminal" pt="md"><TerminalPanel hostId={hostId} reference={reference} name={title} running={running} role={role} hostTier={host?.dockerTier} /></Tabs.Panel>
       <Tabs.Panel value="inspect" pt="md"><Card withBorder radius="md" padding="md"><Text size="sm" c="dimmed" mb="xs">Environment values are {inspect.envRevealed ? 'shown' : 'hidden unless revealed on the Overview tab'}.</Text><Code block style={{ maxHeight: 560, overflow: 'auto' }}>{JSON.stringify(inspect, null, 2)}</Code></Card></Tabs.Panel>

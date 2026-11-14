@@ -19,6 +19,8 @@ var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]
 
 func roleRank(role string) int {
 	switch role {
+	case RoleRestricted:
+		return -1
 	case RoleAdmin:
 		return 2
 	case RoleOperator:
@@ -59,7 +61,7 @@ func (s *Service) ListUsers(ctx context.Context) ([]ManagedUser, error) {
 // created by the one-time setup flow, so this requires an existing installation.
 func (s *Service) CreateUser(ctx context.Context, username, displayName, password, role string) (ManagedUser, error) {
 	if !ValidRole(role) {
-		return ManagedUser{}, fmt.Errorf("%w: role must be viewer, operator, or admin", ErrInvalidInput)
+		return ManagedUser{}, fmt.Errorf("%w: role must be restricted, viewer, operator, or admin", ErrInvalidInput)
 	}
 	username, displayName, err := validateIdentity(username, displayName)
 	if err != nil {
@@ -90,7 +92,7 @@ func (s *Service) CreateUser(ctx context.Context, username, displayName, passwor
 // keep elevated access.
 func (s *Service) SetUserRole(ctx context.Context, id, role string) (ManagedUser, error) {
 	if !ValidRole(role) {
-		return ManagedUser{}, fmt.Errorf("%w: role must be viewer, operator, or admin", ErrInvalidInput)
+		return ManagedUser{}, fmt.Errorf("%w: role must be restricted, viewer, operator, or admin", ErrInvalidInput)
 	}
 	if !uuidPattern.MatchString(id) {
 		return ManagedUser{}, pgx.ErrNoRows
@@ -142,6 +144,11 @@ func (s *Service) SetUserRole(ctx context.Context, id, role string) (ManagedUser
 			return ManagedUser{}, fmt.Errorf("revoke sessions: %w", err)
 		}
 	}
+	if previous != role {
+		if _, err := tx.Exec(ctx, `DELETE FROM user_resource_grants WHERE user_id=$1::uuid`, id); err != nil {
+			return ManagedUser{}, fmt.Errorf("clear previous resource grants: %w", err)
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return ManagedUser{}, fmt.Errorf("commit role change: %w", err)
 	}
@@ -151,6 +158,7 @@ func (s *Service) SetUserRole(ctx context.Context, id, role string) (ManagedUser
 
 // RegisterAdmin mounts the administrator-only user management and audit-log routes.
 func (s *Service) RegisterAdmin(mux *http.ServeMux, recorder *audit.Recorder) {
+	s.registerGrants(mux, recorder)
 	respond := func(w http.ResponseWriter, status int, body any) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")

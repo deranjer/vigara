@@ -35,7 +35,7 @@ type managementAuthorizer struct{}
 
 func (managementAuthorizer) Authorize(w http.ResponseWriter, r *http.Request, permission auth.Permission) (auth.User, bool) {
 	p, ok := r.Context().Value(principalKey{}).(principal)
-	if !ok || !p.User.Can(permission) {
+	if !ok || p.User.Role == auth.RoleRestricted || !p.User.Can(permission) {
 		http.Error(w, "current account permissions do not allow this operation", http.StatusForbidden)
 		return auth.User{}, false
 	}
@@ -219,6 +219,9 @@ func (h *Handler) addManagementTools(server *mcp.Server, p principal) {
 }
 
 func slicesAllow(p principal, scope string) bool {
+	if p.User.Role == auth.RoleRestricted {
+		return false
+	}
 	for _, granted := range p.Scopes {
 		if granted == scope {
 			return p.User.Can(auth.Permission(scope))

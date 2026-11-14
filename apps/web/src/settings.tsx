@@ -18,7 +18,7 @@ type Section = { id: SettingsTab; label: string; group: 'You' | 'Server'; admin:
 export const settingsSections: Section[] = [
   { id: 'account', label: 'Account', group: 'You', admin: false, title: 'Account', detail: 'Your sign-in details and password.' },
   { id: 'notifications', label: 'Notifications', group: 'You', admin: false, title: 'Notifications', detail: 'Where alerts reach you outside Vigara, and when.' },
-  { id: 'users', label: 'Users & roles', group: 'Server', admin: true, title: 'Users & roles', detail: 'Who can sign in and what they can change.' },
+  { id: 'users', label: 'Users & access', group: 'Server', admin: true, title: 'Users & access', detail: 'Who can sign in, which resources they can see, and what they can change.' },
   { id: 'git', label: 'Git repository', group: 'Server', admin: true, title: 'Git repository', detail: 'Where stack Compose files are kept and versioned.' },
   { id: 'profiles', label: 'Stack profiles', group: 'Server', admin: true, title: 'Stack profiles', detail: 'Server roles and which stacks each one runs.' },
   { id: 'ai', label: 'AI connections', group: 'Server', admin: false, title: 'AI connections', detail: 'Let Claude or ChatGPT read this server through MCP.' },
@@ -29,7 +29,7 @@ export const settingsSections: Section[] = [
 /** Everything configured once, under one left-hand menu. Sections a role cannot change are left out. */
 export function Settings({ user, route, onNavigate, onUserChanged, onSessionExpired }: Props) {
   const isAdmin = user.role === 'admin'
-  const sections = settingsSections.filter((s) => isAdmin || !s.admin)
+  const sections = settingsSections.filter((s) => user.role === 'restricted' ? s.id === 'account' : isAdmin || !s.admin)
   const current = sections.find((s) => s.id === route.id) ?? sections[0]
   const go = (id: string) => onNavigate(routeOf('settings', id))
   const groups = (['You', 'Server'] as const).map((group) => ({ group, items: sections.filter((s) => s.group === group) })).filter((g) => g.items.length)

@@ -66,6 +66,17 @@ var writeGuardOpen = []string{"/api/auth/", "/api/setup/", "/api/agent/", "/api/
 // refuse.
 func (s *Service) WriteGuard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			if user, ok := s.UserFromRequest(r); ok && user.Role == RoleRestricted {
+				if !restrictedRoute(r.Method, r.URL.Path) || !SameOrigin(r) {
+					http.Error(w, "your account does not have access to this resource", http.StatusForbidden)
+					return
+				}
+				// These routes enforce resource grants themselves.
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
 		switch r.Method {
 		case http.MethodGet, http.MethodHead, http.MethodOptions:
 			next.ServeHTTP(w, r)

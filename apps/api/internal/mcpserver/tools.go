@@ -76,7 +76,7 @@ func readTool(name, description, scope string) *mcp.Tool {
 
 func (h *Handler) addPageTool(server *mcp.Server, p principal, name, description, scope, query string) {
 	mcp.AddTool(server, readTool(name, description, scope), func(ctx context.Context, _ *mcp.CallToolRequest, input pageInput) (*mcp.CallToolResult, pageOutput, error) {
-		if !slices.Contains(p.Scopes, scope) || !p.User.Can(auth.Permission(scope)) {
+		if p.User.Role == auth.RoleRestricted || !slices.Contains(p.Scopes, scope) || !p.User.Can(auth.Permission(scope)) {
 			h.record(ctx, p.User, "mcp."+name, p.GrantID, audit.OutcomeDenied)
 			return nil, pageOutput{}, errors.New("connection scope or current account permissions do not allow this tool")
 		}
