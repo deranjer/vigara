@@ -55,6 +55,15 @@ export function TerminalPanel({ hostId, reference, name, running, role, hostTier
     })
     const fit = new FitAddon()
     terminal.loadAddon(fit)
+    // xterm.js sends Ctrl+V to the shell as the literal ^V control character and cancels the browser's
+    // paste, so Ctrl+V never pasted. Hand paste (and copy, when text is selected) back to the browser.
+    terminal.attachCustomKeyEventHandler((event) => {
+      if (event.type !== 'keydown' || !(event.ctrlKey || event.metaKey) || event.altKey) return true
+      const key = event.key.toLowerCase()
+      if (key === 'v') return false
+      if (key === 'c' && (event.shiftKey || terminal.hasSelection())) return false
+      return true
+    })
     terminal.open(element)
     fit.fit()
 
