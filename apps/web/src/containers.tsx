@@ -186,7 +186,7 @@ function Fleet({ hosts, error, role, refresh, onNavigate, open }: { hosts: HostE
                     <b>{group.project || 'Standalone'}</b>
                     <span className="vg-dim">{group.running}/{group.rows.length} running{group.unhealthy ? ` · ${group.unhealthy} unhealthy` : ''}{showDevice ? ` · ${group.hostName}` : ''}</span>
                   </UnstyledButton>
-                  {group.project && <Button size="compact-xs" variant="subtle" className="vg-group-link" onClick={() => onNavigate(routeOf('stacks'))}>Stack</Button>}
+                  {group.project && <Button size="compact-xs" variant="subtle" className="vg-group-link" onClick={() => onNavigate(routeOf('stacks', group.project))} title={`Open the ${group.project} stack`}>Stack</Button>}
                 </Table.Td>
               </Table.Tr>
               {!shut && group.rows.map(renderRow)}

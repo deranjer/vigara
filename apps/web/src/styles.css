@@ -122,11 +122,15 @@ code, kbd, pre, samp { font-family: var(--mantine-font-family-monospace); }
 .compose-diff-labels { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--mantine-color-default-border); border-bottom: 0; background: var(--mantine-color-default-hover); }
 .compose-diff-labels > * { padding: 8px 12px; }
 .compose-diff-labels > * + * { border-left: 1px solid var(--mantine-color-default-border); }
+.vg-list-tight { margin: 4px 0 0; padding-left: 18px; font-size: var(--mantine-font-size-xs); }
 .stack-diff-file { min-width: 0; overflow: hidden; }
+/* Review & deploy: use most of the viewport so diffs and plans are readable without scrolling inside small editors. */
+.vg-review-modal { min-height: min(88vh, 900px); }
+.vg-review-modal .compose-editor-surface { height: max(520px, 60vh); }
 .stack-diff-path { overflow-wrap: anywhere; }
 .stack-loading { width: 100%; min-height: min(60vh, 520px); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; }
 .stack-loading-editor { min-height: 320px; }
-@media (max-width: 640px) { .compose-editor-surface { height: 420px; } .compose-editor-expanded { inset: 4px; padding: 8px; } }
+@media (max-width: 640px) { .compose-editor-surface, .vg-review-modal .compose-editor-surface { height: 420px; } .compose-editor-expanded { inset: 4px; padding: 8px; } }
 
 .stack-search { flex: 1; min-width: 220px; }
 .stack-deploy-preview { overflow-wrap: anywhere; }

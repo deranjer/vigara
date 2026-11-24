@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
-import { Alert, Badge, Button, Group, Select, Stack, Text, TextInput } from '@mantine/core'
+import { ActionIcon, Alert, Badge, Button, Group, Select, Stack, Text, TextInput } from '@mantine/core'
+import { IconArrowsMaximize, IconArrowsMinimize } from '@tabler/icons-react'
 import { streamUrl } from './container-utils'
 import { describeTerminalEnd, deviceTerminalPath, idleMinutes, isValidExecUser, parseTerminalEnd, resizeMessage, shells, splitInput, terminalBlocker, terminalPath } from './terminal-utils'
 
@@ -25,6 +26,7 @@ export function TerminalPanel({ hostId, reference, name, running, role, hostTier
   const [user, setUser] = useState('')
   const [status, setStatus] = useState<Status>('idle')
   const [message, setMessage] = useState('')
+  const [maximized, setMaximized] = useState(false)
   const holder = useRef<HTMLDivElement>(null)
   const live = useRef<Live | null>(null)
 
@@ -55,6 +57,15 @@ export function TerminalPanel({ hostId, reference, name, running, role, hostTier
     })
     const fit = new FitAddon()
     terminal.loadAddon(fit)
+    // xterm.js sends Ctrl+V to the shell as the literal ^V control character and cancels the browser's
+    // paste, so Ctrl+V never pasted. Hand paste (and copy, when text is selected) back to the browser.
+    terminal.attachCustomKeyEventHandler((event) => {
+      if (event.type !== 'keydown' || !(event.ctrlKey || event.metaKey) || event.altKey) return true
+      const key = event.key.toLowerCase()
+      if (key === 'v') return false
+      if (key === 'c' && (event.shiftKey || terminal.hasSelection())) return false
+      return true
+    })
     terminal.open(element)
     fit.fit()
 
@@ -90,6 +101,9 @@ export function TerminalPanel({ hostId, reference, name, running, role, hostTier
     live.current = { socket, terminal, observer }
   }, [close, hostId, reference, shell, user, device])
 
+  // The overlay resizes the terminal's element, which the observer refits; give the keyboard back afterwards.
+  useEffect(() => { live.current?.terminal.focus() }, [maximized])
+
   const blocker = device
     ? role !== 'operator' && role !== 'admin' ? 'Your account cannot open device shells.'
       : !hostId ? 'This device has no enrolled agent.'
@@ -101,7 +115,10 @@ export function TerminalPanel({ hostId, reference, name, running, role, hostTier
   const badge = badges[status]
   const active = status === 'connecting' || status === 'live'
   const userError = isValidExecUser(user) ? undefined : 'Use a user name or number, optionally followed by :group.'
-  return <Stack gap="sm">
+  const overlay: CSSProperties | undefined = maximized
+    ? { position: 'fixed', inset: 12, zIndex: 400, padding: 16, background: 'var(--mantine-color-body)', border: '1px solid var(--mantine-color-default-border)', borderRadius: 'var(--mantine-radius-md)', boxShadow: '0 0 0 20px #0005' }
+    : undefined
+  return <Stack gap="sm" style={overlay}>
     {compact ? <Text size="xs" c="dimmed">Commands run on this device as the agent service account (often root or LocalSystem). Opening and closing is audited, never what you type. The session closes after {idleMinutes} minutes without typing, or when you close this panel.</Text>
     : <Alert color="yellow" title={device ? 'This opens a shell on the device' : 'This opens a shell inside the container'}>
       {device ? 'Commands run directly on this device as the agent service account, which may be root or LocalSystem. ' : "Anything you type runs with that container's privileges, and a shell in a container is often root. "}Opening and closing a terminal is recorded in the audit log (never what you type or see).
@@ -113,9 +130,12 @@ export function TerminalPanel({ hostId, reference, name, running, role, hostTier
       {active ? <Button color="red" variant="light" onClick={() => { close(); setStatus('idle'); setMessage('') }}>Disconnect</Button>
         : <Button disabled={Boolean(userError)} onClick={connect}>{status === 'idle' ? 'Open terminal' : 'Reconnect'}</Button>}
       <Badge color={badge.color} variant="light" mb={6}>{badge.label}</Badge>
+      <ActionIcon variant="default" size="lg" mb={1} ml="auto" onClick={() => setMaximized((value) => !value)} aria-pressed={maximized} aria-label={maximized ? 'Restore terminal size' : 'Maximize terminal'} title={maximized ? 'Restore terminal size' : 'Maximize terminal'}>
+        {maximized ? <IconArrowsMinimize size={16} /> : <IconArrowsMaximize size={16} />}
+      </ActionIcon>
     </Group>
     {status === 'failed' && <Alert color="red" title="The terminal disconnected">{message}</Alert>}
-    <div ref={holder} role="application" aria-label={`Terminal for ${name}`} style={{ height, background: '#0b0d10', borderRadius: 8, padding: 8, display: status === 'idle' ? 'none' : 'block' }} />
+    <div ref={holder} role="application" aria-label={`Terminal for ${name}`} style={{ height: maximized ? undefined : height, flex: maximized ? 1 : undefined, minHeight: maximized ? 0 : undefined, background: '#0b0d10', borderRadius: 8, padding: 8, display: status === 'idle' ? 'none' : 'block' }} />
     {status === 'idle' && <Text size="sm" c="dimmed">Choose a shell and press Open terminal.</Text>}
   </Stack>
 }

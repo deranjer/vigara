@@ -1,5 +1,34 @@
 import { describe, expect, it } from 'vitest'
-import { activityItems, changedPaths, deploymentTitle, deploymentTone, draftSummary, firstReviewStep, imageTag } from './stack-workspace-utils'
+import { activityItems, changedPaths, deploymentTitle, deploymentTone, draftSummary, firstReviewStep, imageTag, requiredHostPaths } from './stack-workspace-utils'
+
+describe('required host paths', () => {
+  const compose = `services:
+  app:
+    volumes:
+      - type: bind
+        source: /mnt/backups/restic
+        target: /mnt/restic
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /mnt/data/app
+        target: /data
+        bind:
+          create_host_path: true
+      - /mnt/short:/short
+  db:
+    volumes:
+      - type: bind
+        source: /mnt/db
+        target: /db
+`
+  it('lists only bind mounts Compose will not create', () => {
+    expect(requiredHostPaths({ 'compose.yaml': compose })).toEqual([{ service: 'app', source: '/mnt/backups/restic', target: '/mnt/restic' }])
+  })
+  it('ignores non-compose and invalid files', () => {
+    expect(requiredHostPaths({ 'vigara-stack.yaml': 'services:\n', 'notes.txt': compose, 'bad.yaml': 'services: [\n' })).toEqual([])
+  })
+})
 
 describe('stack workspace', () => {
   it('marks added, removed and changed files and summarises the draft', () => {

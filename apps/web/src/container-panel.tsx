@@ -46,7 +46,7 @@ export function ContainerPanel({ hostId, reference, row, hosts, usage, role, onN
     <header className="vg-sidepanel-h">
       <div className="vg-sidepanel-title">
         <h2>{name}</h2>
-        <Text size="xs" c="dimmed">{[project, host?.name ?? row?.hostName].filter(Boolean).join(' · ')}</Text>
+        <Text size="xs" c="dimmed">{project && <><Button size="compact-xs" variant="subtle" px={4} onClick={() => onNavigate(routeOf('stacks', project))} title={`Open the ${project} stack`}>Stack {project}</Button>{' · '}</>}{host?.name ?? row?.hostName}</Text>
       </div>
       <ActionIcon variant="subtle" onClick={onClose} aria-label="Close panel"><IconX size={18} /></ActionIcon>
     </header>

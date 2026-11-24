@@ -2,6 +2,7 @@ import { MountBackup } from './backup-status'
 import { HistoricalLogSearch, LogValues } from './log-values'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { LineChart } from '@mantine/charts'
+import { IconArrowLeft, IconStack2 } from '@tabler/icons-react'
 import { Alert, Badge, Button, Card, Checkbox, Code, Group, Loader, Select, SimpleGrid, Stack, Switch, Table, Tabs, Text, TextInput, Title } from '@mantine/core'
 import { ActionBar } from './container-actions'
 import { appendBounded, filterLogLines, formatBytes, formatRate, logsToText, portSummary, type DockerPort, type HostEntry, type LogLine, type StatsSample } from './container-utils'
@@ -71,11 +72,15 @@ export function ContainerDetail({ hostId, reference, tab, hosts, role, onNavigat
   return <div className="vg-page">
     <header className="vg-device-head">
       <div className="vg-device-title">
+        <Group gap={4} mb={2} ml={-8}>
+          <Button size="compact-xs" variant="subtle" color="gray" leftSection={<IconArrowLeft size={12} />} onClick={() => onNavigate(routeOf('containers'))}>All containers</Button>
+          {project && <Button size="compact-xs" variant="subtle" leftSection={<IconStack2 size={12} />} onClick={() => onNavigate(routeOf('stacks', project))} title={`Open the ${project} stack`}>Stack {project}</Button>}
+        </Group>
         <Group gap="sm" align="center">
           <Title order={1}>{title}</Title>
           {inspect && <StatusText tone={health === 'unhealthy' || inspect.state.restarting ? 'warn' : inspect.state.running ? 'ok' : inspect.state.paused ? 'info' : 'idle'}>{health === 'unhealthy' ? 'Unhealthy' : inspect.state.status}</StatusText>}
         </Group>
-        <Text size="sm" c="dimmed" mt={4}>{[project && `Stack ${project}`, hostName, inspect && imageRef(inspect.image)].filter(Boolean).join(' · ')}</Text>
+        <Text size="sm" c="dimmed" mt={4}>{[hostName, inspect && imageRef(inspect.image)].filter(Boolean).join(' · ')}</Text>
       </div>
       {inspect && <ActionBar hostId={hostId} reference={reference} name={title} state={inspect.state.status} project={project} role={role} hostTier={host?.dockerTier}
         onChanged={() => { void load(false); refreshFleet() }}
