@@ -122,7 +122,7 @@ export function ReviewSheet(props: {
 }) {
   const { opened, step, dirty, plan, job, busy } = props
   const title = props.recreate ? (props.pull ? 'Pull & recreate' : 'Recreate') : 'Review & deploy'
-  return <Modal opened={opened} onClose={() => { if (!busy) props.onClose() }} closeOnEscape={!busy} closeOnClickOutside={!busy} title={`${title} ${props.stackId}`} size="xl" centered>
+  return <Modal opened={opened} onClose={() => { if (!busy) props.onClose() }} closeOnEscape={!busy} closeOnClickOutside={!busy} title={`${title} ${props.stackId}`} size="min(1600px, 96vw)" classNames={{ content: 'vg-review-modal' }} centered>
     <Tabs value={step} onChange={(value) => value && props.onStep(value as ReviewStep)} keepMounted={false}>
       <Tabs.List mb="md">
         <Tabs.Tab value="changes" disabled={busy}>1 · Changes</Tabs.Tab>
