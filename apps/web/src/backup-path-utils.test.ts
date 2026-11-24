@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { addBackupPath, cleanBackupPath, isAbsoluteBackupPath, selectedFolderName } from './backup-path-utils'
+import { addBackupPath, cleanBackupPath, isAbsoluteBackupPath } from './backup-path-utils'
 
 describe('backup folder paths', () => {
   it('adds Windows, UNC, and Linux paths individually, including copied quoted paths', () => {
@@ -15,15 +15,12 @@ describe('backup folder paths', () => {
     expect(isAbsoluteBackupPath('/')).toBe(true)
   })
 
-  it('rejects relative names from a browser picker rather than inventing an absolute path', () => {
+  it('rejects relative names rather than inventing an absolute path', () => {
     for (const value of ['Documents', 'C:Documents', '\\Documents', '\\\\server', '../Documents', '/home/alex\n/tmp', '/bad\0path']) {
       const result = addBackupPath([], value)
       expect(result.error).toBeTruthy()
       expect(result.paths).toEqual([])
     }
-    expect(selectedFolderName('Documents/work/notes.txt')).toBe('Documents')
-    expect(selectedFolderName('')).toBeUndefined()
-    expect(selectedFolderName('notes.txt')).toBeUndefined()
   })
 
   it('prevents duplicate paths without confusing Linux case-sensitive folders', () => {

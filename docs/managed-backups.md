@@ -47,13 +47,12 @@ Existing operator-owned `resticProfiles` continue to work separately.
 In **Add device**, select **Enable managed backups**, then enter:
 
 - Absolute source paths on the device. Enter each path and press Enter or choose
-  **Add path**. Remove individual entries from the list as needed.
-  **Browse local folders** opens a picker on the computer running the browser;
-  browsers expose only folder names, so enter the full path before adding the
-  selection. File contents are never read or uploaded.
-- A dedicated repository path on the device, with its own **Browse local
-  folders** option when setting up a repository. The same browser full-path
-  restriction applies. For a new repository, its parent
+  **Add path**. Remove individual entries from the list as needed. Browsers
+  cannot expose a folder's full path, and the device is usually not the computer
+  running the browser, so there is no folder picker: type each path as the device
+  sees it. Nothing is read or uploaded.
+- A dedicated repository path on the device, typed the same way. For a new
+  repository, its parent
   directory must already exist. Vigara creates the final directory and only
   initializes it if it is empty and Restic reports a missing repository.
 - An optional server path to the same repository for browsing and downloads.
