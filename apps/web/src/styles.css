@@ -122,6 +122,7 @@ code, kbd, pre, samp { font-family: var(--mantine-font-family-monospace); }
 .compose-diff-labels { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--mantine-color-default-border); border-bottom: 0; background: var(--mantine-color-default-hover); }
 .compose-diff-labels > * { padding: 8px 12px; }
 .compose-diff-labels > * + * { border-left: 1px solid var(--mantine-color-default-border); }
+.vg-list-tight { margin: 4px 0 0; padding-left: 18px; font-size: var(--mantine-font-size-xs); }
 .stack-diff-file { min-width: 0; overflow: hidden; }
 /* Review & deploy: use most of the viewport so diffs and plans are readable without scrolling inside small editors. */
 .vg-review-modal { min-height: min(88vh, 900px); }

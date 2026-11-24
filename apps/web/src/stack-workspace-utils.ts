@@ -1,3 +1,4 @@
+import { parse } from 'yaml'
 import { stackFileChanges, type StackFiles } from './stack-diff-utils'
 import type { StatusTone } from './status'
 
@@ -45,6 +46,33 @@ export function imageTag(image: string): string {
   const slash = withoutDigest.lastIndexOf('/')
   const colon = withoutDigest.lastIndexOf(':')
   return colon > slash ? withoutDigest.slice(colon + 1) : 'latest'
+}
+
+export type RequiredHostPath = { service: string; source: string; target: string }
+
+/**
+ * Bind mounts that Compose will not create (`create_host_path: false`). When one of these folders is missing on the
+ * device, the service cannot start, so a failed deploy lists them as the first thing to check.
+ */
+export function requiredHostPaths(files: StackFiles): RequiredHostPath[] {
+  const found: RequiredHostPath[] = []
+  for (const [path, content] of Object.entries(files)) {
+    if (!/\.ya?ml$/i.test(path) || path === 'vigara-stack.yaml' || !/^\s*services\s*:/m.test(content)) continue
+    let document: unknown
+    try { document = parse(content) } catch { continue }
+    const services = (document as { services?: Record<string, { volumes?: unknown }> } | null)?.services
+    if (!services || typeof services !== 'object') continue
+    for (const [service, definition] of Object.entries(services)) {
+      if (!Array.isArray(definition?.volumes)) continue
+      for (const volume of definition.volumes as unknown[]) {
+        const mount = volume as { type?: string; source?: unknown; target?: unknown; bind?: { create_host_path?: unknown } }
+        if (mount && typeof mount === 'object' && mount.type === 'bind' && typeof mount.source === 'string' && mount.bind?.create_host_path === false) {
+          found.push({ service, source: mount.source, target: typeof mount.target === 'string' ? mount.target : '' })
+        }
+      }
+    }
+  }
+  return found.sort((a, b) => a.source.localeCompare(b.source) || a.service.localeCompare(b.service))
 }
 
 export type ReviewStep = 'changes' | 'plan' | 'deploy'

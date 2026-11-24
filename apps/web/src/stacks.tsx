@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { Alert, Button, Checkbox, Code, Group, Menu, Modal, Stack, Tabs, Text, TextInput, Title } from '@mantine/core'
 import { useMediaQuery } from '@mantine/hooks'
-import { IconDots, IconLock, IconRefresh, IconRocket } from '@tabler/icons-react'
+import { IconArrowLeft, IconBox, IconDots, IconLock, IconRefresh, IconRocket } from '@tabler/icons-react'
 import { StackUpdatePolicy } from './image-updates'
 import { relativeTime } from './overview-utils'
 import { route as routeOf, type Route } from './route'
@@ -15,8 +15,8 @@ import { StackList } from './stack-list'
 import { isReverseProxy, stackActionBlocker, stackActionTargets, stackRuntimeBadge, type StackAction, type StackHost, type StackSummary } from './stack-list-utils'
 import { StackLoading } from './stack-loading'
 import { useStackRuntime } from './stack-runtime'
-import { ActivityTimeline, DraftBar, FileList, ReviewSheet, ServicesRail } from './stack-workspace'
-import { changedPaths, deploymentTitle, draftSummary, firstReviewStep, type Deployment, type Revision, type ReviewStep } from './stack-workspace-utils'
+import { ActivityTimeline, DeployFailureHelp, DraftBar, FileList, ReviewSheet, ServicesRail } from './stack-workspace'
+import { changedPaths, deploymentTitle, draftSummary, firstReviewStep, requiredHostPaths, type Deployment, type Revision, type ReviewStep } from './stack-workspace-utils'
 import { StatusText } from './status'
 import { Panel } from './ui'
 
@@ -205,11 +205,14 @@ function StackEditor({ id, projectName, onBack, role, onNavigate, pullOnOpen }: 
   const canDeploy = detail.assigned && !activeJob
   const savedUndeployed = !!detail.snapshot.commit && (!deployed || deployed.digest !== detail.digest)
   const lastFailed = jobs[0]?.status === 'failed' ? jobs[0] : null
+  const hostPaths = requiredHostPaths(detail.snapshot.files)
+  const goContainers = () => { if (unpersisted) { void action(async () => { await persistDraft(); onNavigate(routeOf('containers')) }) } else onNavigate(routeOf('containers')) }
   const openActivity = () => { setTab('activity'); setHistoryLoading(true); void request<Revision[]>(`${base(id)}/history`).then(setHistory).catch((cause: Error) => setError(cause.message)).finally(() => setHistoryLoading(false)) }
 
   return <div className="vg-page vg-stack-page">
     <header className="vg-device-head">
       <div className="vg-device-title">
+        <Button size="compact-xs" variant="subtle" color="gray" leftSection={<IconArrowLeft size={12} />} onClick={onBack} mb={2} ml={-8}>All stacks</Button>
         <Title order={1}>{stackName}</Title>
         <Text size="sm" c="dimmed" mt={4} className="vg-meta-row">
           {badge ? <StatusText color={badge.color} title={badge.label}>{badge.label === 'Unavailable' ? 'Services unavailable' : `${badge.count} running`}</StatusText> : <span>Loading services…</span>}
@@ -219,6 +222,7 @@ function StackEditor({ id, projectName, onBack, role, onNavigate, pullOnOpen }: 
         </Text>
       </div>
       <Group gap="xs">
+        <Button size="xs" variant="default" leftSection={<IconBox size={14} />} onClick={goContainers} title="See this stack's containers in the Containers page">Containers</Button>
         <Button size="xs" variant="default" leftSection={<IconRefresh size={14} />} disabled={busy || !detail.snapshot.commit || !canDeploy || dirty} title={dirty ? 'Commit or discard the draft first.' : 'Download newer images for the configured tags and recreate every service'} onClick={openPull}>Pull &amp; recreate</Button>
         <Menu position="bottom-end" withinPortal>
           <Menu.Target><Button size="xs" variant="default" px={8} aria-label="More stack actions"><IconDots size={16} /></Button></Menu.Target>
@@ -279,6 +283,7 @@ function StackEditor({ id, projectName, onBack, role, onNavigate, pullOnOpen }: 
       <Tabs.Panel value="environment" pt="md">{phone ? <Text size="sm" c="dimmed">Environment values can be changed on a larger screen.</Text> : <SecretEditor key={`${detail.snapshot.commit}:${secretEpoch}`} id={id} files={files} busy={busy} persistDraft={persistDraft} onBusy={setSecretBusy} onEncrypted={(value) => { setFiles((current) => ({ ...current, [value.path]: value.ciphertext, 'vigara-stack.yaml': value.manifest })); setNotice('Environment encrypted and added to your draft. Commit it with Review & deploy when ready.') }} />}</Tabs.Panel>
       <Tabs.Panel value="activity" pt="md">
         <ActivityTimeline history={history} jobs={jobs} loading={historyLoading} busy={busy || phone}
+          failure={lastFailed ? { jobId: lastFailed.id, node: <DeployFailureHelp job={lastFailed} hostPaths={hostPaths} projectName={detail.projectName || projectName} onContainers={goContainers} /> } : undefined}
           draftPanel={(dirty || remote) ? <Panel title={remote ? 'Fetched version ↔ your editor' : 'Unsaved draft'}><StackDiff stackId={id} saved={(remote ?? detail.snapshot).files} draft={files} revision={(remote ?? detail.snapshot).commit.slice(0, 8)} /></Panel> : null}
           onRestore={(commit) => void action(async () => { const value = await request<Detail>(`${base(id)}?commit=${commit}`); setFiles(value.snapshot.files); setPlan(null); setTab('files'); setNotice(`Loaded revision ${short(commit)} into your draft. Commit it before deploying.`) })}
           onReconcile={(job) => void action(async () => { const value = await request<{ message: string }>(`${base(id)}/deployments/${job}/reconcile`, 'POST', {}); setNotice(value.message) })} />
@@ -297,7 +302,7 @@ function StackEditor({ id, projectName, onBack, role, onNavigate, pullOnOpen }: 
     </Tabs>
 
     <ReviewSheet opened={review !== null} step={review ?? 'changes'} stackId={id} dirty={dirty} saved={(remote ?? detail.snapshot).files} draft={files} revision={short(planCommit || detail.snapshot.commit)}
-      plan={plan} pull={pull} recreate={recreate} deviceName={deviceName} branch={detail.branch} busy={busy} error={error} job={deployJob} canDeploy={canDeploy}
+      plan={plan} pull={pull} recreate={recreate} deviceName={deviceName} branch={detail.branch} busy={busy} error={error} job={deployJob} canDeploy={canDeploy} hostPaths={hostPaths} projectName={detail.projectName || projectName} onContainers={() => { setReview(null); goContainers() }}
       onStep={(step) => { setReview(step); if (step === 'plan' && !plan) void action(() => preparePlan(recreate)) }} onPull={setPull} onRecreate={setRecreate}
       onCommitOnly={() => void action(async () => { if (await save()) setReview(null) })}
       onCommitAndPlan={() => void action(async () => { const commit = await save(); if (!commit) return; setReview('plan'); await preparePlan(false, commit) })}

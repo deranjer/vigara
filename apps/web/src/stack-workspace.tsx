@@ -5,7 +5,7 @@ import { relativeTime } from './overview-utils'
 import { route as routeOf, type Route } from './route'
 import { StackDiff } from './stack-diff'
 import type { RuntimeData } from './stack-runtime'
-import { activityItems, deploymentTitle, deploymentTone, imageTag, type Deployment, type ReviewStep, type Revision } from './stack-workspace-utils'
+import { activityItems, deploymentTitle, deploymentTone, imageTag, type Deployment, type RequiredHostPath, type ReviewStep, type Revision } from './stack-workspace-utils'
 import { StatusText, type StatusTone } from './status'
 
 type Files = Record<string, string>
@@ -81,14 +81,46 @@ export function ServicesRail({ runtime, jobs, collapsed, onCollapse, onActivity,
   </aside>
 }
 
+/**
+ * What to check after a failed deploy. The device deliberately returns no raw Compose output, so this lists the
+ * likeliest causes that can be read from the stack itself, then the commands that show the real error on the host.
+ */
+export function DeployFailureHelp({ job, hostPaths, projectName, onContainers }: {
+  job: Deployment; hostPaths: RequiredHostPath[]; projectName: string; onContainers: () => void
+}) {
+  const folders = [...new Set(hostPaths.map((item) => item.source))]
+  return <Alert color="red" title={`The deployment failed at "${job.stage || 'apply'}"`}>
+    <Stack gap="xs">
+      {job.message && <Text size="sm">{job.message}</Text>}
+      {!!folders.length && <div>
+        <Text size="sm" fw={600}>These host folders must already exist</Text>
+        <Text size="xs" c="dimmed">This stack mounts them with <Code>create_host_path: false</Code>, so Docker will not create them. A missing folder stops the service from being created.</Text>
+        <ul className="vg-list-tight">{hostPaths.map((item) => <li key={`${item.service}${item.source}`}><Code>{item.source}</Code> <span className="vg-dim">→ {item.service}:{item.target}</span></li>)}</ul>
+      </div>}
+      <div>
+        <Text size="sm" fw={600}>See the real error on the device</Text>
+        <Code block>{[
+          folders.length ? `ls -ld ${folders.map((folder) => `'${folder}'`).join(' ')}` : null,
+          `docker compose -p ${projectName} ps -a`,
+          `docker events --since 10m`,
+        ].filter(Boolean).join('\n')}</Code>
+      </div>
+      <Text size="xs" c="dimmed">Services that already ran keep running; a failed deploy does not remove them.</Text>
+      <Group><Button size="compact-xs" variant="light" onClick={onContainers}>Open this stack's containers</Button></Group>
+    </Stack>
+  </Alert>
+}
+
 /** One bar for the draft or an undeployed revision, with the way forward. */
 export function DraftBar({ tone, children, actions }: { tone: StatusTone; children: ReactNode; actions: ReactNode }) {
   return <div className="vg-draftbar" role="status"><span className="vg-status-dot" data-tone={tone} aria-hidden="true" /><span className="vg-grow">{children}</span><Group gap="xs" wrap="nowrap">{actions}</Group></div>
 }
 
 /** Saved revisions and deployments on one timeline, with the draft's changes on top. */
-export function ActivityTimeline({ history, jobs, loading, busy, draftPanel, onRestore, onReconcile }: {
+export function ActivityTimeline({ history, jobs, loading, busy, draftPanel, failure, onRestore, onReconcile }: {
   history: Revision[]; jobs: Deployment[]; loading: boolean; busy: boolean; draftPanel: ReactNode
+  /** Extra help shown under one failed deployment (the latest). */
+  failure?: { jobId: string; node: ReactNode }
   onRestore: (commit: string) => void; onReconcile: (job: string) => void
 }) {
   const items = activityItems(history, jobs)
@@ -101,7 +133,7 @@ export function ActivityTimeline({ history, jobs, loading, busy, draftPanel, onR
         <div className="vg-grow"><b>{item.revision.message || 'Saved revision'}</b><div className="vg-dim"><span className="vg-mono">{item.revision.commit.slice(0, 7)}</span> · saved {relativeTime(item.revision.at)}</div></div>
         <Button size="compact-xs" variant="subtle" disabled={busy} onClick={() => onRestore(item.revision.commit)}>Restore into draft</Button></li>
       : <li key={`d${item.deployment.id}`}><span className="vg-status-dot" data-tone={deploymentTone(item.deployment.status)} aria-hidden="true" />
-        <div className="vg-grow"><b>{deploymentTitle(item.deployment)}</b><div className="vg-dim">{[item.deployment.stage, item.deployment.message].filter(Boolean).join(' · ') || 'Waiting for the device.'} · {relativeTime(item.deployment.createdAt)}</div></div>
+        <div className="vg-grow"><b>{deploymentTitle(item.deployment)}</b><div className="vg-dim">{[item.deployment.stage, item.deployment.message].filter(Boolean).join(' · ') || 'Waiting for the device.'} · {relativeTime(item.deployment.createdAt)}</div>{failure?.jobId === item.deployment.id && <div style={{ marginTop: 8 }}>{failure.node}</div>}</div>
         {item.deployment.status === 'unknown' && <Button size="compact-xs" variant="light" disabled={busy} onClick={() => onReconcile(item.deployment.id)}>Check device result</Button>}</li>)}
     </ol>
   </Stack>
@@ -116,7 +148,7 @@ export type PlanView = { images: Record<string, string>; projectName: string; se
 export function ReviewSheet(props: {
   opened: boolean; step: ReviewStep; stackId: string; dirty: boolean; saved: Files; draft: Files; revision: string
   plan: PlanView | null; pull: boolean; recreate: boolean; deviceName: string; branch: string; busy: boolean; error: string
-  job: Deployment | null; canDeploy: boolean
+  job: Deployment | null; canDeploy: boolean; hostPaths: RequiredHostPath[]; projectName: string; onContainers: () => void
   onStep: (step: ReviewStep) => void; onPull: (value: boolean) => void; onRecreate: (value: boolean) => void
   onCommitOnly: () => void; onCommitAndPlan: () => void; onPlan: () => void; onDeploy: () => void; onClose: () => void
 }) {
@@ -161,7 +193,7 @@ export function ReviewSheet(props: {
           <StatusText tone={deploymentTone(job.status)}>{deploymentTitle(job)}</StatusText>
           <Text size="sm">{[job.stage, job.message].filter(Boolean).join(' · ') || 'Waiting for the device to pick up the job.'}</Text>
           {['queued', 'running'].includes(job.status) && <Group gap="xs"><Loader size="xs" /><Text size="sm" c="dimmed">You can close this; the deployment keeps going and shows under Activity.</Text></Group>}
-          {job.status === 'failed' && <Alert color="red" title="The deployment failed">Check the device's Compose output under Activity, fix the stack, and deploy again.</Alert>}
+          {job.status === 'failed' && <DeployFailureHelp job={job} hostPaths={props.hostPaths} projectName={props.projectName} onContainers={props.onContainers} />}
         </>}
         <Group justify="flex-end"><Button variant={job && ['queued', 'running'].includes(job.status) ? 'default' : 'filled'} onClick={props.onClose}>Close</Button></Group>
       </Stack></Tabs.Panel>
