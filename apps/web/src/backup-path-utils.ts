@@ -24,9 +24,3 @@ export function addBackupPath(paths: string[], draft: string): { paths: string[]
   if (paths.length >= maxBackupPaths) return { paths, error: `You can add up to ${maxBackupPaths} folders.` }
   return { paths: [...paths, value] }
 }
-
-// Browsers provide paths relative to the selected folder, never its disk path.
-export function selectedFolderName(relativePath: string): string | undefined {
-  const slash = relativePath.indexOf('/')
-  return slash > 0 ? relativePath.slice(0, slash) : undefined
-}
