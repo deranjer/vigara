@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"slices"
@@ -148,10 +149,16 @@ func (h *Handler) authenticate(ctx context.Context, token string) (principal, er
 	if len(token) != 43 {
 		return p, pgx.ErrNoRows
 	}
-	err := h.pool.QueryRow(ctx, `SELECT u.id::text,u.username,u.display_name,u.role,g.scopes,g.id::text
+	var expiry string
+	err := h.pool.QueryRow(ctx, `SELECT u.id::text,u.username,u.display_name,u.role,g.scopes,g.id::text,
+ CASE WHEN g.expires_at<=now() OR s.expires_at<=now() THEN 'grant_expired' WHEN g.access_expires_at<=now() THEN 'access_expired' ELSE '' END
  FROM mcp_oauth_grants g JOIN user_sessions s ON s.id=g.session_id JOIN users u ON u.id=s.user_id
- WHERE g.access_hash=$1 AND g.resource=$2 AND g.access_expires_at>now() AND g.expires_at>now() AND s.expires_at>now()`, hash(token), h.issuer+"/mcp").Scan(
-		&p.User.ID, &p.User.Username, &p.User.DisplayName, &p.User.Role, &p.Scopes, &p.GrantID)
+ WHERE g.access_hash=$1 AND g.resource=$2`, hash(token), h.issuer+"/mcp").Scan(
+		&p.User.ID, &p.User.Username, &p.User.DisplayName, &p.User.Role, &p.Scopes, &p.GrantID, &expiry)
+	if err == nil && expiry != "" {
+		slog.InfoContext(ctx, "MCP access denied", "reason", expiry)
+		return principal{}, pgx.ErrNoRows
+	}
 	return p, err
 }
 
@@ -168,10 +175,16 @@ func (h *Handler) serveMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
+	challenge := fmt.Sprintf(`Bearer resource_metadata=%q`, h.issuer+"/.well-known/oauth-protected-resource")
 	fields := strings.Fields(r.Header.Get("Authorization"))
+	if len(fields) == 0 || !strings.EqualFold(fields[0], "Bearer") {
+		w.Header().Set("WWW-Authenticate", challenge)
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
 	var p principal
 	var err error = pgx.ErrNoRows
-	if len(fields) == 2 && strings.EqualFold(fields[0], "Bearer") {
+	if len(fields) == 2 {
 		p, err = h.authenticate(r.Context(), fields[1])
 	}
 	if err != nil {
@@ -179,7 +192,7 @@ func (h *Handler) serveMCP(w http.ResponseWriter, r *http.Request) {
 			oauthError(w, 503, "temporarily_unavailable", "Could not validate connection")
 			return
 		}
-		w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer resource_metadata=%q, error="invalid_token"`, h.issuer+"/.well-known/oauth-protected-resource"))
+		w.Header().Set("WWW-Authenticate", challenge+`, error="invalid_token"`)
 		oauthError(w, 401, "invalid_token", "Connect your Vigara account")
 		return
 	}
