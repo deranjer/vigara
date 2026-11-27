@@ -100,8 +100,8 @@ function AgentsSection({ onNavigate }: { onNavigate: (route: Route) => void }) {
       <Group justify="space-between" align="flex-start" wrap="wrap">
         <div><Text size="lg" fw={600}>{release.version}</Text><Text size="sm" c={release.updateAvailable ? 'orange' : 'dimmed'} mt={4}>{release.text}</Text></div>
         <Group gap="xs">
-          {release.updateAvailable && release.latest && <Button size="xs" variant="light" component="a" href={`https://github.com/deranjer/vigara/releases/tag/${encodeURIComponent(release.latest)}`} target="_blank" rel="noreferrer">Release notes</Button>}
-          <Button size="xs" variant="default" disabled={release.checking} onClick={release.recheck}>Check for updates</Button>
+          {release.updateAvailable && release.latest?.startsWith('v') && <Button size="xs" variant="light" component="a" href={`https://github.com/deranjer/vigara/releases/tag/${encodeURIComponent(release.latest)}`} target="_blank" rel="noreferrer">Release notes</Button>}
+          <Button size="xs" variant="default" onClick={() => onNavigate(routeOf('settings', 'tasks'))}>Scheduled checks</Button>
         </Group>
       </Group>
     </Panel>

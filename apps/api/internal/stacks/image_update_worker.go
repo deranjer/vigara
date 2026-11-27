@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/deranjer/vigara/apps/api/internal/auth"
 	"github.com/deranjer/vigara/internal/imageupdates"
 	"github.com/deranjer/vigara/internal/protocol"
 	"github.com/deranjer/vigara/internal/stack"
@@ -378,13 +379,18 @@ func (a *API) queueImageUpdate(ctx context.Context, id string, settings imageSet
 	if lastSlot == slot {
 		return errors.New("already attempted this window")
 	}
+	return a.deployImageChanges(ctx, id, settings, p, slot, nil, nil)
+}
+
+func (a *API) deployImageChanges(ctx context.Context, id string, settings imageSettings, p updatePolicy, slot string, user *auth.User, selected map[string]string) error {
+	automatic := user == nil
 	var baseline, trackingBytes, imageBytes []byte
 	var agent, commit, configuration string
-	err = a.Pool.QueryRow(ctx, `SELECT snapshot,tracking,images,agent_id::text,commit_id,configuration_digest FROM stack_deployments WHERE stack_id=$1 AND status='succeeded' ORDER BY created_at DESC LIMIT 1`, id).Scan(&baseline, &trackingBytes, &imageBytes, &agent, &commit, &configuration)
+	err := a.Pool.QueryRow(ctx, `SELECT snapshot,tracking,images,agent_id::text,commit_id,configuration_digest FROM stack_deployments WHERE stack_id=$1 AND status='succeeded' ORDER BY created_at DESC LIMIT 1`, id).Scan(&baseline, &trackingBytes, &imageBytes, &agent, &commit, &configuration)
 	if err != nil {
 		return err
 	}
-	if configuration != p.Configuration {
+	if automatic && configuration != p.Configuration {
 		a.pauseImagePolicy(ctx, id, "Stack configuration changed. Review and save the update policy again.")
 		return stack.ErrInvalid
 	}
@@ -412,16 +418,18 @@ func (a *API) queueImageUpdate(ctx context.Context, id string, settings imageSet
 		return err
 	}
 	if stack.Digest(current) != configuration {
-		a.pauseImagePolicy(ctx, id, "Saved configuration changed. Deploy and review the update policy again.")
+		if automatic {
+			a.pauseImagePolicy(ctx, id, "Saved configuration changed. Deploy and review the update policy again.")
+		}
 		return stack.ErrInvalid
 	}
 	excluded := map[string]bool{}
 	for _, s := range p.Excluded {
 		excluded[s] = true
 	}
-	changed := false
+	changed := 0
 	for service, ref := range tracking {
-		if excluded[service] || strings.Contains(ref, "@") {
+		if (!automatic && selected[service] == "") || excluded[service] || strings.Contains(ref, "@") {
 			continue
 		}
 		var raw []byte
@@ -438,7 +446,7 @@ func (a *API) queueImageUpdate(ctx context.Context, id string, settings imageSet
 		}
 		// A monitoring override observes a channel; it cannot authorize deploying
 		// a different tag from the stack's explicitly approved source reference.
-		if result.Image != ref {
+		if result.Image != ref || (!automatic && selected[service] != result.Manifest) {
 			continue
 		}
 		repository := ref
@@ -448,10 +456,10 @@ func (a *API) queueImageUpdate(ctx context.Context, id string, settings imageSet
 		candidate := repository + "@" + result.Manifest
 		if images[service] != candidate {
 			images[service] = candidate
-			changed = true
+			changed++
 		}
 	}
-	if !changed {
+	if changed == 0 || (!automatic && changed != len(selected)) {
 		return errors.New("no update available")
 	}
 	var plan stack.Plan
@@ -461,10 +469,20 @@ func (a *API) queueImageUpdate(ctx context.Context, id string, settings imageSet
 	if err != nil {
 		return err
 	}
-	if !validReleaseImages(plan.Images, p.Services) || !stack.Equal(plan.Images, images) || len(plan.Token) != 64 {
+	services := p.Services
+	if !automatic {
+		for name := range images {
+			services = append(services, name)
+		}
+	}
+	if !validReleaseImages(plan.Images, services) || !stack.Equal(plan.Images, images) || len(plan.Token) != 64 {
 		return stack.ErrInvalid
 	}
-	if window.Slot(time.Now()) != slot {
+	window := settings.Maintenance
+	if p.Maintenance != nil {
+		window = *p.Maintenance
+	}
+	if automatic && window.Slot(time.Now()) != slot {
 		return errors.New("maintenance window ended")
 	}
 	binding, ok := a.lookupTarget(ctx, id)
@@ -482,14 +500,23 @@ func (a *API) queueImageUpdate(ctx context.Context, id string, settings imageSet
 		return err
 	}
 	defer tx.Rollback(context.Background())
-	_, err = tx.Exec(ctx, `INSERT INTO stack_deployments(id,stack_id,agent_id,project_name,actor_name,commit_id,configuration_digest,snapshot,plan_token,pull,status,images,tracking,automatic,policy_version) VALUES($1,$2,$3,$4,'Automatic image update',$5,$6,$7,$8,true,'queued',$9,$10,true,$11)`, jobID, id, agent, binding.ProjectName, commit, configuration, baseline, plan.Token, imagesRaw, trackingBytes, p.Version)
+	var actorID, policyVersion any
+	actorName, action := "Automatic image update", "stack.auto-update"
+	if automatic {
+		policyVersion = p.Version
+	} else {
+		actorID, actorName, action = user.ID, user.Username, "stack.image-update"
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO stack_deployments(id,stack_id,agent_id,project_name,actor_name,commit_id,configuration_digest,snapshot,plan_token,pull,status,images,tracking,automatic,policy_version,actor_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,true,'queued',$10,$11,$12,$13,$14)`, jobID, id, agent, binding.ProjectName, actorName, commit, configuration, baseline, plan.Token, imagesRaw, trackingBytes, automatic, policyVersion, actorID)
 	if err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, "UPDATE stack_update_policies SET last_slot=$2 WHERE stack_id=$1", id, slot); err != nil {
-		return err
+	if automatic {
+		if _, err = tx.Exec(ctx, "UPDATE stack_update_policies SET last_slot=$2 WHERE stack_id=$1", id, slot); err != nil {
+			return err
+		}
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO audit_events(actor_name,action,target_kind,target_id,agent_id,outcome,detail) VALUES('Automatic image update','stack.auto-update','stack',$1,$2,'success',$3)`, id, agent, []byte(fmt.Sprintf(`{"job":"%s"}`, jobID))); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO audit_events(actor_id,actor_name,action,target_kind,target_id,agent_id,outcome,detail) VALUES($1,$2,$3,'stack',$4,$5,'success',$6)`, actorID, actorName, action, id, agent, []byte(fmt.Sprintf(`{"job":"%s"}`, jobID))); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

@@ -1,8 +1,12 @@
 # Container image updates
 
-**Docker Stacks → Image updates** monitors all containers discovered on Docker-enabled agents, including external Compose projects and standalone containers. Monitoring never enables deployments. External containers are notification-only.
+**Docker Stacks → Image updates** monitors all containers discovered on Docker-enabled agents, including external Compose projects and standalone containers. Monitoring never enables deployments. External containers are monitored; operators can explicitly pull and recreate eligible external containers on a manage-capable host.
 
 The **Image updates** tab contains the container table, search, device/status/management filters, and ascending or descending sorting by container, device, image, status, or check time. Filters and sorting stay selected while results refresh or you switch tabs. Per-device check details expand below the table. The second tab, **Global schedule**, contains the check interval and default maintenance window.
+
+The default status filter hides **Current**. Clear the filter to see every status. **Current** means that the monitored tag matches the running image. **Image changed** means its content differs.
+
+Operators and administrators can choose **Update visible** and review the selected services before queuing deployments. Each stack gets one immediate deployment using the reviewed image digests. Other services keep their deployed images. For external containers, the host must support container management and the running tag must match the monitored tag. These containers pull that tag and recreate one at a time. Managed stack updates require administrator access. Manual stack updates require fresh check results and the same saved stack configuration as the last successful deployment. Per-stack results report whether the request was queued; final outcomes appear in deployment history.
 
 ## Checks and notifications
 

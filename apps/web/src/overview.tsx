@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Alert, Button, Group, Loader, SegmentedControl, Skeleton, Table, Text, Title } from '@mantine/core'
+import { runLimited } from './container-utils'
+import { isInUse, resourcesPath, sizeLabel, type ImageRow, type NetworkRow, type VolumeRow } from './resource-utils'
 import { formatMetric } from './metric-utils'
 import { activityItems, attentionItems, deviceRows, greeting, realDate, relativeTime, topContainers, type OverviewAudit, type OverviewDevice, type OverviewHost, type OverviewIncident, type OverviewStack, type OverviewUpdate } from './overview-utils'
 import { route, type Route } from './route'
@@ -61,6 +63,46 @@ function useCpuTrends(devices: OverviewDevice[] | null, range: Range): Record<st
     return () => { active = false }
   }, [ids, range])
   return trends
+}
+
+function UnusedResources({ hosts, refresh }: { hosts: OverviewHost[] | null; refresh: number }) {
+  const ids = hosts?.filter(host => host.state === 'ok').map(host => host.agentId).sort().join(',')
+  const [summary, setSummary] = useState<{ images: number; volumes: number; networks: number; bytes: number; knownSize: boolean; reporting: number } | null>(null)
+  useEffect(() => {
+    if (ids === undefined) return
+    const controller = new AbortController()
+    const hostIds = ids ? ids.split(',') : []
+    async function load() {
+      const results = await runLimited(hostIds, 3, async id => {
+        try {
+          const get = async <T,>(kind: 'image' | 'volume' | 'network') => {
+            const res = await fetch(resourcesPath(id, kind), { signal: controller.signal })
+            if (!res.ok) throw new Error('Resource inventory unavailable')
+            return res.json() as Promise<T>
+          }
+          const [images, volumes, networks] = await Promise.all([get<{images: ImageRow[]}>('image'), get<{volumes: VolumeRow[]}>('volume'), get<{networks: NetworkRow[]}>('network')])
+          const unused = (images.images ?? []).filter(i => !isInUse(i.usedBy))
+          return { images: unused.length, volumes: (volumes.volumes ?? []).filter(v => !isInUse(v.usedBy)).length, networks: (networks.networks ?? []).filter(n => !n.builtin && !isInUse(n.usedBy)).length, bytes: unused.reduce((sum, i) => sum + Math.max(i.size, 0), 0), knownSize: unused.every(i => i.size >= 0) }
+        } catch { return null }
+      })
+      const total = { images: 0, volumes: 0, networks: 0, bytes: 0, knownSize: true, reporting: 0 }
+      for (const r of results) {
+        if (!r) continue
+        total.images += r.images; total.volumes += r.volumes; total.networks += r.networks
+        total.bytes += r.bytes; total.knownSize &&= r.knownSize; total.reporting++
+      }
+      if (!controller.signal.aborted) setSummary(total)
+    }
+    setSummary(null)
+    void load()
+    const timer = window.setInterval(() => { void load() }, 300000)
+    return () => { controller.abort(); window.clearInterval(timer) }
+  }, [ids, refresh])
+  return <Panel title="Unused Docker resources">
+    {summary?.reporting ? <><Group gap="xl"><Text><b>{summary.images}</b> images</Text><Text><b>{summary.volumes}</b> volumes</Text><Text><b>{summary.networks}</b> networks</Text></Group>
+      <Text size="xs" c="dimmed">Image size: {summary.knownSize ? sizeLabel(summary.bytes) : 'unknown'} including shared layers · {summary.reporting} of {hosts?.length} hosts reporting</Text></> :
+      <Text size="sm" c="dimmed">{summary ? 'No Docker inventory available.' : 'Loading Docker inventory…'}</Text>}
+  </Panel>
 }
 
 export function Overview({ userName, onNavigate }: { userName: string; onNavigate: (route: Route) => void }) {
@@ -127,6 +169,8 @@ export function Overview({ userName, onNavigate }: { userName: string; onNavigat
             </Table.Tr>)}</Table.Tbody>
           </Table></div>}
         </Panel>
+
+        <UnusedResources hosts={data.hosts} refresh={refresh} />
 
         <Panel title="Top containers by memory" actions={<><Text size="xs" c="dimmed">all devices</Text><Button size="xs" variant="subtle" onClick={() => onNavigate(route('containers'))}>All containers</Button></>} flush>
           {top.length === 0 ? <Text c="dimmed" size="sm" p="md">{data.devices ? 'No container memory reported yet.' : 'Loading…'}</Text> : <Table className="vg-table" verticalSpacing={8}><Table.Tbody>{top.map((c) => {
