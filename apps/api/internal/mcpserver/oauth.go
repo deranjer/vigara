@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"slices"
@@ -311,17 +312,22 @@ func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
 	var id string
 	var scopes []string
 	var expires time.Time
-	var used bool
-	err = tx.QueryRow(r.Context(), `SELECT g.id::text,g.scopes,g.expires_at,t.used FROM mcp_oauth_refresh_tokens t
+	var used, expired bool
+	err = tx.QueryRow(r.Context(), `SELECT g.id::text,g.scopes,g.expires_at,t.used,(g.expires_at<=now() OR s.expires_at<=now()) FROM mcp_oauth_refresh_tokens t
  JOIN mcp_oauth_grants g ON g.id=t.grant_id JOIN user_sessions s ON s.id=g.session_id
- WHERE t.token_hash=$1 AND g.client_id=$2 AND g.resource=$3 AND g.expires_at>now() AND s.expires_at>now()
- FOR UPDATE OF g,t`, hash(f.Get("refresh_token")), f.Get("client_id"), h.issuer+"/mcp").Scan(&id, &scopes, &expires, &used)
+ WHERE t.token_hash=$1 AND g.client_id=$2 AND g.resource=$3
+ FOR UPDATE OF g,t`, hash(f.Get("refresh_token")), f.Get("client_id"), h.issuer+"/mcp").Scan(&id, &scopes, &expires, &used, &expired)
 	if errors.Is(err, pgx.ErrNoRows) {
 		invalidGrant(w)
 		return
 	}
 	if err != nil {
 		serverError(w)
+		return
+	}
+	if expired {
+		slog.InfoContext(r.Context(), "MCP refresh denied", "reason", "grant_expired")
+		invalidGrant(w)
 		return
 	}
 	if used {
@@ -333,6 +339,7 @@ func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
 			serverError(w)
 			return
 		}
+		slog.WarnContext(r.Context(), "MCP connection revoked", "reason", "refresh_token_reuse")
 		invalidGrant(w)
 		return
 	}

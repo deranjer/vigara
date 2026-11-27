@@ -67,10 +67,26 @@ func TestDiscoveryAndAuthenticationBoundary(t *testing.T) {
 			t.Fatalf("discovery %s: %d %s", path, w.Code, w.Body)
 		}
 	}
-	for _, headers := range []map[string]string{nil, {"Authorization": "Bearer invalid"}, {"Cookie": auth.SessionCookieName + "=" + secret()}} {
-		w := request(mux, "POST", "/mcp", `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, headers)
-		if w.Code != 401 || !strings.Contains(w.Header().Get("WWW-Authenticate"), "resource_metadata=") {
-			t.Fatalf("MCP bypass: %d %s", w.Code, w.Body)
+	const challenge = `Bearer resource_metadata="https://vigara.example/.well-known/oauth-protected-resource"`
+	for _, tc := range []struct {
+		header string
+		want   string
+	}{
+		{"", challenge},
+		{"Basic abc", challenge},
+		{"Bearer", challenge + `, error="invalid_token"`},
+		{"bearer invalid", challenge + `, error="invalid_token"`},
+	} {
+		headers := map[string]string{"Cookie": auth.SessionCookieName + "=" + secret()}
+		if tc.header != "" {
+			headers["Authorization"] = tc.header
+		}
+		w := request(mux, "POST", "/mcp", `{"jsonrpc":"2.0","id":1,"method":"initialize"}`, headers)
+		if w.Code != 401 || w.Header().Get("WWW-Authenticate") != tc.want {
+			t.Fatalf("authorization %q: status %d, challenge %q", tc.header, w.Code, w.Header().Get("WWW-Authenticate"))
+		}
+		if tc.want == challenge && w.Body.Len() != 0 {
+			t.Fatalf("unexpected error body on initial challenge: %s", w.Body)
 		}
 	}
 	w := request(mux, "POST", "/mcp", "", map[string]string{"Origin": "https://evil.example"})

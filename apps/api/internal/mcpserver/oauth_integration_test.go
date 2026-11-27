@@ -325,6 +325,22 @@ func TestAccessExpiryAndRoleDemotion(t *testing.T) {
 	}
 }
 
+func TestExpiredGrantRequiresReauthorization(t *testing.T) {
+	f := newFixture(t)
+	c := f.register(t)
+	code, verifier := f.code(t, c, "")
+	issued := mustTokens(t, f.exchange(c, code, verifier))
+	if _, err := f.pool.Exec(context.Background(), `UPDATE mcp_oauth_grants SET expires_at=now()-interval '1 second'`); err != nil {
+		t.Fatal(err)
+	}
+	if w := rpc(f.mux, issued.Access, "tools/list", map[string]any{}); w.Code != 401 {
+		t.Fatalf("expired grant access: %d", w.Code)
+	}
+	if w := f.refresh(c, issued.Refresh, ""); w.Code != 400 {
+		t.Fatalf("expired grant refresh: %d", w.Code)
+	}
+}
+
 func TestOAuthClientPKCEExpiryAndAccountBinding(t *testing.T) {
 	f := newFixture(t)
 	c := f.register(t)
