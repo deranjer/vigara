@@ -19,12 +19,13 @@ RUN pnpm --filter @vigira/web build
 FROM go-deps AS assemble
 ARG TARGETOS
 ARG TARGETARCH
+ARG VIGIRA_VERSION=dev
 ARG VIGIRA_REVISION
 COPY apps/api ./apps/api
 COPY internal ./internal
 COPY schemas ./schemas
 COPY --from=web-build /src/apps/api/web ./apps/api/web
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w -X main.revision=${VIGIRA_REVISION}" -o /out/vigara ./apps/api/cmd/vigira
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w -X main.version=${VIGIRA_VERSION} -X main.revision=${VIGIRA_REVISION}" -o /out/vigara ./apps/api/cmd/vigira
 
 FROM go-deps AS restic-build
 ARG TARGETOS

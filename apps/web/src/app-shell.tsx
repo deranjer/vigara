@@ -181,7 +181,7 @@ export function AppFrame({ user, route, onNavigate, onLogout, children }: { user
   const go = (key: NavKey) => onNavigate(routeOf(key))
   const moreItems = primary.filter((item) => !phoneTabs.includes(item.key)).concat([settingsItem])
   // Only admins can act on a server update, so only their browsers check for one.
-  const release = useReleaseStatus(isAdmin)
+  const release = useReleaseStatus()
   const updateDot = isAdmin && release.updateAvailable ? `Update available: ${release.latest}` : undefined
 
   return <AppShell layout="alt" header={{ height: 52 }} navbar={{ width: 232, breakpoint: 'sm', collapsed: { mobile: true } }} footer={phone ? { height: 62 } : undefined} padding="lg">
@@ -202,7 +202,7 @@ export function AppFrame({ user, route, onNavigate, onLogout, children }: { user
         {isAdmin && <div className="vg-nav-group">Admin</div>}
         <NavItem item={settingsItem} active={active === 'settings'} dot={updateDot} onClick={() => go('settings')} />
       </nav>
-      <div className="vg-rail-foot"><UserMenu user={user} onNavigate={onNavigate} onLogout={onLogout} /></div>
+      <div className="vg-rail-foot"><Text size="xs" c="dimmed" px="sm" title={release.text}>{release.version}</Text>{release.updateAvailable && <Text size="xs" c="orange" px="sm">Update available · {release.latest}</Text>}<UserMenu user={user} onNavigate={onNavigate} onLogout={onLogout} /></div>
     </AppShell.Navbar>
     <AppShell.Main>{children}</AppShell.Main>
     {phone && <AppShell.Footer className="vg-tabbar" component="nav" aria-label="Main navigation">

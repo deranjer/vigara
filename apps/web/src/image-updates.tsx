@@ -3,14 +3,16 @@ import { useAtom } from 'jotai'
 import { useMediaQuery } from '@mantine/hooks'
 import { Alert, Badge, Button, Card, Checkbox, Code, Group, Modal, MultiSelect, NumberInput, Select, Stack, Table, Tabs, Text, TextInput, Title, UnstyledButton } from '@mantine/core'
 import { route as routeOf, type Route } from './route'
+import { streamRecreate } from './container-actions'
+import { canManage as canManageHost } from './container-utils'
 import { deviceScopeAtom } from './scope'
 import { defaultImageUpdateFilters, selectImageUpdates, type ImageUpdateSort } from './image-update-list'
 
 type Window = { days: number[]; start: string; minutes: number; timezone: string }
 type Settings = { intervalMinutes: number; maintenance: Window; version: number }
-type Result = { runningImage?: string; name: string; image: string; status: string; message?: string; current?: string; available?: string; platform?: string }
+type Result = { manifest?: string; service?: string; runningImage?: string; name: string; image: string; status: string; message?: string; current?: string; available?: string; platform?: string }
 type Item = { trackingTag: string; agentId: string; device: string; containerId: string; stackId: string; result: Result; checkedAt: string; lastSuccessAt: string | null; lastSuccess: Result | null; ignored: boolean }
-type Host = { agentId: string; device: string; checkedAt: string | null; nextCheck: string; message: string }
+type Host = { dockerTier?: string; agentId: string; device: string; checkedAt: string | null; nextCheck: string; message: string }
 type Policy = { tracking?: Record<string, string>; stackId: string; enabled: boolean; maintenance: Window | null; excludedServices: string[]; services: string[]; configuration: string; pausedReason: string; version: number }
 const defaultWindow: Window = { days: [0], start: '03:00', minutes: 120, timezone: 'UTC' }
 const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
@@ -46,6 +48,9 @@ export function ImageUpdates({ role, onNavigate }: { role: string; onNavigate: (
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
+  const [review, setReview] = useState<Item[] | null>(null)
+  const [selection, setSelection] = useState<Item[]>([])
+  const [outcomes, setOutcomes] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const canManage = role === 'admin' || role === 'operator'
   useEffect(() => {
@@ -63,9 +68,64 @@ export function ImageUpdates({ role, onNavigate }: { role: string; onNavigate: (
   const visibleItems = selectImageUpdates(items, filters)
   const devices = Array.from(new Map([...hosts.map(h => [h.agentId, h.device] as const), ...items.map(i => [i.agentId, i.device] as const)]).entries()).map(([value, label]) => ({ value, label })).sort((a, b) => a.label.localeCompare(b.label))
   const hostErrors = new Set(hosts.filter(h => h.message).map(h => h.agentId))
+  const tiers = new Map(hosts.map(host => [host.agentId, host.dockerTier]))
+  const changed = visibleItems.filter(item => {
+    if (item.ignored || hostErrors.has(item.agentId) || item.result.status !== 'available') return false
+    if (item.stackId) return role === 'admin' && !!item.result.service && !!item.result.manifest
+    const ref = item.result.runningImage
+    return canManageHost(role, tiers.get(item.agentId)) && !!ref && !ref.includes('@') && ref === item.result.image
+  })
+  const eligible = [...new Map(changed.map(item => [item.stackId ? JSON.stringify([item.stackId, item.result.service]) : JSON.stringify([item.agentId, item.containerId]), item])).values()]
+  async function applyUpdates(selection: Item[]) {
+    setBusy(true)
+    setOutcomes([])
+    setNotice('')
+    setError('')
+    const stacks = new Map<string, Record<string, string>>()
+    for (const item of selection) {
+      if (!item.stackId) continue
+      const services = stacks.get(item.stackId) ?? Object.create(null) as Record<string, string>
+      services[item.result.service!] = item.result.manifest!
+      stacks.set(item.stackId, services)
+    }
+    setReview(null)
+    for (const [id, services] of stacks) {
+      let message: string
+      try {
+        await request(`/api/stacks/${encodeURIComponent(id)}/image-updates`, 'POST', { services })
+        message = `${id}: deployment queued`
+      } catch (cause) {
+        message = `${id}: ${cause instanceof Error ? cause.message : 'Request failed'}`
+      }
+      setOutcomes(current => [...current, message])
+    }
+    for (const item of selection.filter(i => !i.stackId)) {
+      let message: string
+      try {
+        await streamRecreate(item.agentId, item.containerId, true, () => {})
+        message = 'Pulled and recreated'
+      } catch (cause) { message = cause instanceof Error ? cause.message : 'Recreate failed' }
+      setOutcomes(current => [...current, `${item.device} / ${item.result.name}: ${message}`])
+    }
+    for (const agentId of new Set(selection.map(item => item.agentId))) {
+      try { await request('/api/image-updates/check', 'POST', { agentId }) }
+      catch { setError('Could not queue a follow-up image check. Use Check all now to refresh the results.') }
+    }
+    setBusy(false)
+  }
   return <Stack>
     <Group justify="space-between"><div><Title order={2}>Image updates</Title><Text c="dimmed">All containers are monitored. Automatic updates require an explicit policy on a Vigara-managed stack.</Text></div>{canManage && activeTab === 'updates' && <Button loading={busy} onClick={() => void act(() => request('/api/image-updates/check', 'POST', {}), 'Image checks queued. Results will refresh here.')}>Check all now</Button>}</Group>
     {error && <Alert color="red">{error}</Alert>}{notice && <Alert color="blue">{notice}</Alert>}
+    {!!outcomes.length && <Alert title="Deployment requests">{outcomes.map(message => <Text size="sm" key={message}>{message}</Text>)}</Alert>}
+    <Modal opened={review !== null} onClose={() => setReview(null)} title="Review image updates" centered>
+      <Stack><Text size="sm">Managed services deploy together per stack using the reviewed digests. External containers pull their running tag and recreate one at a time. Both actions may interrupt service.</Text>
+        {review?.map(item => <Checkbox key={item.containerId + item.agentId} label={`${item.device} · ${item.stackId ? item.stackId + ' / ' + item.result.service : item.result.name}`} checked={selection.includes(item)} onChange={e => {
+          const checked = e.currentTarget.checked
+          setSelection(rows => checked ? [...rows, item] : rows.filter(r => r !== item))
+        }} />)}
+        <Button disabled={!selection.length} onClick={() => void applyUpdates(selection)}>Update selected</Button>
+      </Stack>
+    </Modal>
 
     <Tabs value={activeTab} onChange={setActiveTab} keepMounted={false}>
       <Tabs.List mb="lg"><Tabs.Tab value="updates">Image updates</Tabs.Tab><Tabs.Tab value="schedule">Global schedule</Tabs.Tab></Tabs.List>
@@ -74,12 +134,12 @@ export function ImageUpdates({ role, onNavigate }: { role: string; onNavigate: (
           <TextInput label="Search containers and images" placeholder="Container, image, device, stack, or platform" value={filters.search} onChange={e => setFilters({ ...filters, search: e.currentTarget.value })} />
           <Group grow align="end">
             <Select label="Device" placeholder="All devices" clearable searchable data={devices} value={filters.device || null} onChange={device => setFilters({ ...filters, device: device ?? '' })} />
-            <Select label="Status" placeholder="All statuses" clearable data={[{ value: 'available', label: 'Image changed' }, { value: 'current', label: 'Current' }, { value: 'pinned', label: 'Needs tracking tag' }, { value: 'unknown', label: 'Unable to check' }, { value: 'ignored', label: 'Ignored' }]} value={filters.status || null} onChange={status => setFilters({ ...filters, status: status ?? '' })} />
+            <Select label="Status" placeholder="All statuses" clearable data={[{ value: 'noncurrent', label: 'Hide current' }, { value: 'available', label: 'Image changed' }, { value: 'current', label: 'Current' }, { value: 'pinned', label: 'Needs tracking tag' }, { value: 'unknown', label: 'Unable to check' }, { value: 'ignored', label: 'Ignored' }]} value={filters.status || null} onChange={status => setFilters({ ...filters, status: status ?? '' })} />
             <Select label="Management" placeholder="All containers" clearable data={[{ value: 'managed', label: 'Managed stacks' }, { value: 'external', label: 'External containers' }]} value={filters.scope || null} onChange={scope => setFilters({ ...filters, scope: scope ?? '' })} />
           </Group>
           <Group justify="space-between" align="end">
             <Group align="end"><Select label="Sort by" allowDeselect={false} data={[{ value: 'container', label: 'Container' }, { value: 'device', label: 'Device' }, { value: 'image', label: 'Image' }, { value: 'status', label: 'Status' }, { value: 'checked', label: 'Last checked' }]} value={filters.sort} onChange={sort => setFilters({ ...filters, sort: (sort ?? 'container') as ImageUpdateSort })} /><Button variant="light" onClick={() => setFilters({ ...filters, descending: !filters.descending })}>{filters.descending ? 'Descending ↓' : 'Ascending ↑'}</Button></Group>
-            <Group><Text size="sm" c="dimmed">{visibleItems.length} of {items.length} containers</Text><Button variant="subtle" onClick={() => setFilters({ ...defaultImageUpdateFilters })}>Reset filters</Button></Group>
+            <Group>{canManage && <Button variant="light" disabled={busy || !eligible.length} onClick={() => { setReview(eligible); setSelection(eligible) }}>Update visible…</Button>}<Text size="sm" c="dimmed">{visibleItems.length} of {items.length} containers</Text><Button variant="subtle" onClick={() => setFilters({ ...defaultImageUpdateFilters })}>Reset filters</Button></Group>
           </Group>
         </Stack></Card>
     <Card withBorder><Table.ScrollContainer minWidth={phone ? 0 : 850}><Table><Table.Thead><Table.Tr><Table.Th>Container</Table.Th><Table.Th className="vg-wide">Tracking</Table.Th><Table.Th>Status</Table.Th><Table.Th className="vg-wide">Checked</Table.Th><Table.Th>Actions</Table.Th></Table.Tr></Table.Thead><Table.Tbody>

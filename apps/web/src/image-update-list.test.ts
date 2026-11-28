@@ -22,8 +22,9 @@ describe('image update table', () => {
   it('supports newest checks first and actionable status order', () => {
     const older = row('old', { checkedAt: '2026-11-03T12:00:00Z', result: { name: 'old', image: 'app:stable', status: 'current' } })
     const newer = row('new')
-    expect(selectImageUpdates([older, newer], { ...defaultImageUpdateFilters, sort: 'checked', descending: true })).toEqual([newer, older])
-    expect(selectImageUpdates([older, newer], { ...defaultImageUpdateFilters, sort: 'status' })).toEqual([newer, older])
+    expect(selectImageUpdates([older, newer], defaultImageUpdateFilters)).toEqual([newer])
+    expect(selectImageUpdates([older, newer], { ...defaultImageUpdateFilters, status: '', sort: 'checked', descending: true })).toEqual([newer, older])
+    expect(selectImageUpdates([older, newer], { ...defaultImageUpdateFilters, status: '', sort: 'status' })).toEqual([newer, older])
     expect(selectImageUpdates([older, newer], { ...defaultImageUpdateFilters, scope: 'external' })).toEqual([])
   })
 })

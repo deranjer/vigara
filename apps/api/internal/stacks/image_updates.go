@@ -38,6 +38,7 @@ type updatePolicy struct {
 var updateUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 func (a *API) registerImageUpdates(mux *http.ServeMux) {
+	mux.HandleFunc("POST /api/stacks/{id}/image-updates", a.applyImageUpdates)
 	mux.HandleFunc("GET /api/image-updates", a.imageUpdateList)
 	mux.HandleFunc("GET /api/image-updates/settings", a.getImageSettings)
 	mux.HandleFunc("PUT /api/image-updates/settings", a.putImageSettings)
@@ -47,6 +48,41 @@ func (a *API) registerImageUpdates(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/stacks/{id}/update-policy", a.getUpdatePolicy)
 	mux.HandleFunc("PUT /api/stacks/{id}/update-policy", a.putUpdatePolicy)
 }
+
+// Manual updates authorize only the selected services at the digests the operator reviewed.
+func (a *API) applyImageUpdates(w http.ResponseWriter, r *http.Request) {
+	user, ok := a.authorize(w, r, true)
+	if !ok {
+		return
+	}
+	var q struct {
+		Services map[string]string `json:"services"`
+	}
+	if !decode(w, r, &q) {
+		return
+	}
+	if len(q.Services) == 0 {
+		http.Error(w, "Select at least one changed service.", 400)
+		return
+	}
+	for name, digest := range q.Services {
+		if name == "" || !imageManifestDigest.MatchString(digest) {
+			http.Error(w, "Invalid service or image digest.", 400)
+			return
+		}
+	}
+	settings, err := a.imageSettings(r.Context())
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	if err := a.deployImageChanges(r.Context(), r.PathValue("id"), settings, updatePolicy{}, "", &user, q.Services); err != nil {
+		http.Error(w, "Update could not be queued. Check deployment history, refresh image checks, and verify the saved stack matches its deployed configuration.", http.StatusConflict)
+		return
+	}
+	respond(w, 202, map[string]string{"status": "queued"})
+}
+
 func (a *API) imageSettings(ctx context.Context) (imageSettings, error) {
 	var s imageSettings
 	var raw []byte
@@ -134,6 +170,12 @@ func (a *API) imageUpdateList(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
+	tiers := map[string]string{}
+	if a.Agents != nil {
+		for _, host := range a.Agents() {
+			tiers[host.AgentID] = host.DockerTier
+		}
+	}
 	hosts := []map[string]any{}
 	rows, err = a.Pool.Query(r.Context(), `SELECT h.agent_id::text,d.display_name,h.checked_at,h.next_check,h.message FROM image_update_hosts h JOIN agent_identities ai ON ai.id=h.agent_id JOIN devices d ON d.id=ai.device_id WHERE ai.revoked_at IS NULL ORDER BY d.display_name`)
 	if err != nil {
@@ -149,7 +191,7 @@ func (a *API) imageUpdateList(w http.ResponseWriter, r *http.Request) {
 			fail(w, stack.ErrInvalid)
 			return
 		}
-		hosts = append(hosts, map[string]any{"agentId": id, "device": name, "checkedAt": checked, "nextCheck": next, "message": message})
+		hosts = append(hosts, map[string]any{"agentId": id, "device": name, "checkedAt": checked, "nextCheck": next, "message": message, "dockerTier": tiers[id]})
 	}
 	if rows.Err() != nil {
 		fail(w, rows.Err())

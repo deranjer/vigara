@@ -14,6 +14,7 @@ PostgreSQL. Disabling scheduling leaves an already running task to finish.
 
 | Task | Normal interval | Function |
 | --- | --- | --- |
+| Check Vigara version | 6 hours | Compare staging builds with published main builds, or check tagged server releases |
 | Scan agent bundles | 24 hours | Download newest compatible GitHub releases and apply cache retention |
 | Telemetry retention | 1 minute | Roll up old samples and remove expired history |
 | Evaluate alerts | 30 seconds | Evaluate configured alert rules |

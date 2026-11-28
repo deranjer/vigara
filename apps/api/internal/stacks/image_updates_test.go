@@ -302,3 +302,33 @@ func TestFailedAutomaticReleasePausesAndNotifiesOnce(t *testing.T) {
 		t.Fatal("failure notification missing or duplicated", count, err)
 	}
 }
+
+func TestManualImageUpdateChecksReviewedDigestsAndPinsOtherServices(t *testing.T) {
+	a, mux, _, agent, hub := imageFixture(t)
+	ctx := context.Background()
+	for _, r := range hub.checks {
+		if err := a.storeImageCheck(ctx, agent, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	apply := func(digest string) int {
+		return imageCall(mux, "POST", "/api/stacks/demo/image-updates", map[string]any{"services": map[string]string{"web": digest}}).Code
+	}
+	if code := apply("sha256:" + strings.Repeat("f", 64)); code != 409 {
+		t.Fatalf("stale selection: %d", code)
+	}
+	if code := apply(hub.checks["web"].Manifest); code != 202 {
+		t.Fatalf("manual update: %d", code)
+	}
+	if code := apply(hub.checks["web"].Manifest); code != 409 {
+		t.Fatalf("duplicate request: %d", code)
+	}
+	var web, db, actor string
+	var automatic bool
+	if err := a.Pool.QueryRow(ctx, "SELECT images->>'web', images->>'db', actor_name, automatic FROM stack_deployments WHERE status='queued'").Scan(&web, &db, &actor, &automatic); err != nil {
+		t.Fatal(err)
+	}
+	if web != "nginx@"+hub.checks["web"].Manifest || db != "postgres@sha256:"+strings.Repeat("a", 64) || automatic || actor != "image-owner" {
+		t.Fatalf("wrong manual release: %s %s %s %v", web, db, actor, automatic)
+	}
+}

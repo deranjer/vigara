@@ -54,7 +54,9 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: false
-          build-args: VIGIRA_REVISION=${{ github.sha }}
+          build-args: |
+            VIGIRA_REVISION=${{ github.sha }}
+            VIGIRA_VERSION=${{ github.ref_type == 'tag' && github.ref_name || 'staging' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -88,7 +90,9 @@ jobs:
           context: .
           push: true
           platforms: linux/amd64,linux/arm64
-          build-args: VIGIRA_REVISION=${{ github.sha }}
+          build-args: |
+            VIGIRA_REVISION=${{ github.sha }}
+            VIGIRA_VERSION=${{ github.ref_type == 'tag' && github.ref_name || 'staging' }}
           tags: ${{ needs.metadata.outputs.tags }}
           labels: ${{ needs.metadata.outputs.labels }}
           cache-from: type=gha

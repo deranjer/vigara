@@ -248,9 +248,10 @@ func main() {
 		router.Handle("/.well-known/oauth-authorization-server", mcpMux)
 		logger.Info("MCP enabled", "url", strings.TrimSuffix(cfg.MCPURL, "/")+"/mcp")
 	}
+	releases := &serverReleases{}
 	router.Get("/api/version", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"version": version, "revision": revision})
+		_ = json.NewEncoder(w).Encode(releases.status())
 	})
 	api := humachi.New(router, huma.DefaultConfig("Vigara API", "0.1.0"))
 	huma.Register(api, huma.Operation{
@@ -311,6 +312,7 @@ func main() {
 				}
 				return agentHandler.RefreshReleases(ctx, settings.PurgeOld, settings.KeepVersions)
 			}},
+		{ID: "server-releases", Name: "Check Vigara version", Description: "Check for published server updates.", Interval: 6 * time.Hour, Timeout: time.Minute, Available: true, Run: releases.check},
 		{ID: "telemetry-retention", Name: "Telemetry retention", Description: "Roll up expired raw telemetry and purge expired history.", Interval: time.Minute, Timeout: 55 * time.Second, Available: true, Run: func(ctx context.Context, _ json.RawMessage) error {
 			return telemetry.RetentionPass(ctx, telemetryStore, retention, logger)
 		}},
