@@ -239,11 +239,26 @@ func Equal(a, b map[string]string) bool {
 }
 
 type Plan struct {
-	Tracking    map[string]string `json:"tracking,omitempty"`
-	Token       string            `json:"token"`
-	Services    []string          `json:"services"`
-	ProjectName string            `json:"projectName"`
-	Images      map[string]string `json:"images"`
+	Tracking    map[string]string             `json:"tracking,omitempty"`
+	Token       string                        `json:"token"`
+	Services    []string                      `json:"services"`
+	ProjectName string                        `json:"projectName"`
+	Images      map[string]string             `json:"images"`
+	ImageReview map[string]ServiceImageReview `json:"imageReview,omitempty"`
+}
+
+type ServiceImageReview struct {
+	CreatedAt  string                 `json:"createdAt,omitempty"`
+	Version    string                 `json:"version,omitempty"`
+	Revision   string                 `json:"revision,omitempty"`
+	Containers []ContainerImageReview `json:"containers"`
+}
+
+type ContainerImageReview struct {
+	Name         string `json:"name"`
+	State        string `json:"state"`
+	CurrentImage string `json:"currentImage"`
+	Change       string `json:"change"`
 }
 type DeployRequest struct {
 	Job    Job               `json:"job"`

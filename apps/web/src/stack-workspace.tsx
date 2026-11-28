@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { ActionIcon, Alert, Button, Checkbox, Code, Group, Loader, Modal, Stack, Tabs, Text, TextInput, UnstyledButton } from '@mantine/core'
+import { ActionIcon, Alert, Badge, Button, Checkbox, Code, Group, Loader, Modal, Stack, Tabs, Text, TextInput, UnstyledButton } from '@mantine/core'
 import { IconChevronLeft, IconChevronRight, IconFile, IconLock, IconPlus, IconRocket } from '@tabler/icons-react'
 import { relativeTime } from './overview-utils'
 import { route as routeOf, type Route } from './route'
@@ -139,7 +139,49 @@ export function ActivityTimeline({ history, jobs, loading, busy, draftPanel, fai
   </Stack>
 }
 
-export type PlanView = { images: Record<string, string>; projectName: string; services: string[] }
+type ContainerImageReview = { name: string; state: string; currentImage: string; change: 'same' | 'changed' | 'digest_changed' | 'unknown' }
+export type PlanView = {
+  images: Record<string, string>; tracking?: Record<string, string>; projectName: string; services: string[]
+  imageReview?: Record<string, { createdAt?: string; version?: string; revision?: string; containers: ContainerImageReview[] }>
+}
+
+const imageChangeLabel: Record<ContainerImageReview['change'], { text: string; color: string }> = {
+  same: { text: 'Same image', color: 'gray' },
+  changed: { text: 'Image will change', color: 'orange' },
+  digest_changed: { text: 'Image digest will change', color: 'orange' },
+  unknown: { text: 'Image change unknown', color: 'yellow' },
+}
+
+export function PlanImages({ plan, recreate }: { plan: PlanView; recreate: boolean }) {
+  return <div className="vg-panel"><table className="vg-kv-table">
+    <thead><tr><th scope="col">Service and planned image</th><th scope="col">Container and image change</th></tr></thead>
+    <tbody>{plan.services.map(service => {
+      const review = plan.imageReview?.[service]
+      const target = plan.images[service]
+      const tracking = plan.tracking?.[service]
+      return <tr key={service}>
+        <td><Text size="sm" fw={600}>{service}</Text>
+          {tracking && tracking !== target && <Text size="xs" className="vg-break">Configured tag <Code>{tracking}</Code></Text>}
+          <Text size="xs" className="vg-break">Planned image <Code>{target || 'Unavailable'}</Code></Text>
+          {review?.version && <Text size="xs" className="vg-break">Publisher version <Code>{review.version}</Code></Text>}
+          {review?.revision && <Text size="xs" className="vg-break">Source revision <Code>{review.revision}</Code></Text>}
+          {review?.createdAt && <Text size="xs" c="dimmed">Image created <time dateTime={review.createdAt}>{new Date(review.createdAt).toLocaleString()}</time></Text>}
+        </td>
+        <td>
+          {!review ? <Badge variant="light" color="yellow">Current image unknown</Badge>
+            : !review.containers.length ? <Badge variant="light" color="blue">No existing container</Badge>
+            : <Stack gap="xs">{review.containers.map(container => {
+              const status = imageChangeLabel[container.change] ?? imageChangeLabel.unknown
+              return <div key={container.name}>
+                <Group gap="xs"><Text size="sm" fw={500}>{container.name}</Text><Badge variant="light" color={status.color}>{status.text}</Badge></Group>
+                <Text size="xs" c="dimmed" className="vg-break">{container.state} · <Code>{container.currentImage || 'Unknown image'}</Code></Text>
+              </div>
+            })}</Stack>}
+        </td>
+      </tr>
+    })}</tbody>
+  </table>{recreate && <Text size="sm" c="dimmed" p="sm">Existing containers for the planned services will be recreated, including those using the same image.</Text>}</div>
+}
 
 /**
  * Review & deploy: the draft's changes, then the plan for the saved revision, then the deployment.
@@ -176,7 +218,7 @@ export function ReviewSheet(props: {
         {!plan && <Group><Loader size="sm" /><Text size="sm" c="dimmed">Preparing the plan…</Text></Group>}
         {plan && <>
           <Text>Apply revision <Code>{props.revision}</Code> to project <Code>{plan.projectName}</Code> on {props.deviceName}.</Text>
-          <div className="vg-panel"><table className="vg-kv-table"><tbody>{plan.services.map((service) => <tr key={service}><th>{service}</th><td className="vg-mono">{plan.images[service] ?? '—'}</td></tr>)}</tbody></table></div>
+          <PlanImages plan={plan} recreate={props.recreate} />
           <Checkbox label="Recreate every container in the stack" checked={props.recreate} onChange={(event) => props.onRecreate(event.currentTarget.checked)} />
           <Checkbox label="Download newer images for the configured tags first" checked={props.pull} onChange={(event) => props.onPull(event.currentTarget.checked)} />
           <Text size="sm" c="dimmed">Changed services restart. Data volumes are kept. Deploying an older revision does not undo application data migrations.</Text>
