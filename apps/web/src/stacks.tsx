@@ -15,7 +15,7 @@ import { StackList } from './stack-list'
 import { isReverseProxy, stackActionBlocker, stackActionTargets, stackRuntimeBadge, type StackAction, type StackHost, type StackSummary } from './stack-list-utils'
 import { StackLoading } from './stack-loading'
 import { useStackRuntime } from './stack-runtime'
-import { ActivityTimeline, DeployFailureHelp, DraftBar, FileList, ReviewSheet, ServicesRail } from './stack-workspace'
+import { ActivityTimeline, DeployFailureHelp, DraftBar, FileList, ReviewSheet, ServicesRail, type PlanView } from './stack-workspace'
 import { changedPaths, deploymentTitle, draftSummary, firstReviewStep, requiredHostPaths, type Deployment, type Revision, type ReviewStep } from './stack-workspace-utils'
 import { StatusText } from './status'
 import { Panel } from './ui'
@@ -26,7 +26,7 @@ type Files = Record<string, string>
 type Snapshot = { id: string; commit: string; files: Files }
 type Draft = { digest?: string; base: string; files: Files | null; version: number }
 type Detail = { projectName: string; snapshot: Snapshot; draft: Draft; branch: string; assigned: boolean; agentId: string; digest: string }
-type Plan = { images: Record<string, string>; tracking?: Record<string, string>; token: string; projectName: string; services: string[] }
+type Plan = PlanView & { token: string }
 
 async function request<T>(url: string, method = 'GET', body?: unknown): Promise<T> {
   const response = await fetch(url, { method, credentials: 'same-origin', headers: body === undefined ? undefined : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })

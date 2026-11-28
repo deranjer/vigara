@@ -679,7 +679,11 @@ func (r *Runner) Plan(ctx context.Context, s stack.Snapshot) (Plan, error) {
 	if e != nil {
 		return Plan{}, e
 	}
-	return r.model(ctx, s, t, m)
+	plan, err := r.model(ctx, s, t, m)
+	if err == nil {
+		plan.ImageReview = r.reviewImages(ctx, t.Directory, plan)
+	}
+	return plan, err
 }
 
 func (r *Runner) Deploy(ctx context.Context, q Request) (stack.Result, error) {
