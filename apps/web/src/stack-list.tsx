@@ -2,11 +2,12 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useAtom } from 'jotai'
 import { useMediaQuery } from '@mantine/hooks'
 import { Alert, Button, Card, Checkbox, Group, Loader, Menu, Modal, SegmentedControl, SimpleGrid, Stack, Table, Text, TextInput, Title, UnstyledButton } from '@mantine/core'
-import { IconDots, IconGitBranch, IconPlus, IconRefresh, IconSearch } from '@tabler/icons-react'
+import { IconChevronDown, IconDots, IconExternalLink, IconGitBranch, IconPlus, IconRefresh, IconSearch } from '@tabler/icons-react'
 import { relativeTime } from './overview-utils'
 import { formatRoute, route } from './route'
 import { deviceScopeAtom } from './scope'
 import { runStackActions } from './stack-actions'
+import { stackBrowserLinks } from './stack-browser-links'
 import { NewStack, type ApprovedTarget } from './stack-management'
 import { bulkStacks, excludedFromBulk, filterStacks, isReverseProxy, matchesStackFilter, stackActionBlocker, stackActionTargets, stackFilterCounts, stackLabels, stackRuntimeBadge, stackStatus, stacksWithUpdates, type StackAction, type StackFilter, type StackHost, type StackLabel, type StackSummary } from './stack-list-utils'
 import { StackImport } from './stack-import'
@@ -57,6 +58,25 @@ function Services({ stack, hosts }: { stack: StackSummary; hosts: StackHost[] })
   if (badge.label === 'Unavailable') return <StatusText tone="idle">Unavailable</StatusText>
   if (badge.label === 'Not running') return <StatusText tone="idle">Not running</StatusText>
   return <StatusText tone={toneOf(badge.color)} title={badge.label}>{badge.count} running</StatusText>
+}
+
+function ViewInBrowser({ stack, hosts }: { stack: StackSummary; hosts: StackHost[] }) {
+  const links = stackBrowserLinks(stack, hosts)
+  const primary = links[0]
+  if (!primary) return null
+  const launch = <Button component="a" href={primary.href} target="_blank" rel="noopener noreferrer" title={primary.href} size="compact-xs" variant="default" leftSection={<IconExternalLink size={13} />}>View in Browser</Button>
+  if (links.length === 1) return launch
+  return <Button.Group>
+    {launch}
+    <Menu position="bottom-end" withinPortal>
+      <Menu.Target><Button size="compact-xs" variant="default" px={5} aria-label={`Browser addresses for ${stack.name || stack.id}`}><IconChevronDown size={13} /></Button></Menu.Target>
+      <Menu.Dropdown maw="min(360px, calc(100vw - 24px))" mah={320} style={{ overflowY: 'auto' }}>
+        {links.map(({ href, kind }) => <Menu.Item key={href} component="a" href={href} target="_blank" rel="noopener noreferrer" title={href}>
+          <Text size="xs" c="dimmed">{kind}</Text><Text size="sm" truncate>{href}</Text>
+        </Menu.Item>)}
+      </Menu.Dropdown>
+    </Menu>
+  </Button.Group>
 }
 
 /** The list of Compose stacks: what differs about each one stands out, the rest stays quiet. */
@@ -130,11 +150,12 @@ export function StackList({ onOpen, onPull, role }: { onOpen: (id: string) => vo
   }
   const allFor = (action: 'start' | 'stop') => setConfirm({ action, stacks: bulkStacks(all, hosts, true), single: false })
 
-  function rowActions(stack: StackSummary): ReactNode {
+  function rowActions(stack: StackSummary, card = false): ReactNode {
     const blocker = stackActionBlocker(stack, hosts, role)
     const pull = pullBlocker(stack)
     const can = (action: StackAction) => !busy && !blocker && stackActionTargets(stack, hosts, action).length > 0
-    return <Group gap={4} wrap="nowrap" className="vg-row-actions" onClick={(event) => event.stopPropagation()}>
+    return <Group gap={4} wrap={card ? 'wrap' : 'nowrap'} className="vg-row-actions" onClick={(event) => event.stopPropagation()}>
+      {card && <ViewInBrowser stack={stack} hosts={hosts} />}
       <Button size="compact-xs" variant="default" disabled={!!pull} title={pull ?? 'Download newer images for the configured tags and recreate every service'} onClick={() => onPull(stack.id)}>Pull &amp; recreate</Button>
       <Menu position="bottom-end" withinPortal>
         <Menu.Target><Button size="compact-xs" variant="default" px={6} aria-label={`More actions for ${stack.name || stack.id}`} loading={!!busy?.startsWith(`${stack.id}:`)}><IconDots size={14} /></Button></Menu.Target>
@@ -201,7 +222,7 @@ export function StackList({ onOpen, onPull, role }: { onOpen: (id: string) => vo
           {stack.projectName !== stack.id && <Text size="xs" c="dimmed">project {stack.projectName}</Text>}
           <div className="vg-stack-card-status"><Services stack={stack} hosts={hosts} /><Labels labels={labels} stack={stack} /></div>
           <Text size="xs" c="dimmed">{[showDevice && deviceLabel(stack), deployedAt(stack) ? `deployed ${relativeTime(deployedAt(stack))}` : 'never deployed', stack.commit && stack.commit.slice(0, 7)].filter(Boolean).join(' · ')}</Text>
-          <div className="vg-stack-card-actions">{rowActions(stack)}</div>
+          <div className="vg-stack-card-actions">{rowActions(stack, true)}</div>
         </Card>)}</SimpleGrid>
         : <div className="vg-panel"><div className="table-scroll"><Table className="vg-table vg-stack-table" highlightOnHover verticalSpacing={7}>
           <Table.Thead><Table.Tr><Table.Th>Stack</Table.Th><Table.Th>Services</Table.Th><Table.Th>Status</Table.Th>{showDevice && <Table.Th>Device</Table.Th>}<Table.Th>Last deploy</Table.Th><Table.Th>Commit</Table.Th><Table.Th aria-label="Actions" /></Table.Tr></Table.Thead>

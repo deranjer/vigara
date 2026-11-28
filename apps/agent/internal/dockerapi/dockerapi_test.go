@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -65,7 +66,7 @@ func TestListMapsComposeLabelsAndOrdersByName(t *testing.T) {
 		}
 		_, _ = w.Write([]byte(`[
  {"Id":"bbb","Names":["/zeta"],"Image":"redis","State":"exited","Status":"Exited (0) 2 hours ago","Created":100,"Ports":[],"Labels":{}},
- {"Id":"aaa","Names":["/alpha"],"Image":"nginx","State":"running","Status":"Up 3 hours","Created":200,"Ports":[{"IP":"0.0.0.0","PrivatePort":80,"PublicPort":8080,"Type":"tcp"}],"Labels":{"com.docker.compose.project":"site","com.docker.compose.service":"web"}}
+ {"Id":"aaa","Names":["/alpha"],"Image":"nginx","State":"running","Status":"Up 3 hours","Created":200,"Ports":[{"IP":"0.0.0.0","PrivatePort":80,"PublicPort":8080,"Type":"tcp"}],"Labels":{"com.docker.compose.project":"site","com.docker.compose.service":"web","caddy":"example.com, www.example.com","caddy.reverse_proxy":"{{upstreams 80}}","caddy_1":"unrelated.example.com","caddy_1.reverse_proxy":"other:80","caddy_2":"http://lan.example.com","caddy_2.reverse_proxy":"alpha:80","caddy_3":"redirect.example.com","caddy_3.redir":"https://example.com"}}
 ]`))
 	})
 	result, err := client.List(context.Background())
@@ -75,6 +76,9 @@ func TestListMapsComposeLabelsAndOrdersByName(t *testing.T) {
 	first := result.Containers[0]
 	if first.Name != "alpha" || first.Project != "site" || first.Service != "web" || len(first.Ports) != 1 || first.Ports[0].PublicPort != 8080 || result.Containers[1].Name != "zeta" {
 		t.Fatalf("containers = %+v", result.Containers)
+	}
+	if !slices.Equal(first.CaddySites, []string{"example.com", "www.example.com", "http://lan.example.com"}) {
+		t.Fatalf("Caddy sites = %v", first.CaddySites)
 	}
 	if len(e.methods) != 1 || !e.methods[http.MethodGet] {
 		t.Fatalf("methods used: %v", e.methods)

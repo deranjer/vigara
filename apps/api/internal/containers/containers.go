@@ -65,14 +65,15 @@ const (
 
 // Host is one machine's slice of the fleet list.
 type Host struct {
-	Access     map[string][]string            `json:"access,omitempty"`
-	AgentID    string                         `json:"agentId"`
-	Name       string                         `json:"name"`
-	State      string                         `json:"state"`
-	Message    string                         `json:"message,omitempty"`
-	DockerTier string                         `json:"dockerTier,omitempty"`
-	Containers []protocol.DockerContainerInfo `json:"containers"`
-	Truncated  bool                           `json:"truncated,omitempty"`
+	Access        map[string][]string            `json:"access,omitempty"`
+	AgentID       string                         `json:"agentId"`
+	Name          string                         `json:"name"`
+	State         string                         `json:"state"`
+	Message       string                         `json:"message,omitempty"`
+	DockerTier    string                         `json:"dockerTier,omitempty"`
+	Containers    []protocol.DockerContainerInfo `json:"containers"`
+	Truncated     bool                           `json:"truncated,omitempty"`
+	HostAddresses []string                       `json:"hostAddresses,omitempty"`
 }
 
 type api struct {
@@ -231,6 +232,13 @@ func (a *api) fleet(w http.ResponseWriter, r *http.Request) {
 				host.State, host.Message = describe(err)
 			} else {
 				host.State, host.Message, host.Truncated = StateOK, "", result.Truncated
+				if user.Role == auth.RoleAdmin {
+					host.HostAddresses = result.HostAddresses
+				} else {
+					for i := range result.Containers {
+						result.Containers[i].CaddySites = nil
+					}
+				}
 				if result.Containers != nil {
 					host.Containers = result.Containers
 				}
