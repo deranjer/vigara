@@ -118,14 +118,14 @@ export function TerminalPanel({ hostId, reference, name, running, role, hostTier
   const overlay: CSSProperties | undefined = maximized
     ? { position: 'fixed', inset: 12, zIndex: 400, padding: 16, background: 'var(--mantine-color-body)', border: '1px solid var(--mantine-color-default-border)', borderRadius: 'var(--mantine-radius-md)', boxShadow: '0 0 0 20px #0005' }
     : undefined
-  return <Stack gap="sm" style={overlay}>
+  return <Stack gap="sm" style={overlay} data-terminal-maximized={maximized || undefined}>
     {compact ? <Text size="xs" c="dimmed">Commands run on this device as the agent service account (often root or LocalSystem). Opening and closing is audited, never what you type. The session closes after {idleMinutes} minutes without typing, or when you close this panel.</Text>
     : <Alert color="yellow" title={device ? 'This opens a shell on the device' : 'This opens a shell inside the container'}>
       {device ? 'Commands run directly on this device as the agent service account, which may be root or LocalSystem. ' : "Anything you type runs with that container's privileges, and a shell in a container is often root. "}Opening and closing a terminal is recorded in the audit log (never what you type or see).
       The session closes after {idleMinutes} minutes without typing, and when you leave this tab.
     </Alert>}
     <Group gap="sm" align="flex-end">
-      <Select label="Shell" value={shell} onChange={setShell} data={device?.platform === 'windows' ? [{ value: 'auto', label: 'PowerShell (pwsh if available)' }, { value: 'powershell', label: 'PowerShell' }] : [...shells]} allowDeselect={false} disabled={active} w={compact ? 240 : 300} size={compact ? 'xs' : undefined} />
+      <Select label="Shell" value={shell} onChange={setShell} data={device?.platform === 'windows' ? [{ value: 'auto', label: 'PowerShell (pwsh if available)' }, { value: 'powershell', label: 'PowerShell' }] : [...shells]} allowDeselect={false} disabled={active} w={compact ? 240 : 300} size={compact ? 'xs' : undefined} comboboxProps={maximized ? { withinPortal: false } : undefined} />
       {!device && <TextInput label="Run as" placeholder="Container default" value={user} onChange={(event) => setUser(event.currentTarget.value)} disabled={active} error={userError} w={180} />}
       {active ? <Button color="red" variant="light" onClick={() => { close(); setStatus('idle'); setMessage('') }}>Disconnect</Button>
         : <Button disabled={Boolean(userError)} onClick={connect}>{status === 'idle' ? 'Open terminal' : 'Reconnect'}</Button>}

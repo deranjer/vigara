@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -18,6 +19,7 @@ type publishedRelease struct {
 type releaseStatus struct {
 	Version       string             `json:"version"`
 	Revision      string             `json:"revision"`
+	Staging       bool               `json:"staging,omitempty"`
 	Releases      []publishedRelease `json:"releases,omitempty"`
 	StagingUpdate string             `json:"stagingUpdate,omitempty"`
 	CheckedAt     time.Time          `json:"checkedAt,omitzero"`
@@ -34,7 +36,14 @@ func (s *serverReleases) status() releaseStatus {
 	defer s.mu.RUnlock()
 	v := s.last
 	v.Version, v.Revision = version, revision
+	v.Staging = isStagingVersion(version)
 	return v
+}
+
+func isStagingVersion(version string) bool {
+	// Tagged releases retain their v prefix, including tagged prereleases.
+	_, suffix, _ := strings.Cut(version, "-")
+	return version == "staging" || (!strings.HasPrefix(version, "v") && strings.HasPrefix(suffix, "staging."))
 }
 
 func githubJSON(ctx context.Context, path string, target any) error {
@@ -65,7 +74,7 @@ func (s *serverReleases) check(ctx context.Context, _ json.RawMessage) (err erro
 		next.CheckedAt = time.Now().UTC()
 		s.last = next
 	}()
-	if version == "staging" && revision != "" {
+	if isStagingVersion(version) && revision != "" {
 		var runs struct {
 			Runs []struct {
 				SHA string `json:"head_sha"`

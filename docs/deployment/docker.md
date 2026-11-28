@@ -333,7 +333,7 @@ the environment prefix change does not require renaming stored data.
 
 The GitHub Actions workflow publishes `ghcr.io/deranjer/vigara` to GitHub Container Registry:
 
-- A push to `main` publishes `:staging`, `:main`, and a 12-character commit tag such as `:sha-0123456789ab`. The staging tag follows the latest successful default-branch image.
+- A push to `main` publishes `:staging`, `:main`, and a 12-character commit tag such as `:sha-0123456789ab`. The staging tag follows the latest successful default-branch image. Vigara displays a version such as `0.1.0-staging.123`, using the next patch after the highest reachable stable server tag and the build's Git commit count. Until the first server tag, the version starts at `0.1.0`.
 - A version tag such as `v1.2.3` publishes `:1.2.3`, `:1.2`, `:1`, `:latest`, and a short commit tag.
 - The workflow can be run manually from `main` to refresh the staging image.
 

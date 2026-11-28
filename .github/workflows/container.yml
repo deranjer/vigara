@@ -17,9 +17,32 @@ jobs:
     outputs:
       tags: ${{ steps.meta.outputs.tags }}
       labels: ${{ steps.meta.outputs.labels }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Determine server version
+        id: version
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $version = $env:GITHUB_REF_NAME
+          } else {
+            # Use the next patch after the latest reachable stable server tag.
+            $tag = git tag --merged HEAD --list 'v[0-9]*' --sort=-version:refname |
+              Where-Object { $_ -cmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' } |
+              Select-Object -First 1 -Wait
+            $base = '0.1.0'
+            if ($tag) {
+              $major, $minor, $patch = $tag.Substring(1).Split('.')
+              $base = "$major.$minor.$([long]$patch + 1)"
+            }
+            $version = "$base-staging.$(git rev-list --count HEAD)"
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
       - name: Generate image tags and labels
         id: meta
         uses: docker/metadata-action@v6
@@ -56,7 +79,7 @@ jobs:
           push: false
           build-args: |
             VIGIRA_REVISION=${{ github.sha }}
-            VIGIRA_VERSION=${{ github.ref_type == 'tag' && github.ref_name || 'staging' }}
+            VIGIRA_VERSION=${{ needs.metadata.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -92,7 +115,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           build-args: |
             VIGIRA_REVISION=${{ github.sha }}
-            VIGIRA_VERSION=${{ github.ref_type == 'tag' && github.ref_name || 'staging' }}
+            VIGIRA_VERSION=${{ needs.metadata.outputs.version }}
           tags: ${{ needs.metadata.outputs.tags }}
           labels: ${{ needs.metadata.outputs.labels }}
           cache-from: type=gha
