@@ -1,11 +1,15 @@
 import { canManage } from './container-utils'
+import type { DockerPort } from './container-utils'
 
 export type StackSummary = {
   id: string; name: string; projectName: string; commit: string; valid: boolean; assigned: boolean
   agentId: string; deviceName?: string; directory?: string; serviceCount: number; draft?: boolean; imported?: boolean
   digest?: string; deploymentDigest?: string; deploymentStatus?: string; deploymentCommit?: string; deploymentAt?: string
 }
-export type StackHost = { agentId: string; name: string; state: string; truncated?: boolean; dockerTier?: string; containers: { id?: string; name?: string; project?: string; service?: string; state: string }[] }
+export type StackHost = {
+  agentId: string; name: string; state: string; truncated?: boolean; dockerTier?: string; hostAddresses?: string[]
+  containers: { id?: string; name?: string; project?: string; service?: string; state: string; ports?: DockerPort[]; caddySites?: string[] }[]
+}
 export function stackContainers(stack: StackSummary, hosts: StackHost[]) {
   const host = hosts.find((item) => item.agentId === stack.agentId)
   if (!host || host.state !== 'ok') return { known: false, total: 0, running: 0, partial: false }

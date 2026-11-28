@@ -208,6 +208,9 @@ func (c *Client) List(ctx context.Context) (protocol.DockerListResult, error) {
 		}
 		info := protocol.DockerContainerInfo{ID: item.ID, Name: name, Image: item.Image, State: item.State, Status: item.Status, Created: item.Created,
 			Project: item.Labels["com.docker.compose.project"], Service: item.Labels["com.docker.compose.service"]}
+		if info.State == "running" && info.Project != "" {
+			info.CaddySites = caddySites(name, item.Labels)
+		}
 		for _, port := range item.Ports {
 			info.Ports = append(info.Ports, protocol.DockerPort{IP: port.IP, PrivatePort: port.PrivatePort, PublicPort: port.PublicPort, Type: port.Type})
 		}
@@ -223,6 +226,7 @@ func (c *Client) List(ctx context.Context) (protocol.DockerListResult, error) {
 	if len(result.Containers) > protocol.MaxDockerContainers {
 		result.Containers, result.Truncated = result.Containers[:protocol.MaxDockerContainers], true
 	}
+	result.HostAddresses = hostAddresses()
 	return result, nil
 }
 

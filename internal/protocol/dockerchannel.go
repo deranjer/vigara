@@ -44,12 +44,15 @@ type DockerContainerInfo struct {
 	// containers that were not started by Compose.
 	Project string `json:"project,omitempty"`
 	Service string `json:"service,omitempty"`
+	// CaddySites contains only site addresses from recognized reverse-proxy labels.
+	CaddySites []string `json:"caddySites,omitempty"`
 }
 
 // DockerListResult is the reply to MethodDockerList.
 type DockerListResult struct {
-	Containers []DockerContainerInfo `json:"containers"`
-	Truncated  bool                  `json:"truncated,omitempty"`
+	Containers    []DockerContainerInfo `json:"containers"`
+	Truncated     bool                  `json:"truncated,omitempty"`
+	HostAddresses []string              `json:"hostAddresses,omitempty"`
 }
 
 // DockerInspectParams selects a container. Environment values are returned only

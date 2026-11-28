@@ -202,7 +202,7 @@ func TestFleetListsEveryHostWithItsState(t *testing.T) {
 	docker := f.connectAgent(agentDocker)
 	plain := f.connectAgent(agentPlain)
 	docker.serve(func(call protocol.ChannelFrame) protocol.ChannelFrame {
-		return protocol.ChannelFrame{Result: json.RawMessage(`{"containers":[{"id":"abc","name":"web","image":"nginx","state":"running","status":"Up","created":1,"project":"site"}]}`)}
+		return protocol.ChannelFrame{Result: json.RawMessage(`{"hostAddresses":["192.168.1.2"],"containers":[{"id":"abc","name":"web","image":"nginx","state":"running","status":"Up","created":1,"project":"site","caddySites":["web.example.com"]}]}`)}
 	})
 	plain.serve(func(call protocol.ChannelFrame) protocol.ChannelFrame {
 		return protocol.ChannelFrame{Error: &protocol.ChannelError{Code: protocol.ErrCodeUnknownMethod, Message: "unknown method"}}
@@ -223,6 +223,8 @@ func TestFleetListsEveryHostWithItsState(t *testing.T) {
 	}
 	if h := byID[agentDocker]; h.Name != "nas" || h.State != StateOK || len(h.Containers) != 1 || h.Containers[0].Project != "site" || h.DockerTier != "read" {
 		t.Errorf("docker host = %+v", h)
+	} else if len(h.HostAddresses) != 0 || len(h.Containers[0].CaddySites) != 0 {
+		t.Errorf("browser destinations visible to viewer: %+v", h)
 	}
 	if h := byID[agentPlain]; h.Name != "22222222" || h.State != StateUnavailable || !strings.Contains(h.Message, "VIGIRA_DOCKER_ENABLED") || h.Containers == nil {
 		t.Errorf("plain host = %+v", h)
@@ -233,6 +235,12 @@ func TestFleetListsEveryHostWithItsState(t *testing.T) {
 	for i := 1; i < len(body.Hosts); i++ {
 		if body.Hosts[i-1].Name > body.Hosts[i].Name {
 			t.Errorf("hosts are not sorted by name: %v then %v", body.Hosts[i-1].Name, body.Hosts[i].Name)
+		}
+	}
+	decode(t, f.get("/api/containers", auth.RoleAdmin), &body)
+	for _, h := range body.Hosts {
+		if h.AgentID == agentDocker && (len(h.Containers) != 1 || len(h.HostAddresses) != 1 || len(h.Containers[0].CaddySites) != 1) {
+			t.Errorf("browser destinations missing for admin: %+v", h)
 		}
 	}
 }
